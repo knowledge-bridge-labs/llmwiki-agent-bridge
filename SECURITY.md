@@ -1,0 +1,48 @@
+# Security Policy
+
+## Supported Versions
+
+Security fixes target the `main` branch until the package publishes versioned
+releases. After releases begin, supported versions will be listed here. While
+the project is pre-1.0, maintainers may ship security fixes without preserving
+every experimental API.
+
+## Reporting a Vulnerability
+
+Use GitHub private vulnerability reporting for this repository when available.
+The organization private reporting route is:
+
+<https://github.com/knowledge-bridge-labs/llmwiki-agent-bridge/security/advisories/new>
+
+If private reporting is unavailable, open a public issue only to request a
+private security contact path, then stop. Do not include exploitable details,
+private data, credentials, private wiki content, request logs, screenshots, or
+proof-of-concept payloads in a public issue, pull request, or discussion.
+
+Maintainers should acknowledge private reports within 7 calendar days and
+provide a remediation plan, mitigation, or status update as soon as practical.
+
+Please include:
+
+- Affected version or commit.
+- Impact and affected deployment shape.
+- Reproduction steps with sanitized URLs and credentials.
+- Whether the bridge was bound to loopback or a non-loopback interface.
+- Relevant source policy and authentication configuration.
+
+## Security Model
+
+`llmwiki-agent-bridge` is intended to run as a local companion bridge between Hermes, DeepAgents, or a generic OpenAI-compatible runtime and selected LLMWiki Knowledge Sources. It does not authenticate users by default on loopback and it is not a hosted multi-tenant RAG service.
+
+Important boundaries:
+
+- Browser CORS is controlled by `LLMWIKI_AGENT_BRIDGE_ALLOWED_ORIGINS`.
+- Outbound Knowledge Source fetches are controlled by `LLMWIKI_AGENT_BRIDGE_SOURCE_POLICY` and `LLMWIKI_AGENT_BRIDGE_ALLOWED_SOURCE_ORIGINS`. The default policy name is `private-http`.
+- Bridge HTTP request authentication is controlled by `LLMWIKI_AGENT_BRIDGE_BEARER_TOKEN`.
+- Public binds require `LLMWIKI_AGENT_BRIDGE_ALLOW_PUBLIC_BIND=1`.
+
+Do not expose the bridge on public or shared interfaces without a bearer token and a restrictive source policy. Treat Knowledge Source URLs, runtime API keys, and returned citations as potentially sensitive local development data.
+
+## Dependency Surface
+
+This package currently uses Node.js built-ins and has no runtime npm dependencies. Continue to review changes for SSRF, token leakage, unsafe public binds, CORS regressions, and citation or trace data leaks.

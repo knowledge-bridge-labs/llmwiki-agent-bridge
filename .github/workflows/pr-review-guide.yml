@@ -1,0 +1,133 @@
+name: pr-review-guide
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions:
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review-guide:
+    name: review guide
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Post contributor review guide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          files="$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[].filename')"
+
+          runtime=false
+          source=false
+          cli=false
+          docs=false
+          tests=false
+          ci=false
+          security=false
+          packaging=false
+          integrations=false
+
+          while IFS= read -r file; do
+            case "$file" in
+              src/index.mjs)
+                runtime=true
+                source=true
+                ;;
+              bin/*)
+                cli=true
+                ;;
+              integrations/*)
+                integrations=true
+                ;;
+              test/*)
+                tests=true
+                ;;
+              README.md|CHANGELOG.md|CONTRIBUTING.md|docs/*|examples/*)
+                docs=true
+                ;;
+              .github/*|.github/workflows/*)
+                ci=true
+                ;;
+              package.json|package-lock.json)
+                packaging=true
+                ;;
+              SECURITY.md|SUPPORT.md|CODE_OF_CONDUCT.md|THIRD_PARTY_NOTICES.md)
+                security=true
+                ;;
+            esac
+          done <<< "$files"
+
+          {
+            echo "<!-- llmwiki-agent-bridge-pr-review-guide -->"
+            echo "## Automated Review Guide"
+            echo
+            echo "This is a contributor aid, not a maintainer approval. It is generated from changed paths and points reviewers at the checks that usually matter for this repo."
+            echo
+            echo "Changed files:"
+            echo
+            printf '%s\n' "$files" | sed 's/^/    /'
+            echo
+            echo "Review focus:"
+            if [ "$runtime" = true ]; then
+              echo "- Runtime profiles: verify Hermes, DeepAgents, and generic OpenAI-compatible behavior keeps request, timeout, error, citation, graph, and trace artifacts stable."
+            fi
+            if [ "$source" = true ]; then
+              echo "- Knowledge Source fan-out: check HTTP, MCP-style JSON-RPC, and A2A-style source calls, including source URL policy, bearer auth handling, and safe failure modes."
+            fi
+            if [ "$cli" = true ]; then
+              echo "- CLI/server startup: verify environment-variable defaults, port binding, help output, and health/agent-card endpoints."
+            fi
+            if [ "$integrations" = true ]; then
+              echo "- Agent integrations: keep Codex, Claude Code, IDE, and script examples direct-source compatible and conservative about conformance claims."
+            fi
+            if [ "$packaging" = true ]; then
+              echo "- Packaging/dependencies: verify npm package metadata, bin/export paths, lockfile changes, and package dry-run contents."
+            fi
+            if [ "$ci" = true ]; then
+              echo "- CI/release automation: avoid executing untrusted PR code from privileged workflows and keep generated artifacts, secrets, and private runtime logs out of packages."
+            fi
+            if [ "$security" = true ]; then
+              echo "- Security/governance: check private disclosure, support routing, license notices, source allow policy, and data-handling expectations before merge."
+            fi
+            if [ "$docs" = true ]; then
+              echo "- Docs/release notes: make setup, runtime profile, protocol compatibility, validation, and operational caveats accurate."
+            fi
+            if [ "$tests" = true ]; then
+              echo "- Tests: cover runtime-profile behavior, source protocol handling, trace/citation artifacts, and failure cases without private wiki or runtime data."
+            fi
+            echo
+            echo "Contributor checklist:"
+            echo "- Fill in the PR template's runtime/source impact, validation, and security sections."
+            echo "- Add focused tests for behavior changes and update CHANGELOG.md for notable compatibility, serving, security, or maintenance changes."
+            echo "- Run the documented validation commands, or explain skipped checks."
+            echo "- Call out any generated or AI-assisted implementation area that deserves closer human review."
+          } > review-guide.md
+
+          comment_id="$(
+            gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+              --paginate \
+              --jq '.[] | select(.body | contains("llmwiki-agent-bridge-pr-review-guide")) | .id' \
+              | head -n 1 \
+              || true
+          )"
+
+          if [ -n "$comment_id" ]; then
+            if ! gh api -X PATCH "repos/$REPO/issues/comments/$comment_id" -F body=@review-guide.md >/dev/null; then
+              echo "::warning::Unable to update automated review guide comment."
+            fi
+          else
+            if ! gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" -F body=@review-guide.md >/dev/null; then
+              echo "::warning::Unable to post automated review guide comment."
+            fi
+          fi

@@ -1,0 +1,53 @@
+name: Feature request
+description: Suggest an improvement for LLMWiki Agent Bridge.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for focused feature requests. Keep examples public and non-sensitive.
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use case
+      description: What bridge, runtime, or Knowledge Source workflow should this improve?
+    validations:
+      required: true
+  - type: checkboxes
+    id: affected_area
+    attributes:
+      label: Affected area
+      options:
+        - label: CLI startup or configuration
+        - label: Programmatic API
+        - label: Runtime profiles
+        - label: OpenAI-compatible runtime request
+        - label: llmwiki-http Knowledge Source protocol
+        - label: MCP-style Knowledge Source protocol
+        - label: A2A-style Knowledge Source protocol
+        - label: Source policy, CORS, or bearer auth
+        - label: Documentation
+        - label: CI or project maintenance
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility notes
+      description: Explain impact on runtime profiles, legacy Hermes aliases, bridge request/response shape, source protocols, or direct llmwiki-serve client paths.
+  - type: checkboxes
+    id: data_safety
+    attributes:
+      label: Data safety
+      options:
+        - label: This request does not include real credentials, tokens, private endpoint URLs, private exports, raw sensitive wiki content, or screenshots exposing private infrastructure.
+          required: true

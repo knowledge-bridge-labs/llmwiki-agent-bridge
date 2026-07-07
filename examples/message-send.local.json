@@ -1,0 +1,16 @@
+{
+  "data": {
+    "query": "release readiness",
+    "mode": "evidence-only",
+    "knowledgeSources": [
+      {
+        "id": "sample-wiki",
+        "name": "Sample Wiki",
+        "protocol": "llmwiki-http",
+        "status": "ready",
+        "url": "http://127.0.0.1:8765",
+        "selected": true
+      }
+    ]
+  }
+}

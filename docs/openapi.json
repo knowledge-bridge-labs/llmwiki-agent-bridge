@@ -1,0 +1,2058 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "LLMWiki Agent Bridge",
+    "version": "0.1.0",
+    "description": "Local runtime bridge for selected LLMWiki Knowledge Sources and OpenAI-compatible chat completions runtimes."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8788",
+      "description": "Default local development bridge"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Bridge health and runtime profile metadata",
+        "responses": {
+          "200": {
+            "description": "Bridge health",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/.well-known/agent-card.json": {
+      "get": {
+        "summary": "A2A-style agent card for bridge discovery",
+        "responses": {
+          "200": {
+            "description": "Agent card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCardResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/settings": {
+      "get": {
+        "summary": "Static bridge settings screen",
+        "responses": {
+          "200": {
+            "description": "Settings screen",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/settings.json": {
+      "get": {
+        "summary": "Redacted bridge runtime configuration",
+        "responses": {
+          "200": {
+            "description": "Redacted settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/settings/config.json": {
+      "put": {
+        "summary": "Persist bridge runtime, network, and source policy settings",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsConfigRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Saved settings result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsConfigResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad settings request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Settings persistence disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Settings persistence failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/settings/sources.json": {
+      "get": {
+        "summary": "Registered Knowledge Sources",
+        "responses": {
+          "200": {
+            "description": "Registered sources",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsSourcesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Persist registered Knowledge Sources",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsSourcesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Saved registered sources",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsSourcesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad sources request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Settings persistence disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Settings persistence failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/message:send": {
+      "post": {
+        "summary": "Run a grounded answer request through selected Knowledge Sources",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/MessageSendEnvelope"
+                  },
+                  {
+                    "$ref": "#/components/schemas/MessageSendData"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Completed bridge task",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageSendResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected bridge failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Runtime chat completions failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp": {
+      "post": {
+        "summary": "MCP-style JSON-RPC bridge tool endpoint",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpJsonRpcRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "MCP JSON-RPC response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpJsonRpcResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected bridge failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Runtime chat completions failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HealthResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "const": "ok"
+          },
+          "runtime": {
+            "const": "llmwiki-agent-bridge"
+          },
+          "runtimeProfile": {
+            "enum": [
+              "hermes",
+              "deepagents",
+              "generic"
+            ]
+          },
+          "runtimeId": {
+            "type": "string"
+          },
+          "agentRuntime": {
+            "type": "string"
+          },
+          "modelConfigured": {
+            "type": "boolean"
+          },
+          "hermesModelConfigured": {
+            "type": "boolean"
+          },
+          "configuredAllowedOrigins": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sourcePolicy": {
+            "enum": [
+              "private-http",
+              "allowlist",
+              "public-https"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "runtime",
+          "runtimeProfile",
+          "runtimeId",
+          "agentRuntime",
+          "modelConfigured",
+          "hermesModelConfigured",
+          "configuredAllowedOrigins",
+          "sourcePolicy"
+        ]
+      },
+      "AgentCardResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "protocol": {
+            "const": "a2a"
+          },
+          "runtime": {
+            "type": "string"
+          },
+          "agentRuntime": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "organization": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "organization"
+            ]
+          },
+          "url": {
+            "const": "/message:send"
+          },
+          "capabilities": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "streaming": {
+                "type": "boolean"
+              },
+              "structuredArtifacts": {
+                "type": "boolean"
+              },
+              "localBridge": {
+                "type": "boolean"
+              },
+              "knowledgeSourceProtocols": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "llmwiki-http",
+                    "mcp",
+                    "a2a"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "streaming",
+              "structuredArtifacts",
+              "localBridge",
+              "knowledgeSourceProtocols"
+            ]
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "bridge": {
+                "const": "llmwiki-agent-bridge"
+              },
+              "runtimeProfile": {
+                "enum": [
+                  "hermes",
+                  "deepagents",
+                  "generic"
+                ]
+              },
+              "modelConfigured": {
+                "type": "boolean"
+              },
+              "hermesModelConfigured": {
+                "type": "boolean"
+              },
+              "sourcePolicy": {
+                "enum": [
+                  "private-http",
+                  "allowlist",
+                  "public-https"
+                ]
+              },
+              "settingsUrl": {
+                "const": "/settings"
+              },
+              "protocolSurface": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "a2a": {
+                    "const": "compatible"
+                  },
+                  "mcp": {
+                    "const": "compatible"
+                  }
+                },
+                "required": [
+                  "a2a",
+                  "mcp"
+                ]
+              }
+            },
+            "required": [
+              "bridge",
+              "runtimeProfile",
+              "modelConfigured",
+              "hermesModelConfigured",
+              "sourcePolicy",
+              "settingsUrl",
+              "protocolSurface"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "protocol",
+          "runtime",
+          "agentRuntime",
+          "provider",
+          "url",
+          "capabilities",
+          "metadata"
+        ]
+      },
+      "MessageSendEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/MessageSendData"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "MessageSendData": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1
+          },
+          "orchestrationMode": {
+            "$ref": "#/components/schemas/OrchestrationMode",
+            "default": "delegated-runtime"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/OrchestrationMode",
+            "default": "delegated-runtime"
+          },
+          "knowledgeSources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeSourceDescriptor"
+            },
+            "default": []
+          },
+          "knowledge_sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeSourceDescriptor"
+            },
+            "default": []
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "KnowledgeSourceDescriptor": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "protocol": {
+            "enum": [
+              "llmwiki-http",
+              "mcp",
+              "a2a"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "selected": {
+            "type": "boolean"
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "adapter": {
+            "type": "string"
+          },
+          "implementation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocol",
+          "status",
+          "url"
+        ]
+      },
+      "MessageSendResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "const": "completed"
+              },
+              "message": {
+                "$ref": "#/components/schemas/TaskStatusMessage"
+              }
+            },
+            "required": [
+              "state",
+              "message"
+            ]
+          },
+          "message": {
+            "$ref": "#/components/schemas/AgentMessage"
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Artifact"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "requestId",
+          "traceId",
+          "status",
+          "message",
+          "artifacts"
+        ]
+      },
+      "TaskStatusMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TextPart"
+            }
+          }
+        },
+        "required": [
+          "parts"
+        ]
+      },
+      "AgentMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "role": {
+            "const": "agent"
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TextPart"
+            }
+          }
+        },
+        "required": [
+          "role",
+          "parts"
+        ]
+      },
+      "Artifact": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "const": "llmwiki_agent_result"
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DataPart"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "parts"
+        ]
+      },
+      "TextPart": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "text"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "text"
+        ]
+      },
+      "DataPart": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "data"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AgentResult"
+          }
+        },
+        "required": [
+          "kind",
+          "data"
+        ]
+      },
+      "AgentResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          },
+          "orchestrationMode": {
+            "$ref": "#/components/schemas/OrchestrationMode"
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Citation"
+            }
+          },
+          "graph": {
+            "$ref": "#/components/schemas/Graph"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TraceStep"
+            }
+          },
+          "sourceBundles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourceBundle"
+            }
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Diagnostic"
+            }
+          }
+        },
+        "required": [
+          "requestId",
+          "traceId",
+          "answer",
+          "orchestrationMode",
+          "citations",
+          "graph",
+          "steps",
+          "sourceBundles",
+          "diagnostics"
+        ]
+      },
+      "OrchestrationMode": {
+        "enum": [
+          "evidence-only",
+          "delegated-runtime",
+          "hybrid"
+        ]
+      },
+      "SettingsResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "bridge": {
+            "const": "llmwiki-agent-bridge"
+          },
+          "endpoints": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "health": {
+                "const": "/health"
+              },
+              "agentCard": {
+                "const": "/.well-known/agent-card.json"
+              },
+              "messageSend": {
+                "const": "/message:send"
+              },
+              "mcp": {
+                "const": "/mcp"
+              },
+              "settings": {
+                "const": "/settings"
+              },
+              "settingsJson": {
+                "const": "/settings.json"
+              },
+              "settingsConfigJson": {
+                "const": "/settings/config.json"
+              },
+              "settingsSourcesJson": {
+                "const": "/settings/sources.json"
+              }
+            },
+            "required": [
+              "health",
+              "agentCard",
+              "messageSend",
+              "mcp",
+              "settings",
+              "settingsJson",
+              "settingsConfigJson",
+              "settingsSourcesJson"
+            ]
+          },
+          "runtime": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "profile": {
+                "enum": [
+                  "hermes",
+                  "deepagents",
+                  "generic"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "runtime": {
+                "type": "string"
+              },
+              "agentRuntime": {
+                "type": "string"
+              },
+              "providerOrganization": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "profile",
+              "id",
+              "name",
+              "runtime",
+              "agentRuntime",
+              "providerOrganization"
+            ]
+          },
+          "runtimeConnection": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "baseUrl": {
+                "type": "string"
+              },
+              "modelConfigured": {
+                "type": "boolean"
+              },
+              "apiKeyConfigured": {
+                "type": "boolean"
+              },
+              "requestTimeoutMs": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "baseUrl",
+              "modelConfigured",
+              "apiKeyConfigured",
+              "requestTimeoutMs"
+            ]
+          },
+          "bridgeAuth": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "bearerTokenConfigured": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "bearerTokenConfigured"
+            ]
+          },
+          "network": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "publicBind": {
+                "type": "boolean"
+              },
+              "allowPublicBind": {
+                "type": "boolean"
+              },
+              "allowInsecurePublicBind": {
+                "type": "boolean"
+              },
+              "configuredAllowedOrigins": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "allowedOrigins": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "host",
+              "port",
+              "publicBind",
+              "allowPublicBind",
+              "allowInsecurePublicBind",
+              "configuredAllowedOrigins",
+              "allowedOrigins"
+            ]
+          },
+          "sourcePolicy": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "policy": {
+                "enum": [
+                  "private-http",
+                  "allowlist",
+                  "public-https"
+                ]
+              },
+              "configuredAllowedSourceOrigins": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "allowedSourceOrigins": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "policy",
+              "configuredAllowedSourceOrigins",
+              "allowedSourceOrigins"
+            ]
+          },
+          "persistence": {
+            "$ref": "#/components/schemas/SettingsPersistence"
+          }
+        },
+        "required": [
+          "bridge",
+          "endpoints",
+          "runtime",
+          "runtimeConnection",
+          "bridgeAuth",
+          "network",
+          "sourcePolicy",
+          "persistence"
+        ]
+      },
+      "SettingsConfigRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "runtimeProfile": {
+            "enum": [
+              "hermes",
+              "deepagents",
+              "generic"
+            ]
+          },
+          "runtimeId": {
+            "type": "string"
+          },
+          "runtimeName": {
+            "type": "string"
+          },
+          "runtime": {
+            "type": "string"
+          },
+          "agentRuntime": {
+            "type": "string"
+          },
+          "providerOrganization": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "port": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 65535
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "baseUrl": {
+            "type": "string"
+          },
+          "hermesBaseUrl": {
+            "type": "string"
+          },
+          "apiKey": {
+            "type": "string"
+          },
+          "hermesApiKey": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "hermesModel": {
+            "type": "string"
+          },
+          "requestTimeoutMs": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "timeoutMs": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "allowedOrigins": {
+            "$ref": "#/components/schemas/StringListSetting"
+          },
+          "allowedSourceOrigins": {
+            "$ref": "#/components/schemas/StringListSetting"
+          },
+          "sourcePolicy": {
+            "enum": [
+              "private-http",
+              "allowlist",
+              "public-https"
+            ]
+          },
+          "bridgeBearerToken": {
+            "type": "string"
+          },
+          "bearerToken": {
+            "type": "string"
+          },
+          "allowPublicBind": {
+            "type": "boolean"
+          },
+          "allowInsecurePublicBind": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SettingsConfigResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "const": "saved"
+          },
+          "applied": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "restartRequired": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "settings": {
+            "$ref": "#/components/schemas/SettingsResponse"
+          },
+          "persistence": {
+            "$ref": "#/components/schemas/SettingsPersistence"
+          }
+        },
+        "required": [
+          "status",
+          "applied",
+          "restartRequired",
+          "settings",
+          "persistence"
+        ]
+      },
+      "SettingsSourcesRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeSourceDescriptor"
+            }
+          }
+        },
+        "required": [
+          "sources"
+        ]
+      },
+      "SettingsSourcesResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeSourceDescriptor"
+            }
+          },
+          "persistence": {
+            "$ref": "#/components/schemas/SettingsPersistence"
+          }
+        },
+        "required": [
+          "sources",
+          "persistence"
+        ]
+      },
+      "SettingsPersistence": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "configPathConfigured": {
+            "type": "boolean"
+          },
+          "registeredSources": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "enabled",
+          "configPathConfigured",
+          "registeredSources"
+        ]
+      },
+      "StringListSetting": {
+        "oneOf": [
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          {
+            "type": "string"
+          }
+        ]
+      },
+      "McpJsonRpcRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "jsonrpc": {
+            "const": "2.0"
+          },
+          "id": {
+            "$ref": "#/components/schemas/JsonRpcId"
+          },
+          "method": {
+            "enum": [
+              "tools/list",
+              "tools/call"
+            ]
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "method"
+        ]
+      },
+      "McpJsonRpcResponse": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/McpJsonRpcSuccessResponse"
+          },
+          {
+            "$ref": "#/components/schemas/McpJsonRpcErrorResponse"
+          }
+        ]
+      },
+      "McpJsonRpcSuccessResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "jsonrpc": {
+            "const": "2.0"
+          },
+          "id": {
+            "$ref": "#/components/schemas/JsonRpcId"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/McpToolListResult"
+              },
+              {
+                "$ref": "#/components/schemas/McpToolCallResult"
+              }
+            ]
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "result"
+        ]
+      },
+      "McpJsonRpcErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "jsonrpc": {
+            "const": "2.0"
+          },
+          "id": {
+            "$ref": "#/components/schemas/JsonRpcId"
+          },
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": "integer"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "error"
+        ]
+      },
+      "JsonRpcId": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "McpToolListResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpToolDescriptor"
+            }
+          }
+        },
+        "required": [
+          "tools"
+        ]
+      },
+      "McpToolDescriptor": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "const": "llmwiki_agent_run"
+          },
+          "description": {
+            "type": "string"
+          },
+          "inputSchema": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "inputSchema"
+        ]
+      },
+      "McpToolCallResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpContentPart"
+            }
+          },
+          "structuredContent": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "llmwiki_agent_result": {
+                "$ref": "#/components/schemas/AgentResult"
+              }
+            },
+            "required": [
+              "llmwiki_agent_result"
+            ]
+          },
+          "isError": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "content",
+          "structuredContent",
+          "isError"
+        ]
+      },
+      "McpContentPart": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "text"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "text"
+        ]
+      },
+      "Citation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "snippet": {
+            "type": "string"
+          },
+          "connectionId": {
+            "type": "string"
+          },
+          "sourceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "connectionId"
+        ]
+      },
+      "SourceBundle": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "connectionId": {
+            "type": "string"
+          },
+          "sourceId": {
+            "type": "string"
+          },
+          "bundleId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "adapter": {
+            "type": "string"
+          },
+          "implementation": {
+            "type": "string"
+          },
+          "projection": {
+            "$ref": "#/components/schemas/SourceBundleProjection"
+          },
+          "rawOrigins": {
+            "$ref": "#/components/schemas/SourceBundleRawOrigins"
+          },
+          "sourceRefs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourceBundleSourceRef"
+            }
+          },
+          "sourceRefCount": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "connectionId",
+          "sourceId"
+        ]
+      },
+      "SourceBundleProjection": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "signature": {
+            "type": "string"
+          },
+          "pageCount": {
+            "type": "number"
+          },
+          "approvedPageCount": {
+            "type": "number"
+          },
+          "graphNodeCount": {
+            "type": "number"
+          },
+          "graphEdgeCount": {
+            "type": "number"
+          },
+          "sourceRefCount": {
+            "type": "number"
+          }
+        }
+      },
+      "SourceBundleRawOrigins": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "metadataOnly": {
+            "type": "boolean"
+          },
+          "originCount": {
+            "type": "number"
+          },
+          "publicRootLabelCount": {
+            "type": "number"
+          }
+        }
+      },
+      "SourceBundleSourceRef": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "uri": {
+            "type": "string"
+          }
+        }
+      },
+      "Graph": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GraphNode"
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GraphEdge"
+            }
+          }
+        },
+        "required": [
+          "nodes",
+          "edges"
+        ]
+      },
+      "GraphNode": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "GraphEdge": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "relation": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "source",
+          "target"
+        ]
+      },
+      "TraceCitationRef": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "sourceRefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "DiagnosticObservation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ]
+      },
+      "Diagnostic": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schemaVersion": {
+            "const": "llmwiki.agent-bridge.diagnostic.v1"
+          },
+          "severity": {
+            "enum": [
+              "warning",
+              "error"
+            ]
+          },
+          "scope": {
+            "enum": [
+              "source",
+              "runtime",
+              "bridge"
+            ]
+          },
+          "phase": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "redacted": {
+            "type": "boolean"
+          },
+          "observations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiagnosticObservation"
+            }
+          },
+          "remediation": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "severity",
+          "scope",
+          "phase",
+          "retryable",
+          "redacted",
+          "observations",
+          "message"
+        ]
+      },
+      "TraceStep": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "running",
+              "done",
+              "error"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "connectionId": {
+            "type": "string"
+          },
+          "toolName": {
+            "type": "string"
+          },
+          "citationIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "citationRefs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TraceCitationRef"
+            }
+          },
+          "parentId": {
+            "type": "string"
+          },
+          "latencyMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error": {
+            "type": "string"
+          },
+          "diagnostic": {
+            "$ref": "#/components/schemas/Diagnostic"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "status",
+          "timestamp"
+        ]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TraceStep"
+            }
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Diagnostic"
+            }
+          }
+        },
+        "required": [
+          "error"
+        ]
+      }
+    }
+  }
+}

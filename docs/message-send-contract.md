@@ -1,0 +1,273 @@
+# Message Send Contract
+
+`POST /message:send` is the bridge's A2A-style answer endpoint. It accepts one
+question plus selected Knowledge Source descriptors, gathers source evidence,
+optionally calls the configured OpenAI-compatible runtime, and returns one
+completed task with a `llmwiki_agent_result` data artifact.
+
+The bridge is not a writer. It only reads selected Knowledge Sources and does
+not mutate wiki files, source descriptors, browser state, or runtime
+configuration.
+
+## Request Envelope
+
+Send JSON with either an A2A-style `data` object or the same fields at the root:
+
+```json
+{
+  "data": {
+    "query": "What should I know before releasing?",
+    "orchestrationMode": "delegated-runtime",
+    "knowledgeSources": [
+      {
+        "id": "sample-wiki",
+        "name": "Sample Wiki",
+        "description": "Synthetic release notes and operations wiki.",
+        "protocol": "llmwiki-http",
+        "status": "ready",
+        "url": "http://127.0.0.1:8765",
+        "selected": true
+      }
+    ]
+  }
+}
+```
+
+`data.query` is required and must be a non-empty string. The bridge also accepts
+`knowledge_sources` for clients that use snake_case field names.
+
+`data.orchestrationMode` or `data.mode` is optional and defaults to
+`delegated-runtime`, preserving the original behavior of gathering evidence and
+calling the configured runtime. Supported values are:
+
+| Mode | Behavior |
+| --- | --- |
+| `delegated-runtime` | Gather selected source evidence, then call the configured OpenAI-compatible runtime. |
+| `evidence-only` | Gather selected source evidence and return a deterministic bridge answer without calling the runtime. |
+| `hybrid` | Supported as a first orchestration slice; currently gathers evidence and delegates to the configured runtime like `delegated-runtime`. |
+
+If a request does not include `knowledgeSources` or `knowledge_sources`, the
+bridge uses the persistent source registry from `/settings/sources.json`.
+Sending an empty array is treated as an explicit request with no sources.
+
+## Knowledge Source Descriptor
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `id` | no | Stable client-side connection ID. Defaults to `source-<n>` when omitted. |
+| `name` or `title` | no | Human-readable source name used in trace steps. |
+| `description` | no | Optional source description for client bookkeeping. |
+| `protocol` | yes | One of `llmwiki-http`, `mcp`, or `a2a`. Other protocols are ignored. |
+| `status` | yes | Must be `ready` to be queried. Non-ready sources are ignored. |
+| `url` | yes | Base URL or agent-card URL, depending on protocol. |
+| `selected` | no | Set to `false` to skip the source even when it is ready. |
+| `capabilities` | no | Optional client metadata. |
+| `adapter` | no | Optional client metadata. |
+| `implementation` | no | Optional client metadata. |
+
+The bridge queries only descriptors where `status` is `ready`, `selected` is
+not `false`, `protocol` is supported, and `url` passes the configured source URL
+policy.
+
+## Protocol URL Meaning
+
+| Protocol | URL expectation | Bridge behavior |
+| --- | --- | --- |
+| `llmwiki-http` | Base URL of a compatible Knowledge Source, such as `http://127.0.0.1:8765`. | Calls `/query` for context and augments evidence with compact `/search` variants. |
+| `mcp` | Base URL of a compatible MCP-style JSON-RPC endpoint. | Calls `llmwiki_source_bundle` for safe bundle metadata when available, then calls `llmwiki_context` through JSON-RPC. |
+| `a2a` | Agent-card URL or service URL for an A2A-style source. | Reads the agent card, posts to its `message:send` URL, and prefers a `llmwiki_context` artifact when present. |
+
+Source fetch URLs are always validated by the source policy documented in
+[Client Paths](./client-paths.md#source-url-policy). Invalid, non-HTTP,
+userinfo-bearing, or disallowed origins are skipped with redacted trace errors.
+
+## Response Shape
+
+Successful requests return HTTP `200` and a completed A2A-style task:
+
+```json
+{
+  "id": "generated-task-id",
+  "requestId": "generated-request-id",
+  "traceId": "generated-trace-id",
+  "status": {
+    "state": "completed",
+    "message": {
+      "parts": [{ "kind": "text", "text": "Answer markdown..." }]
+    }
+  },
+  "message": {
+    "role": "agent",
+    "parts": [{ "kind": "text", "text": "Answer markdown..." }]
+  },
+  "artifacts": [
+    {
+      "name": "llmwiki_agent_result",
+      "parts": [
+        {
+          "kind": "data",
+          "data": {
+            "requestId": "generated-request-id",
+            "traceId": "generated-trace-id",
+            "answer": "Answer markdown...",
+            "orchestrationMode": "delegated-runtime",
+            "citations": [],
+            "graph": { "nodes": [], "edges": [] },
+            "steps": [],
+            "sourceBundles": [],
+            "diagnostics": []
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+The `llmwiki_agent_result` artifact is the stable integration target for
+clients that need structured output.
+The generated OpenAPI contract for this endpoint is committed at
+[openapi.json](./openapi.json) and checked by `npm run contracts:check`.
+
+## MCP Tool Compatibility
+
+The bridge also exposes `POST /mcp` as an MCP-style JSON-RPC compatibility
+surface for tool-oriented clients. It supports:
+
+| Method | Behavior |
+| --- | --- |
+| `tools/list` | Returns one tool named `llmwiki_agent_run`. |
+| `tools/call` | Runs `llmwiki_agent_run` with the same fields accepted by `/message:send`. |
+
+Example call:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "llmwiki_agent_run",
+    "arguments": {
+      "query": "What should I know before releasing?",
+      "knowledgeSources": []
+    }
+  }
+}
+```
+
+The tool uses the same internal run path as `/message:send`. Successful calls
+return answer text in `result.content` and the structured result in
+`result.structuredContent.llmwiki_agent_result`.
+
+## Result Artifact
+
+| Field | Meaning |
+| --- | --- |
+| `requestId` | Per-run request identifier. If the HTTP request includes `x-request-id` with a safe identifier value, the bridge echoes it; otherwise it generates one. |
+| `traceId` | Per-run trace identifier. If the HTTP request includes `x-trace-id` with a safe identifier value, the bridge echoes it; otherwise it generates one. |
+| `answer` | Markdown answer text. In `delegated-runtime` and `hybrid`, this is returned by the configured runtime. In `evidence-only`, this is generated by the bridge and starts with `Evidence-only result:`. |
+| `orchestrationMode` | Resolved run mode: `evidence-only`, `delegated-runtime`, or `hybrid`. |
+| `citations` | Deduplicated source citations gathered from selected Knowledge Sources. |
+| `graph` | Merged graph context with `nodes` and `edges` arrays. Empty arrays are valid. |
+| `steps` | Trace steps for planning, source calls, evidence preparation, runtime call, and final artifact return. |
+| `sourceBundles` | Safe source bundle metadata gathered from `llmwiki-http` and MCP sources that expose source-bundle discovery. Empty arrays are valid. |
+| `diagnostics` | Small redacted diagnostic envelope for warning/error trace steps. Empty arrays are valid. |
+
+Trace steps include stable IDs such as `bridge-plan`, `bridge-evidence`,
+and per-source `tool-<source-id>` entries. `runtime-chat-completions` appears
+only when the resolved orchestration mode calls the configured runtime
+(`delegated-runtime` or `hybrid`); it is intentionally absent for
+`evidence-only`. Source failure steps are redacted and do not expose blocked
+private URLs.
+Successful per-source tool steps include `citationIds` in the order the bridge
+read citations from that source. They also include bounded `citationRefs`
+preview records with only safe `id`, `title`, relative `path`, and `sourceRefs`
+fields. The bridge omits local absolute paths, URL-like paths, query strings,
+fragments, credentials, and other unsafe source ref shapes from this preview.
+The step `detail` string includes a short first-citations path/title preview so
+clients can show whether pages such as `hot.md` or `index.md` were read first.
+Clients such as `llmwiki-chat` can use these fields to display evidence in
+runtime read order while preserving original markdown citation references.
+`citationRefs` are a trace preview only; the authoritative citation mapping
+remains the result artifact `citations` array.
+
+Failed or warning trace steps can include a `diagnostic` object, and the same
+objects are collected in result-level `diagnostics`. Diagnostics are intentionally
+small and factual; they do not define a large failure-code taxonomy. Fields are:
+`schemaVersion`, `severity`, `scope`, `phase`, `protocol`, `subject`,
+`retryable`, `redacted`, `observations`, `remediation`, and `message`.
+`observations` are bounded name/value facts such as `httpStatus`, `timeout`,
+`invalidJson`, `jsonRpcError`, `policy`, `sourcePolicy`, `runtimeProfile`, and
+`timeoutMs`. Raw source URLs, credentials, request headers, provider API keys,
+and upstream response bodies are omitted from diagnostics.
+
+The runtime evidence bundle sent to Hermes/DeepAgents also preserves per-source
+corpus metadata from LLMWiki context responses, including `pageCount`,
+`approvedPageCount`, `adapter`, `implementation`, `description`, and
+`limitations`. Its merged corpus summary keeps corpus page counts separate from
+the merged graph summary, so graph node counts are not treated as page counts.
+For delegated-runtime and hybrid answers, the bridge instructs the runtime to
+put markdown citation anchors next to each evidence-backed claim using
+`[n](#citation-n)`, where `n` is the 1-based index in the result artifact
+`citations` array. `citationDigest` and `sourceRefs` can help the runtime choose
+evidence but do not define citation numbering.
+If the runtime returns an answer with citations available but no valid
+`[n](#citation-n)` anchors, the bridge appends a short bounded `Evidence used:`
+line with fallback anchors that map to the same 1-based `citations` array.
+
+For `llmwiki-http` sources, the bridge attempts `GET /source-bundle` during a
+run when the URL is allowed by the configured source policy, then falls back to
+legacy `GET /manifest` if needed. For MCP sources, it attempts the
+`llmwiki_source_bundle` tool before `llmwiki_context`. Discovery failures do
+not fail the run; they appear as redacted trace steps.
+
+Successful responses are normalized into `sourceBundles` with an explicit
+allowlist: `connectionId`, `sourceId`, `bundleId`, `title`, `capabilities`,
+`adapter`, `implementation`, projection signatures/counts, raw-origin
+booleans/counts, bounded `sourceRefs` with only `id`, `label`, `type`, and
+safe `uri`, plus `sourceRefCount`. Unknown nested metadata, local path/root
+fields, locators, linked page paths, credential-like fields, URL credentials,
+and query strings are not returned.
+
+## Failure Behavior
+
+| HTTP status | Common cause |
+| --- | --- |
+| `400` | Body is not a JSON object or `query` is missing. |
+| `401` | Bridge bearer token is configured and the request is missing or has the wrong `Authorization: Bearer ...` header. |
+| `403` | Browser `Origin` is not allowed by CORS policy. |
+| `502` | Configured runtime chat-completions request failed. |
+| `500` | Unexpected bridge failure. |
+
+Per-source failures do not fail the whole request when other evidence can still
+be used. They appear as `status: "error"` entries in `steps`, and the bridge
+continues to call the runtime with surviving evidence plus source failure notes.
+Those source failure notes include the same redacted diagnostic facts that appear
+in the trace step.
+
+Fatal runtime failures keep the existing `error.code` contract, such as
+`chat_completions_failed`, and return HTTP `502`. When the bridge has already
+started a `/message:send` run, the `ErrorResponse` also includes `requestId`,
+`traceId`, any partial `steps`, and runtime `diagnostics` collected before the
+failure.
+
+## Security Notes
+
+- Keep provider API keys in the bridge process environment, not in client
+  payloads.
+- `GET /settings` serves the local guided setup UI. Step 1 saves runtime
+  connection fields through `PUT /settings/config.json`, Step 2 saves source
+  registrations through `GET/PUT /settings/sources.json`, and Step 3 verifies
+  the bridge with `POST /message:send`.
+- The agent card advertises `metadata.settingsUrl` so clients can discover the
+  local settings screen.
+- Runtime settings and advanced access/source-policy settings saved through
+  `/settings` apply live; host and port changes require a bridge restart.
+- Use `LLMWIKI_AGENT_BRIDGE_BEARER_TOKEN` for shared or non-loopback bridge
+  deployments.
+- Use `LLMWIKI_AGENT_BRIDGE_SOURCE_POLICY` and
+  `LLMWIKI_AGENT_BRIDGE_ALLOWED_SOURCE_ORIGINS` to control outbound source
+  access.
+- Do not include raw credentials, private wiki exports, or private endpoint
+  paths in `knowledgeSources`.

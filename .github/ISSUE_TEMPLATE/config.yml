@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Support routing
+    url: https://github.com/knowledge-bridge-labs/llmwiki-agent-bridge/blob/main/SUPPORT.md
+    about: Check where to ask bridge usage, runtime profile, and integration questions.
+  - name: Security vulnerability
+    url: https://github.com/knowledge-bridge-labs/llmwiki-agent-bridge/blob/main/SECURITY.md
+    about: Follow the repository security policy for suspected vulnerabilities.
+  - name: Code of Conduct contact
+    url: https://github.com/knowledge-bridge-labs/llmwiki-agent-bridge/blob/main/CODE_OF_CONDUCT.md#reporting-and-enforcement
+    about: Use this route for conduct concerns and private maintainer contact guidance.

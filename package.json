@@ -1,0 +1,66 @@
+{
+  "name": "llmwiki-agent-bridge",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Generic companion runtime bridge with Hermes, DeepAgents, and OpenAI-compatible profiles for Markdown/wiki knowledge sources.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/knowledge-bridge-labs/llmwiki-agent-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/knowledge-bridge-labs/llmwiki-agent-bridge/issues"
+  },
+  "homepage": "https://knowledge-bridge-labs.github.io/llmwiki-docs/",
+  "keywords": [
+    "llmwiki",
+    "agent-runtime",
+    "runtime-profiles",
+    "hermes",
+    "deepagents",
+    "mcp",
+    "a2a",
+    "knowledge-source",
+    "openai-compatible",
+    "rag"
+  ],
+  "main": "./src/index.mjs",
+  "exports": "./src/index.mjs",
+  "bin": {
+    "llmwiki-agent-bridge": "./bin/llmwiki-agent-bridge.mjs"
+  },
+  "files": [
+    "bin/llmwiki-agent-bridge.mjs",
+    "src/index.mjs",
+    "docs",
+    "scripts/export-openapi.mjs",
+    "examples",
+    "integrations",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "packageManager": "npm@10.9.7",
+  "engines": {
+    "node": ">=22.12",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "lint": "node --check src/index.mjs && node --check bin/llmwiki-agent-bridge.mjs && node --check test/agent-bridge.test.mjs",
+    "test": "node --test test/agent-bridge.test.mjs",
+    "check": "npm run lint && npm run contracts:check && npm test && npm run pack:dry-run",
+    "contracts:generate": "node scripts/export-openapi.mjs",
+    "contracts:check": "node scripts/export-openapi.mjs --check",
+    "pack:dry-run": "npm pack --dry-run --json --ignore-scripts",
+    "audit": "npm audit --omit=dev"
+  },
+  "dependencies": {
+    "@a2a-js/sdk": "0.3.13"
+  }
+}

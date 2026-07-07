@@ -1,0 +1,91 @@
+name: Bug report
+description: Report a reproducible problem in LLMWiki Agent Bridge.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for reproducible bridge defects. For suspected security vulnerabilities, follow SECURITY.md instead of opening a public issue.
+  - type: dropdown
+    id: runtime_profile
+    attributes:
+      label: Runtime profile
+      options:
+        - Hermes
+        - DeepAgents
+        - Generic OpenAI-compatible
+        - Multiple profiles
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: source_protocol
+    attributes:
+      label: Knowledge Source protocol
+      options:
+        - llmwiki-http
+        - MCP JSON-RPC
+        - A2A
+        - Multiple
+        - Not applicable
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: usage_mode
+    attributes:
+      label: Usage mode
+      options:
+        - CLI process
+        - Programmatic API
+        - llmwiki-chat or browser client
+        - Script or backend client
+        - Multiple usage modes
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the visible behavior, error state, or regression.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest public reproduction steps.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, Node.js version, npm version, bridge version or commit, runtime endpoint type, source policy, and whether the bridge is loopback-only or publicly bound. Do not include private URLs.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or response body
+      description: Redact credentials, bearer tokens, private endpoint URLs, private paths, raw sensitive wiki content, runtime logs, and infrastructure details.
+      render: text
+  - type: checkboxes
+    id: data_safety
+    attributes:
+      label: Data safety
+      options:
+        - label: This report does not include real credentials, tokens, private endpoint URLs, private exports, raw sensitive wiki content, or unredacted runtime logs.
+          required: true
