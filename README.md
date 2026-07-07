@@ -448,8 +448,7 @@ during migration.
 
 ## Release Status
 
-`llmwiki-agent-bridge` is prepared for public preview and is currently in
-private org staging until the public-unpublished gate passes. Source-checkout
+`llmwiki-agent-bridge` is in public source-checkout preview. Source-checkout
 usage is the supported path today. npm package-install links should be treated
 as release gates until the first package is published.
 
