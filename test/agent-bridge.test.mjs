@@ -320,7 +320,7 @@ describe('llmwiki-agent-bridge', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         sources: [
-          knowledgeSource('registered-source', 'Registered Source', 'llmwiki-http', source.url),
+          knowledgeSource('registered-source', 'Registered Source', 'llmwiki-http', `${source.url}////`),
           { ...knowledgeSource('secondary-source', 'Secondary Source', 'llmwiki-http', source.url), selected: false },
         ],
       }),
@@ -852,8 +852,13 @@ describe('llmwiki-agent-bridge', () => {
     })
     assert.equal(wrongToken.status, 401)
 
+    const emptyToken = await fetch(url, {
+      headers: { Authorization: 'Bearer     ' },
+    })
+    assert.equal(emptyToken.status, 401)
+
     const authorized = await fetch(url, {
-      headers: { Authorization: 'Bearer bridge-secret' },
+      headers: { Authorization: 'bEaReR     bridge-secret' },
     })
     const health = await authorized.json()
 
@@ -1797,7 +1802,7 @@ describe('llmwiki-agent-bridge', () => {
 
     const bridge = await startAgentBridge({
       port: 0,
-      hermesBaseUrl: `${hermes.url}/v1`,
+      hermesBaseUrl: `${hermes.url}/v1////`,
       hermesApiKey: 'test-secret',
       logger: silentLogger,
     })
@@ -1811,12 +1816,12 @@ describe('llmwiki-agent-bridge', () => {
           query: 'What is ready for release?',
           orchestrationMode: 'delegated-runtime',
           knowledgeSources: [
-            knowledgeSource('http-wiki', 'HTTP Wiki', 'llmwiki-http', httpSource.url),
+            knowledgeSource('http-wiki', 'HTTP Wiki', 'llmwiki-http', `${httpSource.url}////`),
             {
-              ...knowledgeSource('mcp-wiki', 'MCP Wiki', 'mcp', mcpSource.url),
+              ...knowledgeSource('mcp-wiki', 'MCP Wiki', 'mcp', `${mcpSource.url}////`),
               capabilities: ['llmwiki_context', 'llmwiki_source_bundle'],
             },
-            knowledgeSource('a2a-wiki', 'A2A Wiki', 'a2a', a2aSource.url),
+            knowledgeSource('a2a-wiki', 'A2A Wiki', 'a2a', `${a2aSource.url}////`),
             { ...knowledgeSource('draft', 'Draft Wiki', 'llmwiki-http', httpSource.url), status: 'unknown' },
           ],
         },
@@ -2510,6 +2515,23 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(hermesUserMessage, /tailnet-source/)
   })
 
+  it('does not expose fixture handler error details in JSON responses', async (t) => {
+    const source = await startFixtureServer(() => {
+      throw new Error('fixture stack detail with token sk-secret-fixture')
+    })
+    t.after(() => closeServer(source.server))
+
+    const response = await fetch(source.url)
+    const body = await response.json()
+    const serialized = JSON.stringify(body)
+
+    assert.equal(response.status, 500)
+    assert.equal(body.error, 'fixture handler failed')
+    assert.equal(source.errors.length, 1)
+    assert.doesNotMatch(serialized, /fixture stack detail/)
+    assert.doesNotMatch(serialized, /sk-secret-fixture/)
+  })
+
   it('rejects unlisted private HTTP source URLs in allowlist policy without leaking URLs', async (t) => {
     const originalFetch = globalThis.fetch
     const logger = recordingLogger()
@@ -2835,6 +2857,7 @@ function parseHermesEvidenceBundle(content) {
 
 async function startFixtureServer(handler) {
   const requests = []
+  const errors = []
   const server = createServer(async (request, response) => {
     const url = new URL(request.url || '/', `http://${request.headers.host}`)
     const body = request.method === 'GET' ? {} : await readJsonBody(request)
@@ -2846,8 +2869,9 @@ async function startFixtureServer(handler) {
     try {
       await handler({ request, url, body, headers, response })
     } catch (error) {
+      errors.push(error)
       writeJson(response, 500, {
-        error: error instanceof Error ? error.message : String(error),
+        error: 'fixture handler failed',
       })
     }
   })
@@ -2865,6 +2889,7 @@ async function startFixtureServer(handler) {
   return {
     server,
     requests,
+    errors,
     url: `http://127.0.0.1:${address.port}`,
   }
 }

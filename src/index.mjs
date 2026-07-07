@@ -5122,7 +5122,7 @@ function extractTextFromParts(value) {
 }
 
 function a2aAgentCardUrl(url) {
-  const clean = url.trim().replace(/\/+$/, '')
+  const clean = trimTrailingSlashes(url.trim())
   return pathName(clean).endsWith(AGENT_CARD_ROUTE)
     ? clean
     : joinUrl(clean, AGENT_CARD_ROUTE)
@@ -5172,11 +5172,11 @@ function isAllowedKnowledgeSourceFetchUrl(value, config) {
 }
 
 function normalizedHost(parsedUrl) {
-  return parsedUrl.hostname.replace(/^\[|\]$/g, '').replace(/\.+$/, '').toLowerCase()
+  return trimTrailingDots(trimOuterBrackets(parsedUrl.hostname)).toLowerCase()
 }
 
 function normalizeBindHost(host) {
-  return String(host || '').trim().replace(/^\[|\]$/g, '').replace(/\.+$/, '').toLowerCase()
+  return trimTrailingDots(trimOuterBrackets(String(host || '').trim())).toLowerCase()
 }
 
 function isLoopbackBindHost(host) {
@@ -5293,8 +5293,8 @@ function isAuthorizedBridgeRequest(request, config) {
   const authorization = Array.isArray(request.headers.authorization)
     ? request.headers.authorization[0]
     : request.headers.authorization
-  const match = /^Bearer\s+(.+)$/i.exec(authorization || '')
-  return Boolean(match && timingSafeStringEqual(match[1], config.bridgeBearerToken))
+  const token = bearerTokenFromAuthorizationHeader(authorization)
+  return Boolean(token && timingSafeStringEqual(token, config.bridgeBearerToken))
 }
 
 function timingSafeStringEqual(left, right) {
@@ -5350,25 +5350,66 @@ function normalizeSourceOriginText(value) {
 }
 
 function mcpEndpointUrl(url) {
-  const clean = url.trim().replace(/\/+$/, '')
+  const clean = trimTrailingSlashes(url.trim())
   return pathName(clean).endsWith('/mcp') ? clean : `${clean}/mcp`
 }
 
 function chatCompletionsUrl(baseUrl) {
-  const clean = baseUrl.trim().replace(/\/+$/, '')
+  const clean = trimTrailingSlashes(baseUrl.trim())
   return pathName(clean).endsWith('/chat/completions') ? clean : `${clean}/chat/completions`
 }
 
 function joinUrl(base, path) {
-  return `${base.replace(/\/+$/, '')}${path}`
+  return `${trimTrailingSlashes(base)}${path}`
 }
 
 function pathName(url) {
   try {
-    return new URL(url).pathname.replace(/\/+$/, '')
+    return trimTrailingSlashes(new URL(url).pathname)
   } catch {
-    return url.split(/[?#]/)[0].replace(/\/+$/, '')
+    return trimTrailingSlashes(textBeforeQueryOrFragment(url))
   }
+}
+
+function bearerTokenFromAuthorizationHeader(value) {
+  if (typeof value !== 'string' || value.length <= 7) return ''
+  if (value.slice(0, 6).toLowerCase() !== 'bearer') return ''
+  if (!isHttpHeaderWhitespace(value.charCodeAt(6))) return ''
+
+  let tokenStart = 7
+  while (tokenStart < value.length && isHttpHeaderWhitespace(value.charCodeAt(tokenStart))) tokenStart += 1
+  return tokenStart < value.length ? value.slice(tokenStart) : ''
+}
+
+function isHttpHeaderWhitespace(code) {
+  return code === 0x20 || code === 0x09
+}
+
+function trimTrailingSlashes(value) {
+  let end = value.length
+  while (end > 0 && value.charCodeAt(end - 1) === 0x2f) end -= 1
+  return end === value.length ? value : value.slice(0, end)
+}
+
+function trimTrailingDots(value) {
+  let end = value.length
+  while (end > 0 && value.charCodeAt(end - 1) === 0x2e) end -= 1
+  return end === value.length ? value : value.slice(0, end)
+}
+
+function trimOuterBrackets(value) {
+  const start = value[0] === '[' ? 1 : 0
+  const end = value.length > start && value[value.length - 1] === ']' ? value.length - 1 : value.length
+  return start === 0 && end === value.length ? value : value.slice(start, end)
+}
+
+function textBeforeQueryOrFragment(value) {
+  const queryIndex = value.indexOf('?')
+  const fragmentIndex = value.indexOf('#')
+  let end = value.length
+  if (queryIndex >= 0 && queryIndex < end) end = queryIndex
+  if (fragmentIndex >= 0 && fragmentIndex < end) end = fragmentIndex
+  return value.slice(0, end)
 }
 
 function step(input) {
