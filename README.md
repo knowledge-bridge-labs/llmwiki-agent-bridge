@@ -23,10 +23,16 @@ Use it when:
 Skip it when your agent or script can call `llmwiki-serve` directly and manage
 its own answer synthesis.
 
-[Quick Start](#quick-start) | [Choose a Path](#choose-a-path) | [Runtime Profiles](./docs/runtime-profiles.md) | [Message Contract](./docs/message-send-contract.md) | [OpenAPI](./docs/openapi.json) | [Integrations](./integrations/README.md) | [Examples](./examples/README.md) | [Docs portal](https://knowledge-bridge-labs.github.io/llmwiki-docs/) | [Contributing](./CONTRIBUTING.md) | [Security](./SECURITY.md) | [Support](./SUPPORT.md) | [Changelog](./CHANGELOG.md)
+[Quick Start](#quick-start) | [Choose a Path](#choose-a-path) | [Demo](https://knowledge-bridge-labs.github.io/llmwiki-docs/demo) | [Runtime Profiles](./docs/runtime-profiles.md) | [Message Contract](./docs/message-send-contract.md) | [OpenAPI](./docs/openapi.json) | [Integrations](./integrations/README.md) | [Examples](./examples/README.md) | [Docs portal](https://knowledge-bridge-labs.github.io/llmwiki-docs/) | [Contributing](./CONTRIBUTING.md) | [Security](./SECURITY.md) | [Support](./SUPPORT.md) | [Changelog](./CHANGELOG.md)
 
 > Public-preview note: source-checkout usage is the supported first-run path.
 > Package-install commands apply after the first npm release is published.
+
+For a visual first-run walkthrough, see the
+[docs demo](https://knowledge-bridge-labs.github.io/llmwiki-docs/demo). It
+shows the toolchain boundary: upstream workflows create compatible
+Markdown/wiki files, `llmwiki-serve` projects them read-only as Knowledge
+Sources, and the optional bridge can query selected served sources together.
 
 It is not a Hermes-only bridge. Hermes is one supported runtime profile beside
 `generic` and `deepagents`; all profiles use the same message contract and
