@@ -1570,6 +1570,142 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(serialized, /\/private/)
   })
 
+  it('bounds evidence-only multi-source fan-out without changing source order or failure semantics', async (t) => {
+    const delayMs = 180
+    const sourceIds = ['alpha-wiki', 'beta-wiki', 'gamma-wiki', 'delta-wiki', 'epsilon-wiki', 'zeta-wiki']
+    const failingSourceId = 'beta-wiki'
+    let activeQueries = 0
+    let maxActiveQueries = 0
+
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      const [sourceId, action] = url.pathname.split('/').filter(Boolean)
+      assert(sourceIds.includes(sourceId))
+
+      if (action === 'source-bundle') {
+        assert.equal(request.method, 'GET')
+        writeJson(response, 200, {
+          source_id: `${sourceId}-bundle-source`,
+          bundle_id: `${sourceId}-bundle`,
+          title: `${sourceId} Bundle`,
+          capabilities: ['llmwiki_context'],
+        })
+        return
+      }
+
+      if (action === 'search') {
+        assert.equal(request.method, 'POST')
+        writeJson(response, 200, { results: [] })
+        return
+      }
+
+      assert.equal(action, 'query')
+      assert.equal(request.method, 'POST')
+      activeQueries += 1
+      maxActiveQueries = Math.max(maxActiveQueries, activeQueries)
+      try {
+        await delay(delayMs)
+      } finally {
+        activeQueries -= 1
+      }
+
+      if (sourceId === failingSourceId) {
+        writeJson(response, 500, { error: 'delayed source secret sk-secret-fanout' })
+        return
+      }
+
+      writeJson(response, 200, {
+        wiki_title: `${sourceId} Wiki`,
+        evidence: [
+          {
+            page_id: `${sourceId}-page`,
+            title: `${sourceId} Evidence`,
+            path: `${sourceId}.md`,
+            snippet: `Evidence from ${sourceId} for ${body.query}.`,
+          },
+        ],
+        graph: {
+          nodes: [{ id: `page:${sourceId}`, label: sourceId }],
+          edges: [],
+        },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const started = performance.now()
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'fanout latency failure semantics',
+          orchestrationMode: 'evidence-only',
+          knowledgeSources: sourceIds.map((sourceId) => knowledgeSource(
+            sourceId,
+            sourceId.replace(/-/g, ' '),
+            'llmwiki-http',
+            `${source.url}/${sourceId}`,
+          )),
+        },
+      }),
+    })
+    const elapsedMs = performance.now() - started
+    const a2a = await response.json()
+    const artifact = a2a.artifacts[0].parts[0].data
+    const successfulSourceIds = sourceIds.filter((sourceId) => sourceId !== failingSourceId)
+    const serialized = JSON.stringify(artifact)
+
+    assert.equal(response.status, 200)
+    assert(maxActiveQueries > 1)
+    assert(maxActiveQueries <= 4)
+    assert(
+      elapsedMs < delayMs * sourceIds.length * 0.75,
+      `expected parallel fan-out below serial latency; elapsed ${Math.round(elapsedMs)}ms`,
+    )
+    assert.equal(source.requests.filter((item) => item.url.pathname.endsWith('/source-bundle')).length, sourceIds.length)
+    assert.equal(source.requests.filter((item) => item.url.pathname.endsWith('/query')).length, sourceIds.length)
+    assert.match(artifact.answer, /Evidence-only result: the bridge gathered 5 citation\(s\) from 5 Knowledge Source\(s\)/)
+    assert.match(artifact.answer, /Source failures: 1 selected source\(s\) could not be queried/)
+    assert.equal(artifact.steps.some((step) => step.id === 'runtime-chat-completions'), false)
+    assert.deepEqual(artifact.citations.map((citation) => citation.id), successfulSourceIds.map((sourceId) => (
+      `${sourceId}:${sourceId}-page`
+    )))
+    assert.deepEqual(artifact.graph.nodes.map((node) => node.id), successfulSourceIds.map((sourceId) => (
+      `${sourceId}:page:${sourceId}`
+    )))
+    assert.deepEqual(artifact.sourceBundles.map((bundle) => bundle.connectionId), sourceIds)
+    assert.deepEqual(artifact.steps.map((item) => item.id), [
+      'bridge-plan',
+      ...sourceIds.flatMap((sourceId) => [
+        `tool-${testSafeId(sourceId)}`,
+        `source-manifest-${testSafeId(sourceId)}`,
+      ]),
+      'bridge-evidence',
+      'bridge-evidence-only-answer',
+      'bridge-final-answer',
+    ])
+
+    const failedStep = artifact.steps.find((step) => step.id === `tool-${testSafeId(failingSourceId)}`)
+    assert.equal(failedStep.status, 'error')
+    assert.equal(failedStep.error, 'Source query failed.')
+    assert.equal(failedStep.diagnostic.schemaVersion, 'llmwiki.agent-bridge.diagnostic.v1')
+    assert.equal(failedStep.diagnostic.scope, 'source')
+    assert.equal(failedStep.diagnostic.phase, 'query')
+    assert.equal(failedStep.diagnostic.protocol, 'llmwiki-http')
+    assert.equal(failedStep.diagnostic.subject, failingSourceId)
+    assert.equal(failedStep.diagnostic.redacted, true)
+    assert.equal(observationValue(failedStep.diagnostic, 'httpStatus'), '500')
+    assert.deepEqual(artifact.diagnostics, [failedStep.diagnostic])
+    assert.doesNotMatch(serialized, /sk-secret-fanout/)
+    assert.doesNotMatch(serialized, /delayed source secret/)
+  })
+
   it('falls back to legacy manifest when source-bundle response lacks bundle metadata', async (t) => {
     const source = await startFixtureServer(async ({ request, url, body, response }) => {
       if (url.pathname === '/source-bundle') {
@@ -2823,6 +2959,14 @@ function expectedFallbackAnswer(answer, citationCount) {
   const omittedCount = citationCount - anchorCount
   const omittedText = omittedCount > 0 ? ` +${omittedCount} more` : ''
   return `${answer.trimEnd()}\n\nEvidence used: ${anchors.join(' ')}${omittedText}`
+}
+
+async function delay(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function testSafeId(value) {
+  return String(value || 'source').replace(/[^a-zA-Z0-9]+/g, '_') || 'source'
 }
 
 function recordingLogger() {

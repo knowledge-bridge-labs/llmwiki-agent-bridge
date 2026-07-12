@@ -69,6 +69,12 @@ The bridge queries only descriptors where `status` is `ready`, `selected` is
 not `false`, `protocol` is supported, and `url` passes the configured source URL
 policy.
 
+When multiple ready sources are selected, the bridge gathers source evidence
+with bounded internal concurrency. It then normalizes citations, graph data,
+source bundles, diagnostics, trace steps, and per-source failures back to the
+selected source order. Clients should preserve the returned order rather than
+sorting by completion time.
+
 ## Protocol URL Meaning
 
 | Protocol | URL expectation | Bridge behavior |

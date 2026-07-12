@@ -282,6 +282,10 @@ Requests may supply `knowledgeSources` directly, or omit them and use the
 bridge's registered Knowledge Sources. Register sources in Step 2 of
 `/settings` or by calling `PUT /settings/sources.json` with a `sources` array.
 Multiple ready, selected sources can be registered and queried in one run.
+Source calls are bounded internally rather than sent with unbounded parallelism.
+The returned artifact is normalized back to the selected source order for
+citations, graph data, source bundles, trace steps, diagnostics, and per-source
+failures.
 
 ```mermaid
 flowchart LR

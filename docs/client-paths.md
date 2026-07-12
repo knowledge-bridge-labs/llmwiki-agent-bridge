@@ -42,6 +42,8 @@ Benefits:
 - Tool-oriented clients can use `tools/list` and `tools/call` without losing the `llmwiki_agent_result` artifact.
 - Runtime profiles for Hermes, DeepAgents, and generic OpenAI-compatible endpoints.
 - Consistent answer, citation, graph, and trace artifact shape.
+- Bounded source fan-out for multiple selected sources while preserving
+  selected-source ordering in the returned artifact.
 
 Tradeoff:
 
