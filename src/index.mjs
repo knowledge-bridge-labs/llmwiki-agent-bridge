@@ -11,6 +11,7 @@ const DEFAULT_PORT = 8788
 const DEFAULT_AGENT_BASE_URL = 'http://127.0.0.1:8642/v1'
 const DEFAULT_AGENT_MODEL = 'hermes-agent'
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
+const DEFAULT_SOURCE_FAN_OUT_CONCURRENCY = 4
 const DEFAULT_SOURCE_POLICY = 'private-http'
 const DEFAULT_ORCHESTRATION_MODE = 'delegated-runtime'
 const DEFAULT_RUNTIME_PROFILE = 'hermes'
@@ -1016,52 +1017,22 @@ async function runA2aMessage(body, config, runContextInput = {}) {
   const sourceFailures = []
   const sourceBundles = []
 
-  for (const source of readySources) {
-    const toolStep = step({
-      id: `tool-${safeId(source.id)}`,
-      label: `Call ${source.name}`,
-      status: 'running',
-      connectionId: source.id,
-      toolName: toolNameFor(source),
-      detail: `Calling selected ${source.protocol} Knowledge Source.`,
-      parentId: 'bridge-plan',
-    })
-    steps.push(toolStep)
-    const started = performance.now()
+  const sourceOutcomes = await mapWithConcurrency(
+    readySources,
+    DEFAULT_SOURCE_FAN_OUT_CONCURRENCY,
+    (source) => gatherSourceEvidence(source, query, config),
+  )
 
-    try {
-      const sourceBundle = await readSourceBundle(source, config, steps, toolStep.id, diagnostics)
-      if (sourceBundle) sourceBundles.push(sourceBundle)
-      const payload = await queryKnowledgeSource(source, query, config)
-      const normalized = normalizeKnowledgeResult(source, payload)
-      sourceResults.push({ source, result: normalized, sourceBundle })
-      const citationRefs = traceCitationRefs(normalized.citations)
-      replaceStep(steps, {
-        ...toolStep,
-        status: 'done',
-        detail: sourceStepDetail(normalized, citationRefs),
-        citationIds: normalized.citations.map((citation) => citation.id),
-        citationRefs,
-        latencyMs: Math.round(performance.now() - started),
-      })
-    } catch (error) {
-      config.logger.error(redactedLogLine(`source ${source.id} failed`, error))
-      const diagnostic = sourceQueryDiagnostic(source, error, config)
-      diagnostics.push(diagnostic)
-      sourceFailures.push({
-        source,
-        error: 'Source query failed.',
-        diagnostic,
-      })
-      replaceStep(steps, {
-        ...toolStep,
-        status: 'error',
-        detail: `${source.name} could not be queried by the bridge.`,
-        error: 'Source query failed.',
-        diagnostic,
-        latencyMs: Math.round(performance.now() - started),
-      })
-    }
+  for (const outcome of sourceOutcomes) {
+    steps.push(...outcome.steps)
+    diagnostics.push(...outcome.diagnostics)
+    if (outcome.sourceBundle) sourceBundles.push(outcome.sourceBundle)
+    if (outcome.result) sourceResults.push({
+      source: outcome.source,
+      result: outcome.result,
+      sourceBundle: outcome.sourceBundle,
+    })
+    if (outcome.failure) sourceFailures.push(outcome.failure)
   }
 
   const citations = dedupeCitations(sourceResults.flatMap((item) => item.result.citations))
@@ -1185,6 +1156,80 @@ async function runA2aMessage(body, config, runContextInput = {}) {
       },
     ],
   }
+}
+
+async function gatherSourceEvidence(source, query, config) {
+  const diagnostics = []
+  const steps = []
+  const toolStep = step({
+    id: `tool-${safeId(source.id)}`,
+    label: `Call ${source.name}`,
+    status: 'running',
+    connectionId: source.id,
+    toolName: toolNameFor(source),
+    detail: `Calling selected ${source.protocol} Knowledge Source.`,
+    parentId: 'bridge-plan',
+  })
+  steps.push(toolStep)
+  const started = performance.now()
+  let sourceBundle = null
+
+  try {
+    sourceBundle = await readSourceBundle(source, config, steps, toolStep.id, diagnostics)
+    const payload = await queryKnowledgeSource(source, query, config)
+    const result = normalizeKnowledgeResult(source, payload)
+    const citationRefs = traceCitationRefs(result.citations)
+    replaceStep(steps, {
+      ...toolStep,
+      status: 'done',
+      detail: sourceStepDetail(result, citationRefs),
+      citationIds: result.citations.map((citation) => citation.id),
+      citationRefs,
+      latencyMs: Math.round(performance.now() - started),
+    })
+    return { source, result, sourceBundle, steps, diagnostics }
+  } catch (error) {
+    config.logger.error(redactedLogLine(`source ${source.id} failed`, error))
+    const diagnostic = sourceQueryDiagnostic(source, error, config)
+    diagnostics.push(diagnostic)
+    replaceStep(steps, {
+      ...toolStep,
+      status: 'error',
+      detail: `${source.name} could not be queried by the bridge.`,
+      error: 'Source query failed.',
+      diagnostic,
+      latencyMs: Math.round(performance.now() - started),
+    })
+    return {
+      source,
+      sourceBundle,
+      steps,
+      diagnostics,
+      failure: {
+        source,
+        error: 'Source query failed.',
+        diagnostic,
+      },
+    }
+  }
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  if (!items.length) return []
+
+  const limit = Math.max(1, Math.min(items.length, Math.floor(concurrency) || 1))
+  const results = new Array(items.length)
+  let nextIndex = 0
+
+  await Promise.all(Array.from({ length: limit }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex
+      nextIndex += 1
+      results[index] = await mapper(items[index], index)
+    }
+  }))
+
+  return results
 }
 
 async function handleMcpJsonRpc(body, config) {
