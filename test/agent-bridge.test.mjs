@@ -2097,7 +2097,7 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(artifact.sourceBundles[0].bundleId, 'legacy-bundle')
   })
 
-  it('queries HTTP, MCP, and A2A sources and includes safe MCP source bundles before sending source evidence to chat completions', async (t) => {
+  it('queries HTTP, MCP, and A2A sources and keeps source bundles out of chat completions evidence', async (t) => {
     const httpSource = await startFixtureServer(async ({ request, url, body, response }) => {
       assert.equal(request.method, 'POST')
       if (url.pathname === '/search') {
@@ -2286,8 +2286,6 @@ describe('llmwiki-agent-bridge', () => {
     const hermesUserMessage = hermes.lastBody.messages.find((message) => message.role === 'user').content
     const evidenceBundle = parseHermesEvidenceBundle(hermesUserMessage)
     const mcpArtifactBundle = artifact.sourceBundles.find((bundle) => bundle.connectionId === 'mcp-wiki')
-    const mcpRuntimeBundle = evidenceBundle.sourceBundles.find((bundle) => bundle.connectionId === 'mcp-wiki')
-    const mcpSourceRuntimeBundle = evidenceBundle.sources.find((source) => source.id === 'mcp-wiki').sourceBundle
     const mcpToolCalls = mcpSource.requests.map((item) => item.body.params?.name)
 
     assert.equal(response.status, 200)
@@ -2304,6 +2302,8 @@ describe('llmwiki-agent-bridge', () => {
     assert.match(hermesUserMessage, /MCP evidence/)
     assert.match(hermesUserMessage, /A2A evidence/)
     assert.match(hermesUserMessage, /Release Runbook/)
+    assert.equal(Object.hasOwn(evidenceBundle, 'sourceBundles'), false)
+    assert.equal(evidenceBundle.sources.some((source) => Object.hasOwn(source, 'sourceBundle')), false)
     assert.deepEqual(mcpArtifactBundle, {
       connectionId: 'mcp-wiki',
       sourceId: 'mcp-bundle-source',
@@ -2334,8 +2334,8 @@ describe('llmwiki-agent-bridge', () => {
       ],
       sourceRefCount: 1,
     })
-    assert.deepEqual(mcpRuntimeBundle, mcpArtifactBundle)
-    assert.deepEqual(mcpSourceRuntimeBundle, mcpArtifactBundle)
+    assert.doesNotMatch(hermesUserMessage, /mcp-bundle-source/)
+    assert.doesNotMatch(hermesUserMessage, /mcp-bundle/)
     assert.doesNotMatch(hermesUserMessage, /mcp-workspace/)
     assert.doesNotMatch(hermesUserMessage, /mcp-root/)
     assert.doesNotMatch(hermesUserMessage, /mcp-private\.md/)
@@ -2618,10 +2618,12 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(sourceEvidence.adapter, 'obsidian')
     assert.equal(sourceEvidence.implementation, 'Obsidian vault')
     assert.equal(sourceEvidence.description, 'Large approved corpus with a bounded graph projection.')
-    assert.equal(sourceEvidence.graph.nodes.length, 40)
+    assert.deepEqual(sourceEvidence.graphSummary, { nodeCount: 120, edgeCount: 0 })
     assert.equal(evidenceBundle.mergedGraphSummary.nodeCount, 120)
     assert.equal(evidenceBundle.mergedGraphSummary.corpusPageCount, 1600)
     assert.equal(evidenceBundle.mergedGraphSummary.corpusApprovedPageCount, 1500)
+    assert.equal(Object.hasOwn(evidenceBundle.mergedGraphSummary, 'sampleNodes'), false)
+    assert.equal(Object.hasOwn(evidenceBundle.mergedGraphSummary, 'sampleEdges'), false)
     assert.equal(evidenceBundle.mergedCorpusSummary.pageCount, 1600)
     assert.equal(evidenceBundle.mergedCorpusSummary.approvedPageCount, 1500)
     assert.equal(evidenceBundle.mergedCorpusSummary.sources[0].approvedPageCount, 1500)
@@ -2716,15 +2718,13 @@ describe('llmwiki-agent-bridge', () => {
       'protocol-wiki:protocol-overview',
       'protocol-wiki:adr-protocol-layer',
     ])
-    assert.deepEqual(evidenceBundle.sources[0].citations.map((citation) => citation.id), [
+    assert.deepEqual(evidenceBundle.sources[0].citationIds, [
       'protocol-wiki:protocol-overview',
       'protocol-wiki:adr-protocol-layer',
     ])
-    assert.equal(evidenceBundle.sources[0].orientation[0].title, 'Protocol Map')
+    assert.equal(evidenceBundle.sources[0].orientationDigest[0].title, 'Protocol Map')
     assert.deepEqual(evidenceBundle.sources[0].limitations, ['Primary query did not include all ADRs.'])
-    assert.deepEqual(evidenceBundle.sources[0].graph.nodes.map((node) => node.id), [
-      'protocol-wiki:page:protocol-overview',
-    ])
+    assert.deepEqual(evidenceBundle.sources[0].graphSummary, { nodeCount: 1, edgeCount: 0 })
   })
 
   it('deduplicates llmwiki-http search augmentation citations', async (t) => {
@@ -2816,10 +2816,149 @@ describe('llmwiki-agent-bridge', () => {
       'dup-wiki:adr-protocol-layer',
       'dup-wiki:supplement',
     ])
-    assert.deepEqual(evidenceBundle.sources[0].citations.map((citation) => citation.id), [
+    assert.deepEqual(evidenceBundle.sources[0].citationIds, [
       'dup-wiki:adr-protocol-layer',
       'dup-wiki:supplement',
     ])
+  })
+
+  it('builds cache-friendly runtime messages with stable instructions and compact evidence before the question', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      if (request.method === 'GET' && url.pathname === '/source-bundle') {
+        writeJson(response, 200, {
+          source_id: 'prompt-source',
+          bundle_id: 'runtime-bundle-should-stay-out',
+          title: 'Runtime Bundle Should Stay Out',
+          projection: {
+            signature: 'sha256:prompt-shaping',
+            page_count: 4,
+            approved_page_count: 4,
+          },
+        })
+        return
+      }
+
+      assert.equal(request.method, 'POST')
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+
+      assert.equal(url.pathname, '/query')
+      const variant = body.query.includes('alpha') ? 'alpha' : 'beta'
+      const title = variant === 'alpha' ? 'Alpha Evidence' : 'Beta Evidence'
+      writeJson(response, 200, {
+        wiki_title: 'Prompt Shape Wiki',
+        description: 'Compact runtime prompt fixture.',
+        page_count: 4,
+        approved_page_count: 4,
+        orientation: [{ title: 'Prompt Shape Index', role: 'index', snippet: 'Start with the compact prompt map.' }],
+        evidence: [
+          {
+            page_id: 'shared',
+            title: 'Shared Runtime Citation',
+            path: 'shared.md',
+            snippet: 'Shared evidence stays in the top-level citation list.',
+            source_refs: ['SHARED-1'],
+          },
+          {
+            page_id: variant,
+            title,
+            path: `${variant}.md`,
+            snippet: `${title} supports the runtime answer.`,
+            source_refs: [variant.toUpperCase()],
+          },
+        ],
+        graph: {
+          nodes: [{ id: `private-graph-node-${variant}`, label: 'Private Graph Node', kind: 'topic' }],
+          edges: [],
+        },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const runtimeBodies = []
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      runtimeBodies.push(body)
+      const label = runtimeBodies.length === 1 ? 'Alpha' : 'Beta'
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: `${label} runtime answer. [1](#citation-1)` } }],
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    async function sendPromptShapeRequest(query) {
+      const response = await fetch(`${bridge.url}/message:send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          data: {
+            query,
+            knowledgeSources: [
+              knowledgeSource('prompt-wiki', 'Prompt Wiki', 'llmwiki-http', source.url),
+            ],
+          },
+        }),
+      })
+      const a2a = await response.json()
+      assert.equal(response.status, 200)
+      return a2a.artifacts[0].parts[0].data
+    }
+
+    const firstArtifact = await sendPromptShapeRequest('What does alpha evidence say?')
+    const secondArtifact = await sendPromptShapeRequest('What does beta evidence say?')
+    const [firstBody, secondBody] = runtimeBodies
+    const firstEvidenceMessage = firstBody.messages[1].content
+    const secondEvidenceMessage = secondBody.messages[1].content
+    const firstQuestionMessage = firstBody.messages[2].content
+    const secondQuestionMessage = secondBody.messages[2].content
+    const firstBundle = parseHermesEvidenceBundle(firstEvidenceMessage)
+    const secondBundle = parseHermesEvidenceBundle(secondEvidenceMessage)
+
+    assert.equal(runtimeBodies.length, 2)
+    assert.deepEqual(firstBody.messages.map((message) => message.role), ['system', 'user', 'user'])
+    assert.deepEqual(secondBody.messages.map((message) => message.role), ['system', 'user', 'user'])
+    assert.equal(firstBody.messages[0].content, secondBody.messages[0].content)
+    assert.match(firstBody.messages[0].content, /\[n\]\(#citation-n\)/)
+    assert.equal(firstQuestionMessage, '# User question\nWhat does alpha evidence say?')
+    assert.equal(secondQuestionMessage, '# User question\nWhat does beta evidence say?')
+    assert.equal(firstEvidenceMessage.includes('What does alpha evidence say?'), false)
+    assert.equal(secondEvidenceMessage.includes('What does beta evidence say?'), false)
+    assert(firstBody.messages.findIndex((message) => message.content.includes('# User question')) > firstBody.messages.findIndex((message) => message.content.includes('# LLMWiki evidence bundle')))
+    assert.deepEqual(Object.keys(firstBundle), [
+      'schemaVersion',
+      'contract',
+      'citationDigest',
+      'citations',
+      'sources',
+      'sourceFailures',
+      'mergedGraphSummary',
+      'mergedCorpusSummary',
+      'citationCount',
+    ])
+    assert.deepEqual(Object.keys(secondBundle), Object.keys(firstBundle))
+    assert.equal(firstBundle.schemaVersion, 'llmwiki.agent-bridge.runtime-evidence.v1')
+    assert.deepEqual(Object.keys(firstBundle.contract), ['citationAnchors', 'citationNumbering', 'evidenceScope'])
+    assert.deepEqual(secondBundle.contract, firstBundle.contract)
+    assert.deepEqual(firstBundle.citations.map((citation) => citation.id), firstArtifact.citations.map((citation) => citation.id))
+    assert.deepEqual(secondBundle.citations.map((citation) => citation.id), secondArtifact.citations.map((citation) => citation.id))
+    assert.equal(firstBundle.sources[0].citationIds[0], firstBundle.citations[0].id)
+    assert.equal(secondBundle.sources[0].citationIds[0], secondBundle.citations[0].id)
+    assert.equal(Object.hasOwn(firstBundle, 'sourceBundles'), false)
+    assert.equal(firstBundle.sources.some((item) => Object.hasOwn(item, 'sourceBundle')), false)
+    assert.doesNotMatch(firstEvidenceMessage, /Runtime Bundle Should Stay Out/)
+    assert.doesNotMatch(firstEvidenceMessage, /runtime-bundle-should-stay-out/)
+    assert.doesNotMatch(firstEvidenceMessage, /private-graph-node-alpha/)
+    assert.deepEqual(firstBundle.sources[0].graphSummary, { nodeCount: 1, edgeCount: 0 })
+    assert.equal(firstArtifact.answer, 'Alpha runtime answer. [1](#citation-1)')
+    assert.equal(secondArtifact.answer, 'Beta runtime answer. [1](#citation-1)')
   })
 
   it('ranks query-relevant citations first in the chat completions evidence digest', async (t) => {
@@ -2891,7 +3030,7 @@ describe('llmwiki-agent-bridge', () => {
       'adr-wiki:release-notes',
       'adr-wiki:adr-0042',
     ])
-    assert.deepEqual(evidenceBundle.sources[0].citations.map((citation) => citation.id), [
+    assert.deepEqual(evidenceBundle.sources[0].citationIds, [
       'adr-wiki:release-notes',
       'adr-wiki:adr-0042',
     ])
