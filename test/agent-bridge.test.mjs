@@ -2822,6 +2822,260 @@ describe('llmwiki-agent-bridge', () => {
     ])
   })
 
+  it('adds compact exact-read fallback citations from search hits without prompt body bloat', async (t) => {
+    const fullPageTail = 'FULL_PAGE_TAIL_SHOULD_NOT_APPEAR'
+    const fullPageText = `Exact read fallback evidence should come from the page body. ${'A'.repeat(420)} ${fullPageTail}`
+    const source = await startFixtureServer(async ({ request, url, response }) => {
+      if (request.method === 'GET' && url.pathname === '/read/exact-read-fallback') {
+        writeJson(response, 200, {
+          id: 'exact-read-fallback',
+          title: 'Exact Read Fallback',
+          path: 'docs/exact-read-fallback.md',
+          text: fullPageText,
+          source_refs: ['READ-SRC'],
+        })
+        return
+      }
+
+      assert.equal(request.method, 'POST')
+      if (url.pathname === '/search') {
+        writeJson(response, 200, {
+          results: [
+            {
+              page_id: 'exact-read-fallback',
+              title: 'Search Exact Read Fallback',
+              path: 'docs/exact-read-fallback.md',
+              snippet: 'Search-only snippet should be replaced by the compact read excerpt.',
+              source_refs: ['SEARCH-SRC'],
+            },
+          ],
+        })
+        return
+      }
+
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        wiki_title: 'Exact Read Wiki',
+        answerable: false,
+        evidence: [],
+        limitations: ['Primary query returned no exact evidence.'],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      runtime.lastBody = body
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'Exact-read answer.' } }],
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'exact read fallback',
+          knowledgeSources: [
+            knowledgeSource('exact-wiki', 'Exact Wiki', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts[0].parts[0].data
+    const evidenceMessage = runtime.lastBody.messages[1].content
+    const evidenceBundle = parseHermesEvidenceBundle(evidenceMessage)
+    const fallbackStep = artifact.steps.find((item) => item.id === 'source-exact-read-exact_wiki')
+
+    assert.equal(response.status, 200)
+    assert.equal(source.requests.filter((item) => item.url.pathname.startsWith('/read/')).length, 1)
+    assert.equal(artifact.answer, expectedFallbackAnswer('Exact-read answer.', 1))
+    assert.deepEqual(artifact.citations.map((citation) => citation.id), ['exact-wiki:exact-read-fallback'])
+    assert.equal(artifact.citations[0].sourceRefs[0], 'READ-SRC')
+    assert.match(artifact.citations[0].snippet, /^Exact read fallback evidence/)
+    assert(artifact.citations[0].snippet.length <= 320)
+    assert.doesNotMatch(JSON.stringify(artifact), new RegExp(fullPageTail))
+    assert.doesNotMatch(evidenceMessage, new RegExp(fullPageTail))
+    assert.deepEqual(evidenceBundle.citations.map((citation) => citation.id), ['exact-wiki:exact-read-fallback'])
+    assert.deepEqual(evidenceBundle.sources[0].citationIds, ['exact-wiki:exact-read-fallback'])
+    assert.match(fallbackStep.detail, /searched 1 search hit\(s\), read 1 page\(s\), skipped 0 hit\(s\), 0 warning\(s\)/)
+  })
+
+  it('continues with search evidence and warning diagnostics when exact-read fallback fails', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, response }) => {
+      if (request.method === 'GET' && url.pathname === '/read/missing-exact') {
+        writeJson(response, 500, { error: 'read failed' })
+        return
+      }
+
+      assert.equal(request.method, 'POST')
+      if (url.pathname === '/search') {
+        writeJson(response, 200, {
+          results: [
+            {
+              page_id: 'missing-exact',
+              title: 'Missing Exact Page',
+              path: 'private/missing-exact.md',
+              snippet: 'Search evidence remains available when exact read fails.',
+            },
+          ],
+        })
+        return
+      }
+
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        wiki_title: 'Read Failure Wiki',
+        answerable: false,
+        evidence: [],
+        limitations: ['Primary query returned no exact evidence.'],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      runtime.lastBody = body
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'Read failure answer.' } }],
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'exact read failure',
+          knowledgeSources: [
+            knowledgeSource('read-failure', 'Read Failure', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts[0].parts[0].data
+    const fallbackStep = artifact.steps.find((item) => item.id === 'source-exact-read-read_failure')
+    const diagnostic = artifact.diagnostics.find((item) => item.phase === 'exact-read-fallback')
+    const diagnosticText = JSON.stringify(diagnostic)
+
+    assert.equal(response.status, 200)
+    assert.equal(artifact.answer, expectedFallbackAnswer('Read failure answer.', 1))
+    assert.deepEqual(artifact.citations.map((citation) => citation.id), ['read-failure:missing-exact'])
+    assert.match(artifact.citations[0].snippet, /Search evidence remains available/)
+    assert.equal(diagnostic.severity, 'warning')
+    assert.equal(diagnostic.protocol, 'llmwiki-http')
+    assert.match(fallbackStep.detail, /searched 1 search hit\(s\), read 0 page\(s\), skipped 0 hit\(s\), 1 warning\(s\)/)
+    assert.equal(fallbackStep.diagnostic.phase, 'exact-read-fallback')
+    assert.doesNotMatch(fallbackStep.detail, /missing-exact|private|http:\/\//)
+    assert.doesNotMatch(diagnosticText, /private\/missing-exact|http:\/\/127\.0\.0\.1/)
+  })
+
+  it('caps exact-read fallback calls while preserving citation order', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, response }) => {
+      if (request.method === 'GET' && url.pathname.startsWith('/read/')) {
+        const pageId = decodeURIComponent(url.pathname.slice('/read/'.length))
+        writeJson(response, 200, {
+          id: pageId,
+          title: `Read ${pageId}`,
+          path: `docs/${pageId}.md`,
+          text: `Read excerpt for ${pageId}. ${'B'.repeat(380)} TAIL-${pageId}`,
+        })
+        return
+      }
+
+      assert.equal(request.method, 'POST')
+      if (url.pathname === '/search') {
+        writeJson(response, 200, {
+          results: [1, 2, 3, 4].map((index) => ({
+            page_id: `cap-${index}`,
+            title: `Cap ${index}`,
+            path: `docs/cap-${index}.md`,
+            snippet: `Search snippet for cap-${index}.`,
+          })),
+        })
+        return
+      }
+
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        wiki_title: 'Cap Wiki',
+        answerable: false,
+        evidence: [],
+        limitations: ['Primary query returned no exact evidence.'],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      runtime.lastBody = body
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'Cap answer. [1](#citation-1)' } }],
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'exact read cap',
+          knowledgeSources: [
+            knowledgeSource('cap-wiki', 'Cap Wiki', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts[0].parts[0].data
+    const evidenceBundle = parseHermesEvidenceBundle(runtime.lastBody.messages[1].content)
+    const readPaths = source.requests
+      .filter((item) => item.url.pathname.startsWith('/read/'))
+      .map((item) => item.url.pathname)
+    const fallbackStep = artifact.steps.find((item) => item.id === 'source-exact-read-cap_wiki')
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(readPaths, ['/read/cap-1', '/read/cap-2'])
+    assert.deepEqual(artifact.citations.map((citation) => citation.id), [
+      'cap-wiki:cap-1',
+      'cap-wiki:cap-2',
+      'cap-wiki:cap-3',
+      'cap-wiki:cap-4',
+    ])
+    assert.deepEqual(evidenceBundle.sources[0].citationIds, artifact.citations.map((citation) => citation.id))
+    assert.match(artifact.citations[0].snippet, /^Read excerpt for cap-1/)
+    assert.match(artifact.citations[1].snippet, /^Read excerpt for cap-2/)
+    assert.equal(artifact.citations[2].snippet, 'Search snippet for cap-3.')
+    assert.match(fallbackStep.detail, /searched 4 search hit\(s\), read 2 page\(s\), skipped 2 hit\(s\), 0 warning\(s\)/)
+  })
+
   it('builds cache-friendly runtime messages with stable instructions and compact evidence before the question', async (t) => {
     const source = await startFixtureServer(async ({ request, url, body, response }) => {
       if (request.method === 'GET' && url.pathname === '/source-bundle') {
