@@ -75,6 +75,15 @@ source bundles, diagnostics, trace steps, and per-source failures back to the
 selected source order. Clients should preserve the returned order rather than
 sorting by completion time.
 
+Operators can opt in to a bounded in-memory evidence cache with
+`LLMWIKI_AGENT_BRIDGE_EVIDENCE_CACHE_TTL_MS`. The default `0` disables caching.
+When enabled, the bridge caches only successful normalized per-source evidence
+and safe source-bundle metadata before runtime synthesis. It does not cache
+final runtime answers. Cache trace detail reports safe hit, miss, expired,
+disabled, and eviction counts without exposing cache keys or source URLs.
+Cache keys are internal and use a hash of the normalized source URL rather than
+the raw descriptor URL.
+
 ## Protocol URL Meaning
 
 | Protocol | URL expectation | Bridge behavior |

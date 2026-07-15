@@ -400,6 +400,8 @@ bridge bearer token:
 | `LLMWIKI_AGENT_BRIDGE_ALLOWED_SOURCE_ORIGINS` | unset | Exact Knowledge Source origins for allowlist or stricter policies. |
 | `LLMWIKI_AGENT_BRIDGE_ALLOW_PUBLIC_BIND` | unset | Set to `1` before binding to a non-loopback host. |
 | `LLMWIKI_AGENT_BRIDGE_CONFIG_PATH` | user config file in the CLI | Persistent settings file for `/settings/config.json` and `/settings/sources.json`; programmatic callers can pass `configPath`. |
+| `LLMWIKI_AGENT_BRIDGE_EVIDENCE_CACHE_TTL_MS` | `0` | Opt-in in-memory cache TTL for successful normalized per-source evidence. `0` disables caching. |
+| `LLMWIKI_AGENT_BRIDGE_EVIDENCE_CACHE_MAX_ENTRIES` | `128` | Maximum in-memory evidence cache entries when the TTL is greater than `0`. |
 
 Source policy, CORS, bind-host, and migration alias details are documented in
 [runtime profiles](./docs/runtime-profiles.md) and
@@ -409,6 +411,12 @@ The implementation keeps Hermes defaults for backward compatibility. For a new
 OSS install, set `LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE=generic` explicitly
 unless you are connecting Hermes or DeepAgents, and set the model name expected
 by that runtime.
+
+The evidence cache is disabled by default. When enabled with a short TTL, it
+caches only successful normalized per-source evidence and safe source-bundle
+metadata before runtime synthesis. It does not cache final runtime answers.
+Trace detail reports safe cache hit, miss, expired, disabled, and eviction
+counts without exposing cache keys or source URLs.
 
 Do not expose the bridge on a public or shared interface without
 `LLMWIKI_AGENT_BRIDGE_BEARER_TOKEN`. Non-loopback binds require an explicit
