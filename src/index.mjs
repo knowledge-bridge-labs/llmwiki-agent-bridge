@@ -29,6 +29,11 @@ const MAX_SEARCH_AUGMENT_RESULTS_PER_QUERY = 4
 const MAX_SEARCH_AUGMENT_TERMS = 6
 const MAX_CITATION_DIGEST_ITEMS = 8
 const MAX_CITATION_DIGEST_SNIPPET_CHARS = 320
+// Exact-read fallback bounds extra source latency and prompt size. These are
+// caps on reads/excerpts, not answer-ranking heuristics.
+const MAX_EXACT_READ_FALLBACK_PAGES = 2
+const MAX_EXACT_READ_FALLBACK_EXCERPT_CHARS = MAX_CITATION_DIGEST_SNIPPET_CHARS
+const MAX_EXACT_READ_FALLBACK_TARGET_CHARS = 512
 const MAX_FALLBACK_CITATION_ANCHORS = 5
 const MAX_SOURCE_BUNDLE_REFS = 40
 const MAX_TRACE_CITATION_REFS = 5
@@ -38,6 +43,7 @@ const MAX_TRACE_DETAIL_CHARS = 360
 const DIAGNOSTIC_SCHEMA_VERSION = 'llmwiki.agent-bridge.diagnostic.v1'
 const EVIDENCE_CACHE_SCHEMA_VERSION = 'llmwiki.agent-bridge.evidence-cache.v1'
 const RUNTIME_EVIDENCE_SCHEMA_VERSION = 'llmwiki.agent-bridge.runtime-evidence.v1'
+const EXACT_READ_FALLBACK_METADATA = Symbol('llmwiki.agent-bridge.exact-read-fallback')
 const AGENT_CARD_ROUTE = `/${AGENT_CARD_PATH}`
 const MESSAGE_SEND_ROUTE = '/message:send'
 const MCP_ROUTE = '/mcp'
@@ -1211,8 +1217,9 @@ async function gatherSourceEvidence(source, query, config) {
 
   try {
     sourceBundle = await readSourceBundle(source, config, steps, toolStep.id, diagnostics)
-    const payload = await queryKnowledgeSource(source, query, config)
+    const payload = await queryKnowledgeSource(source, query, config, diagnostics)
     const result = normalizeKnowledgeResult(source, payload)
+    appendExactReadFallbackStep(steps, source, toolStep.id, exactReadFallbackMetadata(payload))
     const citationRefs = traceCitationRefs(result.citations)
     replaceStep(steps, {
       ...toolStep,
@@ -1285,6 +1292,13 @@ function evidenceCacheRequestShape(source) {
           queries: MAX_SEARCH_AUGMENT_QUERIES,
           resultsPerQuery: MAX_SEARCH_AUGMENT_RESULTS_PER_QUERY,
           terms: MAX_SEARCH_AUGMENT_TERMS,
+        }
+      : undefined,
+    exactReadFallback: source.protocol === 'llmwiki-http'
+      ? {
+          pages: MAX_EXACT_READ_FALLBACK_PAGES,
+          excerptChars: MAX_EXACT_READ_FALLBACK_EXCERPT_CHARS,
+          targetChars: MAX_EXACT_READ_FALLBACK_TARGET_CHARS,
         }
       : undefined,
     mcpTool: source.protocol === 'mcp' ? 'llmwiki_context' : undefined,
@@ -1660,11 +1674,11 @@ async function readMcpSourceBundle(source, config, steps, parentId, diagnostics 
   }
 }
 
-async function queryKnowledgeSource(source, query, config) {
+async function queryKnowledgeSource(source, query, config, diagnostics = []) {
   assertAllowedKnowledgeSourceFetchUrl(source.url, config)
 
   if (source.protocol === 'llmwiki-http') {
-    return queryLlmwikiHttpSource(source, query, config)
+    return queryLlmwikiHttpSource(source, query, config, diagnostics)
   }
 
   if (source.protocol === 'mcp') {
@@ -1678,7 +1692,7 @@ async function queryKnowledgeSource(source, query, config) {
   throw new Error(`Unsupported Knowledge Source protocol: ${source.protocol}`)
 }
 
-async function queryLlmwikiHttpSource(source, query, config) {
+async function queryLlmwikiHttpSource(source, query, config, diagnostics = []) {
   const primaryPayload = await postKnowledgeSourceJson(joinUrl(source.url, '/query'), {
     query,
     limit: MAX_EVIDENCE_ITEMS_PER_SOURCE,
@@ -1697,7 +1711,178 @@ async function queryLlmwikiHttpSource(source, query, config) {
     }
   }
 
-  return mergeSearchResultsIntoKnowledgePayload(primaryPayload, searchResults)
+  const fallback = await exactReadFallbackForLlmwikiHttpSearchHits({
+    source,
+    primaryPayload,
+    searchResults,
+    config,
+    diagnostics,
+  })
+  const searchResultsWithExactReads = applyExactReadFallbackRecords(searchResults, fallback.records)
+  const mergedPayload = mergeSearchResultsIntoKnowledgePayload(primaryPayload, searchResultsWithExactReads)
+  return attachExactReadFallbackMetadata(mergedPayload, fallback)
+}
+
+async function exactReadFallbackForLlmwikiHttpSearchHits({ source, primaryPayload, searchResults, config, diagnostics }) {
+  const primaryCitationRecords = citationRecordsFromKnowledgePayload(primaryPayload)
+  const fallback = {
+    attempted: false,
+    searched: 0,
+    read: 0,
+    skipped: 0,
+    warnings: 0,
+    records: [],
+    diagnostics: [],
+  }
+
+  if (!shouldUseExactReadFallback(primaryPayload, primaryCitationRecords)) return fallback
+
+  fallback.attempted = true
+  fallback.searched = searchResults.length
+  const { candidates, skipped } = exactReadFallbackCandidates(searchResults, primaryCitationRecords)
+  fallback.skipped += skipped
+
+  const selectedCandidates = candidates.slice(0, MAX_EXACT_READ_FALLBACK_PAGES)
+  fallback.skipped += Math.max(0, candidates.length - selectedCandidates.length)
+
+  for (const candidate of selectedCandidates) {
+    try {
+      const readPayload = await readLlmwikiHttpExactPage(source, candidate.target, config)
+      const record = exactReadFallbackRecordFromReadPayload(candidate.record, readPayload)
+      if (!record) throw new Error('llmwiki-http read returned no usable page excerpt.')
+      fallback.records.push({ keys: candidate.keys, record })
+      fallback.read += 1
+    } catch (error) {
+      config.logger.warn(redactedLogLine(`source ${source.id} exact-read fallback failed`, error))
+      const diagnostic = sourceExactReadFallbackDiagnostic(source, error, config)
+      fallback.diagnostics.push(diagnostic)
+      diagnostics.push(diagnostic)
+      fallback.warnings += 1
+    }
+  }
+
+  return fallback
+}
+
+function shouldUseExactReadFallback(primaryPayload, primaryCitationRecords) {
+  const payload = asRecord(primaryPayload)
+  if (!payload) return false
+  return readBoolean(payload, 'answerable') === false || primaryCitationRecords.length === 0
+}
+
+function exactReadFallbackCandidates(searchResults, primaryCitationRecords) {
+  const seen = new Set(primaryCitationRecords.flatMap(citationRecordKeys))
+  const candidates = []
+  let skipped = 0
+
+  for (const record of searchResults) {
+    const target = exactReadFallbackTarget(record)
+    const keys = citationRecordKeys(record)
+    if (!target || !keys.length || keys.some((key) => seen.has(key))) {
+      skipped += 1
+      continue
+    }
+    for (const key of keys) seen.add(key)
+    candidates.push({ record, target, keys })
+  }
+
+  return { candidates, skipped }
+}
+
+function exactReadFallbackTarget(record) {
+  const target = (
+    readString(record, 'page_id')
+    || readString(record, 'pageId')
+    || readString(record, 'path')
+    || readString(record, 'id')
+  ).trim()
+  if (!target || target.length > MAX_EXACT_READ_FALLBACK_TARGET_CHARS) return ''
+  if (/[\u0000-\u001f\u007f]/.test(target)) return ''
+  return target
+}
+
+async function readLlmwikiHttpExactPage(source, target, config) {
+  const payload = await fetchKnowledgeSourceJson(
+    joinUrl(source.url, `/read/${encodeURIComponent(target)}`),
+    { method: 'GET' },
+    'llmwiki-http read',
+    config,
+  )
+  if (readBoolean(asRecord(payload) || {}, 'found') === false) {
+    throw new Error('llmwiki-http read returned no page for the selected search hit.')
+  }
+  return payload
+}
+
+function exactReadFallbackRecordFromReadPayload(searchRecord, readPayload) {
+  const page = asRecord(readPayload)
+  if (!page) return null
+
+  const snippet = exactReadFallbackExcerpt(page) || readableMarkdown(readString(searchRecord, 'snippet'))
+  const sourceRefs = readStringArray(page.source_refs ?? page.sourceRefs)
+  const fallbackSourceRefs = readStringArray(searchRecord.source_refs ?? searchRecord.sourceRefs)
+  const pageId = readString(page, 'id')
+    || readString(page, 'page_id')
+    || readString(page, 'pageId')
+    || readString(searchRecord, 'page_id')
+    || readString(searchRecord, 'pageId')
+    || readString(searchRecord, 'id')
+    || readString(page, 'path')
+    || readString(searchRecord, 'path')
+
+  if (!pageId && !snippet) return null
+
+  return removeUndefinedProperties({
+    page_id: pageId || undefined,
+    title: readString(page, 'title') || readString(searchRecord, 'title') || undefined,
+    path: readString(page, 'path') || readString(searchRecord, 'path') || undefined,
+    snippet: snippet || undefined,
+    source_refs: sourceRefs.length ? sourceRefs : fallbackSourceRefs.length ? fallbackSourceRefs : undefined,
+  })
+}
+
+function exactReadFallbackExcerpt(page) {
+  return truncateCitationSnippet(
+    readString(page, 'summary')
+    || readString(page, 'snippet')
+    || readString(page, 'text')
+    || readString(page, 'content')
+    || readString(page, 'markdown'),
+    MAX_EXACT_READ_FALLBACK_EXCERPT_CHARS,
+  )
+}
+
+function applyExactReadFallbackRecords(searchResults, fallbackRecords) {
+  if (!fallbackRecords.length) return searchResults
+
+  const replacements = new Map()
+  for (const fallbackRecord of fallbackRecords) {
+    for (const key of [...fallbackRecord.keys, ...citationRecordKeys(fallbackRecord.record)]) {
+      if (!replacements.has(key)) replacements.set(key, fallbackRecord.record)
+    }
+  }
+
+  return searchResults.map((record) => {
+    for (const key of citationRecordKeys(record)) {
+      const replacement = replacements.get(key)
+      if (replacement) return replacement
+    }
+    return record
+  })
+}
+
+function attachExactReadFallbackMetadata(payload, fallback) {
+  const record = asRecord(payload)
+  if (!record || !fallback?.attempted) return payload
+  Object.defineProperty(record, EXACT_READ_FALLBACK_METADATA, {
+    value: fallback,
+    enumerable: false,
+  })
+  return record
+}
+
+function exactReadFallbackMetadata(payload) {
+  return asRecord(payload)?.[EXACT_READ_FALLBACK_METADATA] || null
 }
 
 async function callMcpTool(source, name, args, config) {
@@ -2039,20 +2224,17 @@ function uniqueSearchTokens(tokens) {
   return unique
 }
 
-function truncateCitationSnippet(value) {
+function truncateCitationSnippet(value, maxLength = MAX_CITATION_DIGEST_SNIPPET_CHARS) {
   const snippet = readableMarkdown(value)
-  if (snippet.length <= MAX_CITATION_DIGEST_SNIPPET_CHARS) return snippet
-  return `${snippet.slice(0, MAX_CITATION_DIGEST_SNIPPET_CHARS - 3).trimEnd()}...`
+  if (snippet.length <= maxLength) return snippet
+  return `${snippet.slice(0, maxLength - 3).trimEnd()}...`
 }
 
 function mergeSearchResultsIntoKnowledgePayload(primaryPayload, searchResults) {
   const payload = asRecord(primaryPayload)
   if (!payload || !searchResults.length) return primaryPayload
 
-  const additions = uniqueNewCitationRecords(searchResults, [
-    ...readRecordArray(payload.evidence),
-    ...readRecordArray(payload.citations),
-  ])
+  const additions = uniqueNewCitationRecords(searchResults, citationRecordsFromKnowledgePayload(payload))
   if (!additions.length) return primaryPayload
 
   if (Array.isArray(payload.evidence) || !Array.isArray(payload.citations)) {
@@ -2076,6 +2258,15 @@ function mergeSearchResultsIntoKnowledgePayload(primaryPayload, searchResults) {
 
 function searchResultsFromPayload(payload) {
   return readRecordArray(asRecord(payload)?.results)
+}
+
+function citationRecordsFromKnowledgePayload(payload) {
+  const record = asRecord(payload)
+  if (!record) return []
+  return [
+    ...readRecordArray(record.evidence),
+    ...readRecordArray(record.citations),
+  ]
 }
 
 function uniqueNewCitationRecords(records, existingRecords) {
@@ -2125,6 +2316,29 @@ function normalizeKnowledgeResult(source, payload) {
     limitations: readStringArray(payload.limitations),
     graph,
   }
+}
+
+function appendExactReadFallbackStep(steps, source, parentId, fallback) {
+  if (!fallback?.attempted) return
+  const diagnostic = fallback.diagnostics[0]
+  steps.push(step(removeUndefinedProperties({
+    id: `source-exact-read-${safeId(source.id)}`,
+    label: 'Read exact search hits',
+    status: 'done',
+    connectionId: source.id,
+    detail: exactReadFallbackTraceDetail(fallback),
+    parentId,
+    diagnostic,
+  })))
+}
+
+function exactReadFallbackTraceDetail(fallback) {
+  return [
+    `Exact-read fallback: searched ${fallback.searched} search hit(s)`,
+    `read ${fallback.read} page(s)`,
+    `skipped ${fallback.skipped} hit(s)`,
+    `${fallback.warnings} warning(s).`,
+  ].join(', ')
 }
 
 function sourceStepDetail(result, citationRefs) {
@@ -2535,6 +2749,29 @@ function sourceBundleDiagnostic(source, error, config) {
     ],
     remediation: 'The bridge will continue without source bundle metadata. Check the source-bundle or manifest endpoint if bundle metadata is expected.',
     message: `${source.name} source bundle metadata could not be read.`,
+  })
+}
+
+function sourceExactReadFallbackDiagnostic(source, error, config) {
+  return diagnostic({
+    severity: 'warning',
+    scope: 'source',
+    phase: 'exact-read-fallback',
+    protocol: source.protocol,
+    subject: source.id,
+    retryable: retryableFailure(error),
+    redacted: true,
+    observations: [
+      ['httpStatus', httpStatusFromError(error)],
+      ['timeout', isTimeoutError(error) ? 'true' : undefined],
+      ['invalidJson', isInvalidJsonError(error) ? 'true' : undefined],
+      ['policy', isSourcePolicyError(error) ? 'source-url' : undefined],
+      ['sourcePolicy', config.sourcePolicy],
+      ['timeoutMs', config.requestTimeoutMs],
+      ['redaction', 'source URL, read target, credentials, headers, and upstream body omitted'],
+    ],
+    remediation: 'The bridge continued with available /query and /search evidence. Check the source /read endpoint if exact page excerpts are expected.',
+    message: 'Exact-read fallback could not read one search hit.',
   })
 }
 

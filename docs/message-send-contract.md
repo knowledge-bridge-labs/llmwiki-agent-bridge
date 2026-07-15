@@ -88,7 +88,7 @@ the raw descriptor URL.
 
 | Protocol | URL expectation | Bridge behavior |
 | --- | --- | --- |
-| `llmwiki-http` | Base URL of a compatible Knowledge Source, such as `http://127.0.0.1:8765`. | Calls `/query` for context and augments evidence with compact `/search` variants. |
+| `llmwiki-http` | Base URL of a compatible Knowledge Source, such as `http://127.0.0.1:8765`. | Calls `/query` for context, augments evidence with compact `/search` variants, and can use bounded `/read/{page_id or path}` fallback when primary evidence is empty or explicitly marked not answerable. |
 | `mcp` | Base URL of a compatible MCP-style JSON-RPC endpoint. | Calls `llmwiki_source_bundle` for safe bundle metadata when available, then calls `llmwiki_context` through JSON-RPC. |
 | `a2a` | Agent-card URL or service URL for an A2A-style source. | Reads the agent card, posts to its `message:send` URL, and prefers a `llmwiki_context` artifact when present. |
 
@@ -207,6 +207,13 @@ runtime read order while preserving original markdown citation references.
 `citationRefs` are a trace preview only; the authoritative citation mapping
 remains the result artifact `citations` array.
 
+For `llmwiki-http` sources, a primary `/query` response with no normalized
+citations or `answerable: false` can add a child
+`source-exact-read-<source-id>` trace step. The step reports only safe aggregate
+fallback counts: searched search hits, successfully read pages, skipped hits,
+and warning count. It does not include raw source URLs, read targets, request
+headers, credentials, or upstream bodies.
+
 Failed or warning trace steps can include a `diagnostic` object, and the same
 objects are collected in result-level `diagnostics`. Diagnostics are intentionally
 small and factual; they do not define a large failure-code taxonomy. Fields are:
@@ -235,6 +242,9 @@ diagnostics, graph counts, and corpus summaries. It does not include returned
 `sourceBundles`, per-source `sourceBundle` payloads, graph node arrays, graph
 edge arrays, or graph samples. The public result artifact still returns
 `sourceBundles` and `graph` unchanged.
+When exact-read fallback reads a page, only a compact citation excerpt is used
+in this evidence bundle and in the result citation. Full page Markdown or source
+bundle payloads are not inlined into the runtime prompt.
 
 The merged corpus summary keeps corpus page counts separate from the merged
 graph summary, so graph node counts are not treated as page counts.
@@ -246,6 +256,14 @@ evidence but do not define citation numbering.
 If the runtime returns an answer with citations available but no valid
 `[n](#citation-n)` anchors, the bridge appends a short bounded `Evidence used:`
 line with fallback anchors that map to the same 1-based `citations` array.
+
+For `llmwiki-http` sources, when the primary `/query` response has no
+normalized citations or explicitly reports `answerable: false`, the bridge may
+read a small capped set of unique `/search` hits not already cited by `/query`
+through `GET /read/{page_id or path}`. The read result replaces the matching
+search-hit citation record with a compact excerpt, preserving source order and
+the search-hit citation position. Failed reads produce warning diagnostics and
+the bridge continues with available `/query` and `/search` evidence.
 
 For `llmwiki-http` sources, the bridge attempts `GET /source-bundle` during a
 run when the URL is allowed by the configured source policy, then falls back to
@@ -276,6 +294,12 @@ be used. They appear as `status: "error"` entries in `steps`, and the bridge
 continues to call the runtime with surviving evidence plus source failure notes.
 Those source failure notes include the same redacted diagnostic facts that appear
 in the trace step.
+
+Exact-read fallback failures are less severe than source query failures. A
+failed `/read` attempt adds a warning diagnostic with
+`phase: "exact-read-fallback"` and the run continues with the search snippet or
+other available evidence. The diagnostic omits source URLs, read targets,
+headers, credentials, and upstream bodies.
 
 Fatal runtime failures keep the existing `error.code` contract, such as
 `chat_completions_failed`, and return HTTP `502`. When the bridge has already
