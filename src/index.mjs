@@ -37,6 +37,7 @@ const MAX_TRACE_TEXT_CHARS = 160
 const MAX_TRACE_DETAIL_CHARS = 360
 const DIAGNOSTIC_SCHEMA_VERSION = 'llmwiki.agent-bridge.diagnostic.v1'
 const EVIDENCE_CACHE_SCHEMA_VERSION = 'llmwiki.agent-bridge.evidence-cache.v1'
+const RUNTIME_EVIDENCE_SCHEMA_VERSION = 'llmwiki.agent-bridge.runtime-evidence.v1'
 const AGENT_CARD_ROUTE = `/${AGENT_CARD_PATH}`
 const MESSAGE_SEND_ROUTE = '/message:send'
 const MCP_ROUTE = '/mcp'
@@ -113,6 +114,20 @@ const searchAugmentStopWords = new Set([
   'wiki',
 ])
 const searchAugmentTrailingTerms = new Set(['decision', 'decisions'])
+const RUNTIME_PROMPT_CONTRACT = Object.freeze({
+  citationAnchors: '[n](#citation-n)',
+  citationNumbering: 'Use n as the 1-based index of the matching item in the top-level citations array.',
+  evidenceScope: 'Use only this compact evidence bundle. Full source-bundle payloads and graph payloads are intentionally omitted from the runtime prompt.',
+})
+const RUNTIME_SYSTEM_PROMPT = [
+  'You are answering through a local LLMWiki Agent Bridge.',
+  'Answer in grounded markdown using only the provided LLMWiki evidence.',
+  'Every factual claim that relies on evidence must include markdown citation anchors near the claim, formatted exactly as [n](#citation-n).',
+  'Use n as the 1-based index of the matching item in the evidence bundle citations array; do not use citationDigest order or sourceRefs for numbering.',
+  'When one claim needs several sources, include several anchors after that claim.',
+  'If evidence is incomplete or a source failed, state the limitation plainly.',
+  'Do not expose API keys, request headers, or bridge internals.',
+].join(' ')
 const sourcePolicyAliases = new Map([
   ['default', DEFAULT_SOURCE_POLICY],
   ['open', DEFAULT_SOURCE_POLICY],
@@ -1788,7 +1803,7 @@ function hasValidCitationAnchor(answer, citations) {
 async function callHermesChatCompletions({ query, sourceResults, sourceFailures, citations, graph, config }) {
   const body = {
     ...(config.hermesModel ? { model: config.hermesModel } : {}),
-    messages: hermesMessages({ query, sourceResults, sourceFailures, citations, graph }),
+    messages: runtimeMessages({ query, sourceResults, sourceFailures, citations, graph }),
     temperature: 0.2,
     stream: false,
   }
@@ -1803,24 +1818,51 @@ async function callHermesChatCompletions({ query, sourceResults, sourceFailures,
   return extractHermesAnswer(payload) || 'The chat completions endpoint returned no answer text.'
 }
 
-function hermesMessages({ query, sourceResults, sourceFailures, citations, graph }) {
+function runtimeMessages({ query, sourceResults, sourceFailures, citations, graph }) {
+  return [
+    {
+      role: 'system',
+      content: RUNTIME_SYSTEM_PROMPT,
+    },
+    {
+      role: 'user',
+      content: runtimeEvidenceMessage(runtimeEvidenceBundle({ query, sourceResults, sourceFailures, citations, graph })),
+    },
+    {
+      role: 'user',
+      content: runtimeQuestionMessage(query),
+    },
+  ]
+}
+
+function runtimeEvidenceMessage(evidenceBundle) {
+  return [
+    '# LLMWiki evidence bundle',
+    JSON.stringify(evidenceBundle, null, 2),
+  ].join('\n')
+}
+
+function runtimeQuestionMessage(query) {
+  return [
+    '# User question',
+    query,
+  ].join('\n')
+}
+
+function runtimeEvidenceBundle({ query, sourceResults, sourceFailures, citations, graph }) {
   const sourceCorpusSummaries = sourceResults.map(({ source, result }) => sourceCorpusSummary(source, result))
   const mergedCorpusSummary = mergeCorpusSummaries(sourceCorpusSummaries)
-  const sourceBundles = sourceResults.map(({ sourceBundle }) => sourceBundle).filter(Boolean)
-  const evidenceBundle = {
-    question: query,
+  return {
+    schemaVersion: RUNTIME_EVIDENCE_SCHEMA_VERSION,
+    contract: RUNTIME_PROMPT_CONTRACT,
     citationDigest: rankedCitationDigest(query, citations),
-    citations,
-    sources: sourceResults.map(({ result, sourceBundle }, index) => ({
+    citations: citations.map(compactRuntimeCitation),
+    sources: sourceResults.map(({ result }, index) => ({
       ...sourceCorpusSummaries[index],
-      ...(sourceBundle ? { sourceBundle } : {}),
-      orientation: result.orientation,
-      citations: result.citations,
+      orientationDigest: result.orientation.slice(0, MAX_TRACE_CITATION_REFS).map(compactRuntimeEvidenceRef),
+      citationIds: result.citations.map((citation) => citation.id),
       limitations: result.limitations,
-      graph: {
-        nodes: result.graph?.nodes?.slice(0, 40) || [],
-        edges: result.graph?.edges?.slice(0, 80) || [],
-      },
+      graphSummary: runtimeGraphSummary(result.graph),
     })),
     sourceFailures: sourceFailures.map(({ source, error, diagnostic }) => ({
       id: source.id,
@@ -1834,38 +1876,39 @@ function hermesMessages({ query, sourceResults, sourceFailures, citations, graph
       edgeCount: graph.edges.length,
       ...(mergedCorpusSummary.pageCount !== undefined ? { corpusPageCount: mergedCorpusSummary.pageCount } : {}),
       ...(mergedCorpusSummary.approvedPageCount !== undefined ? { corpusApprovedPageCount: mergedCorpusSummary.approvedPageCount } : {}),
-      sampleNodes: graph.nodes.slice(0, 20),
-      sampleEdges: graph.edges.slice(0, 40),
     },
     mergedCorpusSummary,
-    sourceBundles,
     citationCount: citations.length,
   }
+}
 
-  return [
-    {
-      role: 'system',
-      content: [
-        'You are answering through a local LLMWiki Agent Bridge.',
-        'Answer in grounded markdown using only the provided LLMWiki evidence.',
-        'Every factual claim that relies on evidence must include markdown citation anchors near the claim, formatted exactly as [n](#citation-n).',
-        'Use n as the 1-based index of the matching item in the evidence bundle citations array; do not use citationDigest order or sourceRefs for numbering.',
-        'When one claim needs several sources, include several anchors after that claim.',
-        'If evidence is incomplete or a source failed, state the limitation plainly.',
-        'Do not expose API keys, request headers, or bridge internals.',
-      ].join(' '),
-    },
-    {
-      role: 'user',
-      content: [
-        '# User question',
-        query,
-        '',
-        '# LLMWiki evidence bundle',
-        JSON.stringify(evidenceBundle, null, 2),
-      ].join('\n'),
-    },
-  ]
+function compactRuntimeCitation(citation) {
+  return removeUndefinedProperties({
+    id: citation.id,
+    title: citation.title,
+    path: citation.path || undefined,
+    snippet: citation.snippet ? truncateCitationSnippet(citation.snippet) : undefined,
+    connectionId: citation.connectionId,
+    ...(citation.sourceRefs?.length ? { sourceRefs: citation.sourceRefs } : {}),
+  })
+}
+
+function compactRuntimeEvidenceRef(ref) {
+  return removeUndefinedProperties({
+    id: ref.id || undefined,
+    title: ref.title || undefined,
+    path: ref.path || undefined,
+    snippet: ref.snippet ? truncateCitationSnippet(ref.snippet) : undefined,
+    role: ref.role || undefined,
+    ...(ref.sourceRefs?.length ? { sourceRefs: ref.sourceRefs } : {}),
+  })
+}
+
+function runtimeGraphSummary(graph) {
+  return {
+    nodeCount: graph?.nodes?.length || 0,
+    edgeCount: graph?.edges?.length || 0,
+  }
 }
 
 function sourceCorpusSummary(source, result) {

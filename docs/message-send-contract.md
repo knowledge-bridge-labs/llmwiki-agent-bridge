@@ -217,11 +217,27 @@ small and factual; they do not define a large failure-code taxonomy. Fields are:
 `timeoutMs`. Raw source URLs, credentials, request headers, provider API keys,
 and upstream response bodies are omitted from diagnostics.
 
-The runtime evidence bundle sent to Hermes/DeepAgents also preserves per-source
-corpus metadata from LLMWiki context responses, including `pageCount`,
-`approvedPageCount`, `adapter`, `implementation`, `description`, and
-`limitations`. Its merged corpus summary keeps corpus page counts separate from
-the merged graph summary, so graph node counts are not treated as page counts.
+The runtime prompt sent to Hermes/DeepAgents/OpenAI-compatible runtimes starts
+with a byte-stable system message. Query text, evidence text, source metadata,
+and source failures are not interpolated into that system message.
+
+The next runtime message contains a compact LLMWiki evidence bundle. That bundle
+has stable top-level `schemaVersion` and `contract` keys followed by
+`citationDigest`, top-level `citations`, compact `sources`, `sourceFailures`,
+`mergedGraphSummary`, `mergedCorpusSummary`, and `citationCount`. The user
+question is sent after the evidence bundle in a later user message.
+
+The compact runtime evidence bundle preserves per-source corpus metadata from
+LLMWiki context responses, including `pageCount`, `approvedPageCount`,
+`adapter`, `implementation`, `description`, and `limitations`. It includes
+compact orientation digest records, per-source citation IDs, source failure
+diagnostics, graph counts, and corpus summaries. It does not include returned
+`sourceBundles`, per-source `sourceBundle` payloads, graph node arrays, graph
+edge arrays, or graph samples. The public result artifact still returns
+`sourceBundles` and `graph` unchanged.
+
+The merged corpus summary keeps corpus page counts separate from the merged
+graph summary, so graph node counts are not treated as page counts.
 For delegated-runtime and hybrid answers, the bridge instructs the runtime to
 put markdown citation anchors next to each evidence-backed claim using
 `[n](#citation-n)`, where `n` is the 1-based index in the result artifact
