@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { homedir } from 'node:os'
@@ -13,6 +13,8 @@ const DEFAULT_AGENT_MODEL = 'hermes-agent'
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
 const DEFAULT_SOURCE_FAN_OUT_CONCURRENCY = 4
 const DEFAULT_SOURCE_POLICY = 'private-http'
+const DEFAULT_EVIDENCE_CACHE_TTL_MS = 0
+const DEFAULT_EVIDENCE_CACHE_MAX_ENTRIES = 128
 const DEFAULT_ORCHESTRATION_MODE = 'delegated-runtime'
 const DEFAULT_RUNTIME_PROFILE = 'hermes'
 const DEFAULT_RUNTIME_ID = 'llmwiki-agent-bridge-hermes'
@@ -40,6 +42,7 @@ const MAX_TRACE_SOURCE_REFS = 5
 const MAX_TRACE_TEXT_CHARS = 160
 const MAX_TRACE_DETAIL_CHARS = 360
 const DIAGNOSTIC_SCHEMA_VERSION = 'llmwiki.agent-bridge.diagnostic.v1'
+const EVIDENCE_CACHE_SCHEMA_VERSION = 'llmwiki.agent-bridge.evidence-cache.v1'
 const AGENT_CARD_ROUTE = `/${AGENT_CARD_PATH}`
 const MESSAGE_SEND_ROUTE = '/message:send'
 const MCP_ROUTE = '/mcp'
@@ -1089,11 +1092,12 @@ async function runA2aMessage(body, config, runContextInput = {}) {
   const sourceResults = []
   const sourceFailures = []
   const sourceBundles = []
+  const evidenceCacheStats = createEvidenceCacheRunStats(config)
 
   const sourceOutcomes = await mapWithConcurrency(
     readySources,
     DEFAULT_SOURCE_FAN_OUT_CONCURRENCY,
-    (source) => gatherSourceEvidence(source, query, config),
+    (source) => gatherSourceEvidenceWithCache(source, query, config, evidenceCacheStats),
   )
 
   for (const outcome of sourceOutcomes) {
@@ -1114,7 +1118,7 @@ async function runA2aMessage(body, config, runContextInput = {}) {
     id: 'bridge-evidence',
     label: 'Prepare evidence',
     status: 'done',
-    detail: `Prepared ${citations.length} citation(s), ${graph.nodes.length} graph node(s), ${sourceBundles.length} source bundle metadata record(s), and ${sourceFailures.length} source failure note(s).`,
+    detail: `Prepared ${citations.length} citation(s), ${graph.nodes.length} graph node(s), ${sourceBundles.length} source bundle metadata record(s), and ${sourceFailures.length} source failure note(s). ${evidenceCacheTraceDetail(evidenceCacheStats)}`,
   }))
 
   let answer = ''
@@ -1231,6 +1235,22 @@ async function runA2aMessage(body, config, runContextInput = {}) {
   }
 }
 
+async function gatherSourceEvidenceWithCache(source, query, config, stats) {
+  const cache = config.evidenceCache
+  if (!cache?.enabled) {
+    stats.disabled += 1
+    return gatherSourceEvidence(source, query, config)
+  }
+
+  const cacheKey = evidenceCacheKey(source, query)
+  const cached = readEvidenceCache(cache, cacheKey, Date.now(), stats)
+  if (cached) return cachedSourceEvidenceOutcome(source, cached)
+
+  const outcome = await gatherSourceEvidence(source, query, config)
+  if (outcome.result) writeEvidenceCache(cache, cacheKey, outcome, Date.now(), stats)
+  return outcome
+}
+
 async function gatherSourceEvidence(source, query, config) {
   const diagnostics = []
   const steps = []
@@ -1285,6 +1305,136 @@ async function gatherSourceEvidence(source, query, config) {
       },
     }
   }
+}
+
+function createEvidenceCacheRunStats(config) {
+  return {
+    enabled: Boolean(config.evidenceCache?.enabled),
+    hits: 0,
+    misses: 0,
+    expired: 0,
+    disabled: 0,
+    evicted: 0,
+  }
+}
+
+function evidenceCacheTraceDetail(stats) {
+  if (!stats.enabled) return `Evidence cache disabled (${stats.disabled} source check(s)).`
+  return `Evidence cache: ${stats.hits} hit(s), ${stats.misses} miss(es), ${stats.expired} expired, ${stats.evicted} evicted.`
+}
+
+function evidenceCacheKey(source, query) {
+  return sha256Hex(JSON.stringify({
+    schemaVersion: EVIDENCE_CACHE_SCHEMA_VERSION,
+    protocol: source.protocol,
+    sourceId: source.id,
+    sourceUrlHash: sha256Hex(normalizedSourceUrlForCache(source.url)),
+    query,
+    requestShape: evidenceCacheRequestShape(source),
+  }))
+}
+
+function evidenceCacheRequestShape(source) {
+  return removeUndefinedProperties({
+    limit: MAX_EVIDENCE_ITEMS_PER_SOURCE,
+    includeDrafts: false,
+    searchAugment: source.protocol === 'llmwiki-http'
+      ? {
+          queries: MAX_SEARCH_AUGMENT_QUERIES,
+          resultsPerQuery: MAX_SEARCH_AUGMENT_RESULTS_PER_QUERY,
+          terms: MAX_SEARCH_AUGMENT_TERMS,
+        }
+      : undefined,
+    mcpTool: source.protocol === 'mcp' ? 'llmwiki_context' : undefined,
+    a2aArtifact: source.protocol === 'a2a' ? 'llmwiki_context' : undefined,
+  })
+}
+
+function normalizedSourceUrlForCache(value) {
+  try {
+    const url = new URL(String(value || '').trim())
+    url.username = ''
+    url.password = ''
+    url.search = ''
+    url.hash = ''
+    url.pathname = trimTrailingSlashes(url.pathname) || '/'
+    return url.toString()
+  } catch {
+    return 'invalid-url'
+  }
+}
+
+function readEvidenceCache(cache, key, now, stats) {
+  const entry = cache.entries.get(key)
+  if (!entry) {
+    stats.misses += 1
+    return null
+  }
+
+  if (entry.expiresAt <= now) {
+    cache.entries.delete(key)
+    stats.expired += 1
+    stats.misses += 1
+    return null
+  }
+
+  cache.entries.delete(key)
+  cache.entries.set(key, entry)
+  stats.hits += 1
+  return entry.value
+}
+
+function writeEvidenceCache(cache, key, outcome, now, stats) {
+  if (!cache.enabled) return
+  if (cache.entries.has(key)) cache.entries.delete(key)
+
+  cache.entries.set(key, {
+    expiresAt: now + cache.ttlMs,
+    value: {
+      result: cloneEvidenceCacheValue(outcome.result),
+      sourceBundle: cloneEvidenceCacheValue(outcome.sourceBundle),
+    },
+  })
+
+  while (cache.entries.size > cache.maxEntries) {
+    const oldestKey = cache.entries.keys().next().value
+    if (oldestKey === undefined) break
+    cache.entries.delete(oldestKey)
+    stats.evicted += 1
+  }
+}
+
+function cachedSourceEvidenceOutcome(source, cached) {
+  const result = cloneEvidenceCacheValue(cached.result)
+  const sourceBundle = cloneEvidenceCacheValue(cached.sourceBundle)
+  const citationRefs = traceCitationRefs(result.citations)
+  return {
+    source,
+    result,
+    sourceBundle,
+    steps: [
+      step({
+        id: `tool-${safeId(source.id)}`,
+        label: `Call ${source.name}`,
+        status: 'done',
+        connectionId: source.id,
+        toolName: toolNameFor(source),
+        detail: `Used cached normalized evidence for selected ${source.protocol} Knowledge Source.`,
+        parentId: 'bridge-plan',
+        citationIds: result.citations.map((citation) => citation.id),
+        citationRefs,
+      }),
+    ],
+    diagnostics: [],
+  }
+}
+
+function cloneEvidenceCacheValue(value) {
+  return value === undefined ? undefined : structuredClone(value)
+}
+
+function sha256Hex(value) {
+  return createHash('sha256').update(String(value)).digest('hex')
 }
 
 async function mapWithConcurrency(items, concurrency, mapper) {
@@ -5698,6 +5848,14 @@ function bridgeConfig(env, options = {}) {
     ?? numberFromEnvValue(env.HERMES_A2A_BRIDGE_TIMEOUT_MS)
     ?? readNumberValue(persistentConfig.requestTimeoutMs)
     ?? DEFAULT_REQUEST_TIMEOUT_MS
+  const evidenceCacheTtlMs = nonNegativeIntegerOption(options.evidenceCacheTtlMs)
+    ?? nonNegativeIntegerFromEnvValue(env.LLMWIKI_AGENT_BRIDGE_EVIDENCE_CACHE_TTL_MS)
+    ?? readNonNegativeIntegerValue(persistentConfig.evidenceCacheTtlMs)
+    ?? DEFAULT_EVIDENCE_CACHE_TTL_MS
+  const evidenceCacheMaxEntries = nonNegativeIntegerOption(options.evidenceCacheMaxEntries)
+    ?? nonNegativeIntegerFromEnvValue(env.LLMWIKI_AGENT_BRIDGE_EVIDENCE_CACHE_MAX_ENTRIES)
+    ?? readNonNegativeIntegerValue(persistentConfig.evidenceCacheMaxEntries)
+    ?? DEFAULT_EVIDENCE_CACHE_MAX_ENTRIES
   const allowedOrigins = arrayOption(options.allowedOrigins)
     ?? parseOriginList(env.LLMWIKI_AGENT_BRIDGE_ALLOWED_ORIGINS)
     ?? parseOriginList(env.HERMES_A2A_BRIDGE_ALLOWED_ORIGINS)
@@ -5786,7 +5944,22 @@ function bridgeConfig(env, options = {}) {
     providerOrganization,
     configPath,
     registeredSources,
+    evidenceCacheTtlMs,
+    evidenceCacheMaxEntries,
+    evidenceCache: createEvidenceCache({
+      ttlMs: evidenceCacheTtlMs,
+      maxEntries: evidenceCacheMaxEntries,
+    }),
     logger,
+  }
+}
+
+function createEvidenceCache({ ttlMs, maxEntries }) {
+  return {
+    enabled: ttlMs > 0 && maxEntries > 0,
+    ttlMs,
+    maxEntries,
+    entries: new Map(),
   }
 }
 
@@ -5836,6 +6009,25 @@ function numberFromEnvValue(value) {
 function numberOption(value) {
   if (typeof value !== 'number') return undefined
   return Number.isFinite(value) ? value : undefined
+}
+
+function nonNegativeIntegerFromEnvValue(value) {
+  const parsed = numberFromEnvValue(value)
+  return parsed === undefined ? undefined : nonNegativeIntegerValue(parsed)
+}
+
+function nonNegativeIntegerOption(value) {
+  const parsed = numberOption(value)
+  return parsed === undefined ? undefined : nonNegativeIntegerValue(parsed)
+}
+
+function readNonNegativeIntegerValue(value) {
+  const parsed = readNumberValue(value)
+  return parsed === undefined ? undefined : nonNegativeIntegerValue(parsed)
+}
+
+function nonNegativeIntegerValue(value) {
+  return Math.max(0, Math.floor(value))
 }
 
 function stringOption(value) {

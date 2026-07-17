@@ -2449,6 +2449,324 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(serialized, /delayed source secret/)
   })
 
+  it('caches repeated successful source evidence with TTL without caching runtime answers', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      if (url.pathname.endsWith('/source-bundle')) {
+        assert.equal(request.method, 'GET')
+        writeJson(response, 200, {
+          source_id: 'cache-source',
+          bundle_id: 'cache-bundle',
+          capabilities: ['llmwiki_context'],
+        })
+        return
+      }
+
+      if (url.pathname.endsWith('/search')) {
+        assert.equal(request.method, 'POST')
+        writeJson(response, 200, { results: [] })
+        return
+      }
+
+      assert.equal(url.pathname.endsWith('/query'), true)
+      assert.equal(request.method, 'POST')
+      assert.equal(body.query, 'cache release readiness')
+      writeJson(response, 200, {
+        wiki_title: 'Cache Wiki',
+        evidence: [
+          {
+            page_id: 'first',
+            title: 'First Cache Evidence',
+            path: 'first.md',
+            snippet: 'First cached citation.',
+          },
+          {
+            page_id: 'second',
+            title: 'Second Cache Evidence',
+            path: 'second.md',
+            snippet: 'Second cached citation.',
+          },
+        ],
+        graph: {
+          nodes: [{ id: 'page:first', label: 'First' }],
+          edges: [],
+        },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: `Runtime answer ${runtime.requests.length}. [1](#citation-1)` } }],
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      evidenceCacheTtlMs: 60_000,
+      evidenceCacheMaxEntries: 8,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const sourceUrl = `${source.url}/private-cache-source`
+    const requestBody = {
+      data: {
+        query: 'cache release readiness',
+        knowledgeSources: [
+          knowledgeSource('cache-wiki', 'Cache Wiki', 'llmwiki-http', sourceUrl),
+        ],
+      },
+    }
+    const firstResponse = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    })
+    const firstArtifact = (await firstResponse.json()).artifacts[0].parts[0].data
+
+    const secondResponse = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    })
+    const secondArtifact = (await secondResponse.json()).artifacts[0].parts[0].data
+    const secondEvidenceStep = secondArtifact.steps.find((item) => item.id === 'bridge-evidence')
+    const secondToolStep = secondArtifact.steps.find((item) => item.id === 'tool-cache_wiki')
+    const secondTrace = JSON.stringify({
+      steps: secondArtifact.steps,
+      diagnostics: secondArtifact.diagnostics,
+    })
+
+    assert.equal(firstResponse.status, 200)
+    assert.equal(secondResponse.status, 200)
+    assert.equal(source.requests.filter((item) => item.url.pathname.endsWith('/source-bundle')).length, 1)
+    assert.equal(source.requests.filter((item) => item.url.pathname.endsWith('/query')).length, 1)
+    assert.equal(source.requests.filter((item) => item.url.pathname.endsWith('/search')).length, 1)
+    assert.equal(runtime.requests.length, 2)
+    assert.equal(firstArtifact.answer, 'Runtime answer 1. [1](#citation-1)')
+    assert.equal(secondArtifact.answer, 'Runtime answer 2. [1](#citation-1)')
+    assert.deepEqual(firstArtifact.citations.map((citation) => citation.id), ['cache-wiki:first', 'cache-wiki:second'])
+    assert.deepEqual(secondArtifact.citations.map((citation) => citation.id), ['cache-wiki:first', 'cache-wiki:second'])
+    assert.match(secondEvidenceStep.detail, /Evidence cache: 1 hit\(s\), 0 miss\(es\), 0 expired, 0 evicted\./)
+    assert.match(secondToolStep.detail, /cached normalized evidence/)
+    assert.doesNotMatch(secondTrace, new RegExp(sourceUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    assert.doesNotMatch(secondTrace, /cacheKey|sourceUrlHash/)
+  })
+
+  it('misses the evidence cache for a different query', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      if (url.pathname === '/source-bundle') {
+        assert.equal(request.method, 'GET')
+        writeJson(response, 200, {
+          source_id: 'query-cache-source',
+          bundle_id: 'query-cache-bundle',
+          capabilities: ['llmwiki_context'],
+        })
+        return
+      }
+
+      if (url.pathname === '/search') {
+        assert.equal(request.method, 'POST')
+        writeJson(response, 200, { results: [] })
+        return
+      }
+
+      assert.equal(url.pathname, '/query')
+      assert.equal(request.method, 'POST')
+      writeJson(response, 200, {
+        wiki_title: 'Query Cache Wiki',
+        evidence: [
+          {
+            page_id: body.query.replace(/\s+/g, '-'),
+            title: `Evidence for ${body.query}`,
+            path: 'query.md',
+            snippet: `Evidence for ${body.query}.`,
+          },
+        ],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      evidenceCacheTtlMs: 60_000,
+      evidenceCacheMaxEntries: 8,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'first cache query',
+          orchestrationMode: 'evidence-only',
+          knowledgeSources: [knowledgeSource('query-cache', 'Query Cache', 'llmwiki-http', source.url)],
+        },
+      }),
+    })
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'second cache query',
+          orchestrationMode: 'evidence-only',
+          knowledgeSources: [knowledgeSource('query-cache', 'Query Cache', 'llmwiki-http', source.url)],
+        },
+      }),
+    })
+    const artifact = (await response.json()).artifacts[0].parts[0].data
+    const evidenceStep = artifact.steps.find((item) => item.id === 'bridge-evidence')
+
+    assert.equal(response.status, 200)
+    assert.equal(source.requests.filter((item) => item.url.pathname === '/query').length, 2)
+    assert.match(evidenceStep.detail, /Evidence cache: 0 hit\(s\), 1 miss\(es\), 0 expired, 0 evicted\./)
+  })
+
+  it('misses the evidence cache after TTL expiry', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      if (url.pathname === '/source-bundle') {
+        assert.equal(request.method, 'GET')
+        writeJson(response, 200, {
+          source_id: 'ttl-cache-source',
+          bundle_id: 'ttl-cache-bundle',
+          capabilities: ['llmwiki_context'],
+        })
+        return
+      }
+
+      if (url.pathname === '/search') {
+        assert.equal(request.method, 'POST')
+        writeJson(response, 200, { results: [] })
+        return
+      }
+
+      assert.equal(url.pathname, '/query')
+      assert.equal(request.method, 'POST')
+      writeJson(response, 200, {
+        wiki_title: 'TTL Cache Wiki',
+        evidence: [
+          {
+            page_id: 'ttl',
+            title: 'TTL Evidence',
+            path: 'ttl.md',
+            snippet: `TTL evidence for ${body.query}.`,
+          },
+        ],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      evidenceCacheTtlMs: 10,
+      evidenceCacheMaxEntries: 8,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const body = {
+      data: {
+        query: 'ttl cache query',
+        orchestrationMode: 'evidence-only',
+        knowledgeSources: [knowledgeSource('ttl-cache', 'TTL Cache', 'llmwiki-http', source.url)],
+      },
+    }
+    await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    await delay(30)
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const artifact = (await response.json()).artifacts[0].parts[0].data
+    const evidenceStep = artifact.steps.find((item) => item.id === 'bridge-evidence')
+
+    assert.equal(response.status, 200)
+    assert.equal(source.requests.filter((item) => item.url.pathname === '/query').length, 2)
+    assert.match(evidenceStep.detail, /Evidence cache: 0 hit\(s\), 1 miss\(es\), 1 expired, 0 evicted\./)
+  })
+
+  it('evicts older evidence cache entries when the max entry bound is reached', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      if (url.pathname === '/source-bundle') {
+        assert.equal(request.method, 'GET')
+        writeJson(response, 200, {
+          source_id: 'evict-cache-source',
+          bundle_id: 'evict-cache-bundle',
+          capabilities: ['llmwiki_context'],
+        })
+        return
+      }
+
+      if (url.pathname === '/search') {
+        assert.equal(request.method, 'POST')
+        writeJson(response, 200, { results: [] })
+        return
+      }
+
+      assert.equal(url.pathname, '/query')
+      assert.equal(request.method, 'POST')
+      writeJson(response, 200, {
+        wiki_title: 'Evict Cache Wiki',
+        evidence: [
+          {
+            page_id: body.query.replace(/\s+/g, '-'),
+            title: `Eviction Evidence for ${body.query}`,
+            path: 'evict.md',
+            snippet: `Eviction evidence for ${body.query}.`,
+          },
+        ],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      evidenceCacheTtlMs: 60_000,
+      evidenceCacheMaxEntries: 1,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const send = async (query) => {
+      const response = await fetch(`${bridge.url}/message:send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          data: {
+            query,
+            orchestrationMode: 'evidence-only',
+            knowledgeSources: [knowledgeSource('evict-cache', 'Evict Cache', 'llmwiki-http', source.url)],
+          },
+        }),
+      })
+      return (await response.json()).artifacts[0].parts[0].data
+    }
+
+    await send('evict cache first')
+    await send('evict cache second')
+    const artifact = await send('evict cache first')
+    const evidenceStep = artifact.steps.find((item) => item.id === 'bridge-evidence')
+
+    assert.equal(source.requests.filter((item) => item.url.pathname === '/query').length, 3)
+    assert.match(evidenceStep.detail, /Evidence cache: 0 hit\(s\), 1 miss\(es\), 0 expired, 1 evicted\./)
+  })
+
   it('falls back to legacy manifest when source-bundle response lacks bundle metadata', async (t) => {
     const source = await startFixtureServer(async ({ request, url, body, response }) => {
       if (url.pathname === '/source-bundle') {
