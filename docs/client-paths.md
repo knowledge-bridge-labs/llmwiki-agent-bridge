@@ -29,6 +29,10 @@ Use the bridge path when a client wants one companion runtime service that:
 
 - Accepts an A2A-style `message:send` request.
 - Accepts an MCP-style `llmwiki_agent_run` tool call at `POST /mcp`.
+- Accepts read-only MCP-style source tools such as `llmwiki_list_sources`,
+  `llmwiki_context`, `llmwiki_search`, `llmwiki_read`, and `llmwiki_graph` for
+  progressive source exploration, plus `llmwiki_graph_neighbors` for bounded
+  relationship traversal.
 - Calls selected `llmwiki-serve` Knowledge Sources over `llmwiki-http`, MCP-style JSON-RPC, or A2A-style HTTP.
 - Sends the evidence bundle to Hermes, DeepAgents, or a generic OpenAI-compatible runtime.
 - Returns one structured answer artifact with citations, graph data, and trace steps.
@@ -39,7 +43,14 @@ The detailed request, response, artifact, and failure shapes are documented in
 Benefits:
 
 - One integration surface for multiple local runtimes.
-- Tool-oriented clients can use `tools/list` and `tools/call` without losing the `llmwiki_agent_result` artifact.
+- Tool-oriented clients can either run `llmwiki_agent_run` for a full grounded
+  answer or use source tools to list, search, read, inspect graph
+  neighborhoods, and graph Knowledge Sources before deciding what to ask next.
+- Discovery clients can read source-registry counts and readiness from
+  `/health` or the agent card without receiving local Knowledge Source URLs.
+  Workbenches that need selectable bridge-managed source descriptors can call
+  `llmwiki_list_sources`; its text summary is URL-free, while its structured
+  descriptors include URLs for local execution.
 - Runtime profiles for Hermes, DeepAgents, and generic OpenAI-compatible endpoints.
 - Consistent answer, citation, graph, and trace artifact shape.
 - Bounded source fan-out for multiple selected sources while preserving

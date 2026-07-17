@@ -25,6 +25,12 @@ const MAX_EVIDENCE_ITEMS_PER_SOURCE = 8
 const MAX_SEARCH_AUGMENT_QUERIES = 2
 const MAX_SEARCH_AUGMENT_RESULTS_PER_QUERY = 4
 const MAX_SEARCH_AUGMENT_TERMS = 6
+const DEFAULT_SOURCE_TOOL_LIMIT = 8
+const MAX_SOURCE_TOOL_LIMIT = 50
+const DEFAULT_GRAPH_TOOL_LIMIT = 120
+const MAX_GRAPH_TOOL_LIMIT = 500
+const DEFAULT_GRAPH_NEIGHBOR_DEPTH = 1
+const MAX_GRAPH_NEIGHBOR_DEPTH = 4
 const MAX_CITATION_DIGEST_ITEMS = 8
 const MAX_CITATION_DIGEST_SNIPPET_CHARS = 320
 const MAX_FALLBACK_CITATION_ANCHORS = 5
@@ -375,7 +381,8 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
           hermesModelConfigured: { type: 'boolean' },
           configuredAllowedOrigins: { type: 'integer', minimum: 0 },
           sourcePolicy: { enum: ['private-http', 'allowlist', 'public-https'] },
-        }, ['status', 'runtime', 'runtimeProfile', 'runtimeId', 'agentRuntime', 'modelConfigured', 'hermesModelConfigured', 'configuredAllowedOrigins', 'sourcePolicy']),
+          sourceRegistry: sourceRegistrySummarySchema(),
+        }, ['status', 'runtime', 'runtimeProfile', 'runtimeId', 'agentRuntime', 'modelConfigured', 'hermesModelConfigured', 'configuredAllowedOrigins', 'sourcePolicy', 'sourceRegistry']),
         AgentCardResponse: objectSchema({
           id: { type: 'string' },
           name: { type: 'string' },
@@ -407,7 +414,8 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
               a2a: { const: 'compatible' },
               mcp: { const: 'compatible' },
             }, ['a2a', 'mcp']),
-          }, ['bridge', 'runtimeProfile', 'modelConfigured', 'hermesModelConfigured', 'sourcePolicy', 'settingsUrl', 'protocolSurface']),
+            sourceRegistry: sourceRegistrySummarySchema(),
+          }, ['bridge', 'runtimeProfile', 'modelConfigured', 'hermesModelConfigured', 'sourcePolicy', 'settingsUrl', 'protocolSurface', 'sourceRegistry']),
         }, ['id', 'name', 'description', 'protocol', 'runtime', 'agentRuntime', 'provider', 'url', 'capabilities', 'metadata']),
         MessageSendEnvelope: objectSchema({
           data: { $ref: '#/components/schemas/MessageSendData' },
@@ -672,7 +680,18 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
           },
         }, ['tools']),
         McpToolDescriptor: objectSchema({
-          name: { const: 'llmwiki_agent_run' },
+          name: {
+            enum: [
+              'llmwiki_agent_run',
+              'llmwiki_list_sources',
+              'llmwiki_context',
+              'llmwiki_search',
+              'llmwiki_read',
+              'llmwiki_graph',
+              'llmwiki_graph_neighbors',
+              'llmwiki_source_bundle',
+            ],
+          },
           description: { type: 'string' },
           inputSchema: { type: 'object', additionalProperties: true },
         }, ['name', 'description', 'inputSchema']),
@@ -681,15 +700,59 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
             type: 'array',
             items: { $ref: '#/components/schemas/McpContentPart' },
           },
-          structuredContent: objectSchema({
-            llmwiki_agent_result: { $ref: '#/components/schemas/AgentResult' },
-          }, ['llmwiki_agent_result']),
+          structuredContent: {
+            type: 'object',
+            additionalProperties: true,
+            properties: {
+              llmwiki_agent_result: { $ref: '#/components/schemas/AgentResult' },
+              llmwiki_sources: { $ref: '#/components/schemas/McpSourcesResult' },
+              llmwiki_context: { type: 'object', additionalProperties: true },
+              llmwiki_search: { type: 'object', additionalProperties: true },
+              llmwiki_read: { type: 'object', additionalProperties: true },
+              llmwiki_graph: { type: 'object', additionalProperties: true },
+              llmwiki_graph_neighbors: { type: 'object', additionalProperties: true },
+              llmwiki_source_bundle: { type: 'object', additionalProperties: true },
+              llmwiki_source_error: { type: 'object', additionalProperties: true },
+            },
+          },
           isError: { type: 'boolean' },
         }, ['content', 'structuredContent', 'isError']),
         McpContentPart: objectSchema({
           type: { const: 'text' },
           text: { type: 'string' },
         }, ['type', 'text']),
+        McpSourcesResult: objectSchema({
+          sources: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/McpSourceSummary' },
+          },
+          totalSourceCount: { type: 'integer', minimum: 0 },
+          selectedSourceCount: { type: 'integer', minimum: 0 },
+          readySourceCount: { type: 'integer', minimum: 0 },
+          unavailableSourceCount: { type: 'integer', minimum: 0 },
+        }, ['sources', 'totalSourceCount', 'selectedSourceCount', 'readySourceCount', 'unavailableSourceCount']),
+        McpSourceSummary: objectSchema({
+          id: { type: 'string' },
+          name: { type: 'string' },
+          description: { type: 'string' },
+          protocol: { enum: ['llmwiki-http', 'mcp', 'a2a'] },
+          status: { type: 'string' },
+          selected: { type: 'boolean' },
+          url: { type: 'string' },
+          readiness: { $ref: '#/components/schemas/McpSourceReadiness' },
+          capabilities: {
+            type: 'array',
+            items: { type: 'string' },
+          },
+          adapter: { type: 'string' },
+          implementation: { type: 'string' },
+        }, ['id', 'name', 'description', 'protocol', 'status', 'selected', 'url', 'readiness', 'capabilities', 'adapter', 'implementation']),
+        McpSourceReadiness: objectSchema({
+          ready: { type: 'boolean' },
+          reason: {
+            enum: ['not_selected', 'status_not_ready', 'missing_url', 'unsupported_protocol'],
+          },
+        }, ['ready']),
         Citation: objectSchema({
           id: { type: 'string' },
           title: { type: 'string' },
@@ -859,6 +922,15 @@ function objectSchema(properties, required = []) {
   }
 }
 
+function sourceRegistrySummarySchema() {
+  return objectSchema({
+    registeredSourceCount: { type: 'integer', minimum: 0 },
+    selectedSourceCount: { type: 'integer', minimum: 0 },
+    selectedReadySourceCount: { type: 'integer', minimum: 0 },
+    unavailableSourceCount: { type: 'integer', minimum: 0 },
+  }, ['registeredSourceCount', 'selectedSourceCount', 'selectedReadySourceCount', 'unavailableSourceCount'])
+}
+
 function requestRunContext(request) {
   return normalizedRunContext({
     requestId: headerValue(request.headers, 'x-request-id'),
@@ -973,6 +1045,7 @@ async function handleBridgeRequest(request, response, config) {
         hermesModelConfigured: Boolean(config.hermesModel),
         configuredAllowedOrigins: config.allowedOrigins.length,
         sourcePolicy: config.sourcePolicy,
+        sourceRegistry: sourceRegistrySummary(config),
       }, config, request)
       return
     }
@@ -1245,7 +1318,7 @@ async function handleMcpJsonRpc(body, config) {
         name: 'llmwiki-agent-bridge',
         settingsUrl: SETTINGS_ROUTE,
       },
-      tools: [llmwikiAgentRunToolDescriptor()],
+      tools: mcpToolDescriptors(),
     })
   }
 
@@ -1259,10 +1332,22 @@ async function handleMcpJsonRpc(body, config) {
 async function handleMcpToolsCall(request, id, config) {
   const params = asRecord(request.params)
   const name = readString(params || {}, 'name')
-  if (!params || name !== 'llmwiki_agent_run') {
-    return mcpJsonRpcError(id, -32602, 'MCP tools/call params.name must be llmwiki_agent_run.')
+  if (!params || !name) {
+    return mcpJsonRpcError(id, -32602, 'MCP tools/call params.name is required.')
   }
 
+  if (name === 'llmwiki_agent_run') {
+    return handleMcpAgentRunToolCall(params, id, config)
+  }
+
+  if (mcpSourceToolNames().includes(name)) {
+    return handleMcpSourceToolCall(name, params, id, config)
+  }
+
+  return mcpJsonRpcError(id, -32602, `Unknown MCP tool: ${name}.`)
+}
+
+async function handleMcpAgentRunToolCall(params, id, config) {
   const args = asRecord(params.arguments) || {}
   const a2aBody = asRecord(args.data) ? args : { data: args }
   try {
@@ -1286,6 +1371,47 @@ async function handleMcpToolsCall(request, id, config) {
     }
     throw error
   }
+}
+
+async function handleMcpSourceToolCall(name, params, id, config) {
+  const args = asRecord(params.arguments) || {}
+  try {
+    const result = await runMcpSourceTool(name, args, config)
+    return mcpToolCallSuccess(id, result.summary, result.structuredKey, result.structuredValue)
+  } catch (error) {
+    if (error instanceof HttpError && error.status < 500) {
+      return mcpJsonRpcError(id, -32602, error.message)
+    }
+    return mcpToolCallSuccess(id, redactErrorMessage(error), 'llmwiki_source_error', {
+      tool: name,
+      message: redactErrorMessage(error),
+    }, true)
+  }
+}
+
+function mcpToolDescriptors() {
+  return [
+    llmwikiAgentRunToolDescriptor(),
+    llmwikiListSourcesToolDescriptor(),
+    llmwikiContextToolDescriptor(),
+    llmwikiSearchToolDescriptor(),
+    llmwikiReadToolDescriptor(),
+    llmwikiGraphToolDescriptor(),
+    llmwikiGraphNeighborsToolDescriptor(),
+    llmwikiSourceBundleToolDescriptor(),
+  ]
+}
+
+function mcpSourceToolNames() {
+  return [
+    'llmwiki_list_sources',
+    'llmwiki_context',
+    'llmwiki_search',
+    'llmwiki_read',
+    'llmwiki_graph',
+    'llmwiki_graph_neighbors',
+    'llmwiki_source_bundle',
+  ]
 }
 
 function llmwikiAgentRunToolDescriptor() {
@@ -1323,6 +1449,163 @@ function llmwikiAgentRunToolDescriptor() {
           default: [],
         },
       },
+    },
+  }
+}
+
+function llmwikiListSourcesToolDescriptor() {
+  return {
+    name: 'llmwiki_list_sources',
+    description: 'List registered bridge Knowledge Sources without querying them.',
+    inputSchema: sourceSelectionInputSchema(),
+  }
+}
+
+function llmwikiContextToolDescriptor() {
+  return {
+    name: 'llmwiki_context',
+    description: 'Read an orientation-first context pack from one Knowledge Source without calling the answer runtime.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['query'],
+      properties: {
+        ...sourceSelectionInputProperties(),
+        query: { type: 'string', minLength: 1 },
+        limit: { type: 'integer', minimum: 1, maximum: MAX_SOURCE_TOOL_LIMIT, default: DEFAULT_SOURCE_TOOL_LIMIT },
+        includeDrafts: { type: 'boolean' },
+        include_drafts: { type: 'boolean' },
+      },
+    },
+  }
+}
+
+function llmwikiSearchToolDescriptor() {
+  return {
+    name: 'llmwiki_search',
+    description: 'Search one Knowledge Source for matching wiki pages without calling the answer runtime.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['query'],
+      properties: {
+        ...sourceSelectionInputProperties(),
+        query: { type: 'string', minLength: 1 },
+        limit: { type: 'integer', minimum: 1, maximum: MAX_SOURCE_TOOL_LIMIT, default: DEFAULT_SOURCE_TOOL_LIMIT },
+        includeDrafts: { type: 'boolean' },
+        include_drafts: { type: 'boolean' },
+      },
+    },
+  }
+}
+
+function llmwikiReadToolDescriptor() {
+  return {
+    name: 'llmwiki_read',
+    description: 'Read one page from one Knowledge Source by page id or path.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      anyOf: [
+        { required: ['pageId'] },
+        { required: ['page_id'] },
+      ],
+      properties: {
+        ...sourceSelectionInputProperties(),
+        pageId: { type: 'string', minLength: 1 },
+        page_id: { type: 'string', minLength: 1 },
+        includeDrafts: { type: 'boolean' },
+        include_drafts: { type: 'boolean' },
+      },
+    },
+  }
+}
+
+function llmwikiGraphToolDescriptor() {
+  return {
+    name: 'llmwiki_graph',
+    description: 'Read graph nodes and edges from one Knowledge Source without calling the answer runtime.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        ...sourceSelectionInputProperties(),
+        limit: { type: 'integer', minimum: 1, maximum: MAX_GRAPH_TOOL_LIMIT, default: DEFAULT_GRAPH_TOOL_LIMIT },
+        includeDrafts: { type: 'boolean' },
+        include_drafts: { type: 'boolean' },
+      },
+    },
+  }
+}
+
+function llmwikiGraphNeighborsToolDescriptor() {
+  return {
+    name: 'llmwiki_graph_neighbors',
+    description: 'Read a bounded graph neighborhood around one or more node ids from selected Knowledge Sources without calling the answer runtime.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      anyOf: [
+        { required: ['nodeId'] },
+        { required: ['node_id'] },
+        { required: ['nodeIds'] },
+        { required: ['node_ids'] },
+      ],
+      properties: {
+        ...sourceSelectionInputProperties(),
+        nodeId: { type: 'string', minLength: 1 },
+        node_id: { type: 'string', minLength: 1 },
+        nodeIds: { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 },
+        node_ids: { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 },
+        direction: { enum: ['out', 'in', 'both'], default: 'both' },
+        relation: { type: 'string', minLength: 1 },
+        relations: { type: 'array', items: { type: 'string', minLength: 1 } },
+        depth: { type: 'integer', minimum: 1, maximum: MAX_GRAPH_NEIGHBOR_DEPTH, default: DEFAULT_GRAPH_NEIGHBOR_DEPTH },
+        limit: { type: 'integer', minimum: 1, maximum: MAX_GRAPH_TOOL_LIMIT, default: DEFAULT_GRAPH_TOOL_LIMIT },
+        includeDrafts: { type: 'boolean' },
+        include_drafts: { type: 'boolean' },
+      },
+    },
+  }
+}
+
+function llmwikiSourceBundleToolDescriptor() {
+  return {
+    name: 'llmwiki_source_bundle',
+    description: 'Read safe source bundle metadata from one Knowledge Source when available.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        ...sourceSelectionInputProperties(),
+        includeDrafts: { type: 'boolean' },
+        include_drafts: { type: 'boolean' },
+      },
+    },
+  }
+}
+
+function sourceSelectionInputSchema() {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: sourceSelectionInputProperties(),
+  }
+}
+
+function sourceSelectionInputProperties() {
+  return {
+    sourceId: { type: 'string', description: 'Registered Knowledge Source id. Required when more than one ready source is available.' },
+    source_id: { type: 'string', description: 'Alias for sourceId.' },
+    knowledgeSources: {
+      type: 'array',
+      items: knowledgeSourceInputSchema(),
+      default: [],
+    },
+    knowledge_sources: {
+      type: 'array',
+      items: knowledgeSourceInputSchema(),
+      default: [],
     },
   }
 }
@@ -1376,8 +1659,581 @@ function mcpJsonRpcError(id, code, message) {
   }
 }
 
+function mcpToolCallSuccess(id, text, structuredKey, structuredValue, isError = false) {
+  return mcpJsonRpcSuccess(id, {
+    content: [
+      {
+        type: 'text',
+        text,
+      },
+    ],
+    structuredContent: {
+      [structuredKey]: structuredValue,
+    },
+    isError,
+  })
+}
+
 function jsonRpcId(value) {
   return typeof value === 'string' || typeof value === 'number' || value === null ? value : null
+}
+
+async function runMcpSourceTool(name, args, config) {
+  if (name === 'llmwiki_list_sources') return listMcpKnowledgeSources(args, config)
+
+  if (name === 'llmwiki_graph_neighbors') return runGraphNeighborsMcpSourceTool(args, config)
+
+  const includeDrafts = readBoolean(args, 'includeDrafts') ?? readBoolean(args, 'include_drafts') ?? false
+
+  if (name === 'llmwiki_read') {
+    const readRequest = resolveMcpReadToolRequest(args, config)
+    const page = await readKnowledgeSourcePage(readRequest.source, readRequest.upstreamPageId, includeDrafts, config)
+    const readResult = {
+      source: knowledgeSourceToolSummary(readRequest.source),
+      pageId: readRequest.pageId,
+      page,
+    }
+    return {
+      summary: sourceReadSummary(readResult),
+      structuredKey: 'llmwiki_read',
+      structuredValue: readResult,
+    }
+  }
+
+  const source = resolveMcpToolSource(args, config, name)
+
+  if (name === 'llmwiki_context') {
+    const query = readString(args, 'query').trim()
+    if (!query) throw new HttpError(400, 'llmwiki_context arguments.query is required.', 'bad_request')
+    const limit = sourceToolLimit(args, DEFAULT_SOURCE_TOOL_LIMIT, MAX_SOURCE_TOOL_LIMIT)
+    const payload = await contextKnowledgeSource(source, query, limit, includeDrafts, config)
+    const context = {
+      source: knowledgeSourceToolSummary(source),
+      query,
+      ...normalizeKnowledgeResult(source, payload),
+    }
+    return {
+      summary: sourceContextSummary(context),
+      structuredKey: 'llmwiki_context',
+      structuredValue: context,
+    }
+  }
+
+  if (name === 'llmwiki_search') {
+    const query = readString(args, 'query').trim()
+    if (!query) throw new HttpError(400, 'llmwiki_search arguments.query is required.', 'bad_request')
+    const limit = sourceToolLimit(args, DEFAULT_SOURCE_TOOL_LIMIT, MAX_SOURCE_TOOL_LIMIT)
+    const payload = await searchKnowledgeSource(source, query, limit, includeDrafts, config)
+    const search = normalizeSearchToolResult(source, query, payload)
+    return {
+      summary: sourceSearchSummary(search),
+      structuredKey: 'llmwiki_search',
+      structuredValue: search,
+    }
+  }
+
+  if (name === 'llmwiki_graph') {
+    const limit = sourceToolLimit(args, DEFAULT_GRAPH_TOOL_LIMIT, MAX_GRAPH_TOOL_LIMIT)
+    const payload = await graphKnowledgeSource(source, limit, includeDrafts, config)
+    const graph = {
+      source: knowledgeSourceToolSummary(source),
+      limit,
+      graph: namespaceGraph(normalizeGraphPayload(payload), source),
+    }
+    return {
+      summary: sourceGraphSummary(graph),
+      structuredKey: 'llmwiki_graph',
+      structuredValue: graph,
+    }
+  }
+
+  if (name === 'llmwiki_source_bundle') {
+    const steps = []
+    const diagnostics = []
+    const sourceBundle = await readSourceBundle(source, config, steps, 'mcp-source-bundle', diagnostics)
+    const result = {
+      source: knowledgeSourceToolSummary(source),
+      sourceBundle,
+      steps,
+      diagnostics,
+    }
+    return {
+      summary: sourceBundleSummary(result),
+      structuredKey: 'llmwiki_source_bundle',
+      structuredValue: result,
+    }
+  }
+
+  throw new HttpError(400, `Unknown MCP source tool: ${name}.`, 'bad_request')
+}
+
+function resolveMcpReadToolRequest(args, config) {
+  const pageId = readString(args, 'pageId').trim() || readString(args, 'page_id').trim()
+  if (!pageId) throw new HttpError(400, 'llmwiki_read arguments.pageId is required.', 'bad_request')
+
+  const sources = mcpToolSources(args, config)
+  const requestedId = readString(args, 'sourceId').trim() || readString(args, 'source_id').trim()
+  const candidates = sources.filter(isSelectedReadySource)
+  const prefixed = sourcePrefixMatch(pageId, sources)
+  const source = requestedId
+    ? candidates.find((item) => item.id === requestedId)
+    : prefixed
+      ? candidates.find((item) => item.id === prefixed.source.id)
+      : candidates.length === 1
+        ? candidates[0]
+        : null
+
+  if (!source) {
+    if (requestedId) {
+      throw new HttpError(400, `No ready selected Knowledge Source found for sourceId: ${requestedId}.`, 'bad_request')
+    }
+    if (prefixed) {
+      throw new HttpError(400, `No ready selected Knowledge Source found for pageId source prefix: ${prefixed.source.id}.`, 'bad_request')
+    }
+    if (!candidates.length) {
+      throw new HttpError(400, 'No ready selected Knowledge Source is available.', 'bad_request')
+    }
+    throw new HttpError(400, 'llmwiki_read requires sourceId when more than one ready Knowledge Source is available unless pageId is source-prefixed.', 'bad_request')
+  }
+
+  if (!sourceToolSupportsProtocol('llmwiki_read', source.protocol)) {
+    throw new HttpError(400, `llmwiki_read does not support ${source.protocol} Knowledge Sources.`, 'bad_request')
+  }
+
+  if (prefixed && prefixed.source.id !== source.id) {
+    throw new HttpError(400, `llmwiki_read pageId source prefix ${prefixed.source.id} does not match sourceId: ${source.id}.`, 'bad_request')
+  }
+
+  const upstreamPageId = prefixed && prefixed.source.id === source.id ? prefixed.localId : pageId
+  if (!upstreamPageId) {
+    throw new HttpError(400, 'llmwiki_read arguments.pageId must include a page id after the source prefix.', 'bad_request')
+  }
+
+  return {
+    source,
+    pageId,
+    upstreamPageId,
+  }
+}
+
+function sourcePrefixMatch(id, sources) {
+  const value = String(id || '').trim()
+  if (!value) return null
+
+  const source = sources
+    .filter((item) => item.id && value.startsWith(`${item.id}:`))
+    .sort((left, right) => right.id.length - left.id.length)[0]
+  if (!source) return null
+
+  return {
+    source,
+    localId: value.slice(source.id.length + 1).trim(),
+  }
+}
+
+async function runGraphNeighborsMcpSourceTool(args, config) {
+  const requestedNodeIds = graphNeighborNodeIds(args)
+  if (!requestedNodeIds.length) {
+    throw new HttpError(400, 'llmwiki_graph_neighbors arguments.nodeId or nodeIds is required.', 'bad_request')
+  }
+
+  const includeDrafts = readBoolean(args, 'includeDrafts') ?? readBoolean(args, 'include_drafts') ?? false
+  const direction = graphNeighborDirection(args)
+  const relations = graphNeighborRelations(args)
+  const depth = sourceToolDepth(args)
+  const limit = sourceToolLimit(args, DEFAULT_GRAPH_TOOL_LIMIT, MAX_GRAPH_TOOL_LIMIT)
+  const candidateSources = resolveMcpToolSources(args, config, 'llmwiki_graph_neighbors')
+  const sourcePrefixes = candidateSources.map((source) => `${source.id}:`)
+  const neighborhoods = []
+
+  for (const source of candidateSources) {
+    const sourceNodeIds = graphNeighborNodeIdsForSource(source, requestedNodeIds, sourcePrefixes)
+    if (!sourceNodeIds.length) continue
+
+    const payload = await graphNeighborhoodKnowledgeSource(source, sourceNodeIds, {
+      depth,
+      direction,
+      relations,
+      limit,
+      includeDrafts,
+      config,
+    })
+    neighborhoods.push(normalizeGraphNeighborsToolResult(source, sourceNodeIds, {
+      depth,
+      direction,
+      relations,
+      limit,
+      payload,
+    }))
+  }
+
+  if (!neighborhoods.length) {
+    throw new HttpError(400, 'No selected Knowledge Source matched the requested graph node ids.', 'bad_request')
+  }
+
+  const result = {
+    sources: neighborhoods.map((neighborhood) => neighborhood.source),
+    nodeIds: requestedNodeIds,
+    depth,
+    direction,
+    relations,
+    limit,
+    neighborhoods,
+    graph: mergeGraphs(neighborhoods.map((neighborhood) => neighborhood.graph)),
+    citations: dedupeCitations(neighborhoods.flatMap((neighborhood) => neighborhood.citations)),
+  }
+
+  return {
+    summary: sourceGraphNeighborsSummary(result),
+    structuredKey: 'llmwiki_graph_neighbors',
+    structuredValue: result,
+  }
+}
+
+function listMcpKnowledgeSources(args, config) {
+  const sources = mcpToolSources(args, config)
+  const sourceSummaries = sources.map(knowledgeSourceToolSummary)
+  const result = {
+    sources: sourceSummaries,
+    totalSourceCount: sourceSummaries.length,
+    selectedSourceCount: sourceSummaries.filter((source) => source.selected !== false).length,
+    readySourceCount: sourceSummaries.filter((source) => source.readiness.ready).length,
+    unavailableSourceCount: sourceSummaries.filter((source) => !source.readiness.ready).length,
+  }
+  return {
+    summary: listSourcesSummary(result.sources),
+    structuredKey: 'llmwiki_sources',
+    structuredValue: result,
+  }
+}
+
+function resolveMcpToolSource(args, config, toolName) {
+  const sources = mcpToolSources(args, config)
+  const requestedId = readString(args, 'sourceId').trim() || readString(args, 'source_id').trim()
+  const candidates = sources.filter(isSelectedReadySource)
+  const source = requestedId
+    ? candidates.find((item) => item.id === requestedId)
+    : candidates.length === 1
+      ? candidates[0]
+      : null
+
+  if (!source) {
+    if (requestedId) {
+      throw new HttpError(400, `No ready selected Knowledge Source found for sourceId: ${requestedId}.`, 'bad_request')
+    }
+    if (!candidates.length) {
+      throw new HttpError(400, 'No ready selected Knowledge Source is available.', 'bad_request')
+    }
+    throw new HttpError(400, `${toolName} requires sourceId when more than one ready Knowledge Source is available.`, 'bad_request')
+  }
+
+  if (!sourceToolSupportsProtocol(toolName, source.protocol)) {
+    throw new HttpError(400, `${toolName} does not support ${source.protocol} Knowledge Sources.`, 'bad_request')
+  }
+
+  return source
+}
+
+function resolveMcpToolSources(args, config, toolName) {
+  const sources = mcpToolSources(args, config)
+  const requestedId = readString(args, 'sourceId').trim() || readString(args, 'source_id').trim()
+  const candidates = sources.filter(isSelectedReadySource)
+  const selected = requestedId ? candidates.filter((item) => item.id === requestedId) : candidates
+
+  if (!selected.length) {
+    if (requestedId) {
+      throw new HttpError(400, `No ready selected Knowledge Source found for sourceId: ${requestedId}.`, 'bad_request')
+    }
+    throw new HttpError(400, 'No ready selected Knowledge Source is available.', 'bad_request')
+  }
+
+  const unsupported = selected.find((source) => !sourceToolSupportsProtocol(toolName, source.protocol))
+  if (unsupported) {
+    throw new HttpError(400, `${toolName} does not support ${unsupported.protocol} Knowledge Sources.`, 'bad_request')
+  }
+
+  return selected
+}
+
+function mcpToolSources(args, config) {
+  const sourceValue = args.knowledgeSources ?? args.knowledge_sources
+  const rawSources = sourceValue !== undefined ? sourceValue : config.registeredSources
+  return normalizeKnowledgeSourceDescriptors(rawSources)
+}
+
+function sourceToolSupportsProtocol(toolName, protocol) {
+  if (toolName === 'llmwiki_context') return ['llmwiki-http', 'mcp', 'a2a'].includes(protocol)
+  if (toolName === 'llmwiki_source_bundle') return ['llmwiki-http', 'mcp'].includes(protocol)
+  return ['llmwiki-http', 'mcp'].includes(protocol)
+}
+
+async function contextKnowledgeSource(source, query, limit, includeDrafts, config) {
+  assertAllowedKnowledgeSourceFetchUrl(source.url, config)
+
+  if (source.protocol === 'llmwiki-http') {
+    return postKnowledgeSourceJson(joinUrl(source.url, '/query'), {
+      query,
+      limit,
+      include_drafts: includeDrafts,
+    }, 'llmwiki-http query', config)
+  }
+
+  if (source.protocol === 'mcp') {
+    return callMcpTool(source, 'llmwiki_context', {
+      query,
+      limit,
+      include_drafts: includeDrafts,
+    }, config)
+  }
+
+  if (source.protocol === 'a2a') {
+    return queryA2aSource(source, query, config)
+  }
+
+  throw new Error(`Unsupported Knowledge Source protocol: ${source.protocol}`)
+}
+
+async function searchKnowledgeSource(source, query, limit, includeDrafts, config) {
+  assertAllowedKnowledgeSourceFetchUrl(source.url, config)
+
+  if (source.protocol === 'llmwiki-http') {
+    return postKnowledgeSourceJson(joinUrl(source.url, '/search'), {
+      query,
+      limit,
+      include_drafts: includeDrafts,
+    }, 'llmwiki-http search', config)
+  }
+
+  if (source.protocol === 'mcp') {
+    return callMcpTool(source, 'llmwiki_search', {
+      query,
+      limit,
+      include_drafts: includeDrafts,
+    }, config)
+  }
+
+  throw new Error(`Unsupported Knowledge Source protocol for search: ${source.protocol}`)
+}
+
+async function readKnowledgeSourcePage(source, pageId, includeDrafts, config) {
+  assertAllowedKnowledgeSourceFetchUrl(source.url, config)
+
+  if (source.protocol === 'llmwiki-http') {
+    const url = urlWithQuery(joinUrl(source.url, `/read/${encodeURIComponent(pageId)}`), {
+      include_drafts: includeDrafts,
+    })
+    return fetchKnowledgeSourceJson(url, { method: 'GET' }, 'llmwiki-http read', config)
+  }
+
+  if (source.protocol === 'mcp') {
+    return callMcpTool(source, 'llmwiki_read', {
+      page_id: pageId,
+      include_drafts: includeDrafts,
+    }, config)
+  }
+
+  throw new Error(`Unsupported Knowledge Source protocol for read: ${source.protocol}`)
+}
+
+async function graphKnowledgeSource(source, limit, includeDrafts, config) {
+  assertAllowedKnowledgeSourceFetchUrl(source.url, config)
+
+  if (source.protocol === 'llmwiki-http') {
+    const url = urlWithQuery(joinUrl(source.url, '/graph'), {
+      limit,
+      include_drafts: includeDrafts,
+    })
+    return fetchKnowledgeSourceJson(url, { method: 'GET' }, 'llmwiki-http graph', config)
+  }
+
+  if (source.protocol === 'mcp') {
+    return callMcpTool(source, 'llmwiki_graph', {
+      limit,
+      include_drafts: includeDrafts,
+    }, config)
+  }
+
+  throw new Error(`Unsupported Knowledge Source protocol for graph: ${source.protocol}`)
+}
+
+async function graphNeighborhoodKnowledgeSource(source, nodeIds, { depth, direction, relations, limit, includeDrafts, config }) {
+  assertAllowedKnowledgeSourceFetchUrl(source.url, config)
+
+  if (source.protocol === 'llmwiki-http') {
+    const url = urlWithQuery(joinUrl(source.url, '/graph/neighborhood'), {
+      seed: nodeIds,
+      depth,
+      direction,
+      relation: relations,
+      limit,
+      include_drafts: includeDrafts,
+    })
+    return fetchKnowledgeSourceJson(url, { method: 'GET' }, 'llmwiki-http graph neighborhood', config)
+  }
+
+  if (source.protocol === 'mcp') {
+    return callMcpTool(source, 'llmwiki_graph_neighbors', {
+      ...(nodeIds.length === 1 ? { seed: nodeIds[0] } : {}),
+      seeds: nodeIds,
+      depth,
+      direction,
+      relations,
+      limit,
+      include_drafts: includeDrafts,
+    }, config)
+  }
+
+  throw new Error(`Unsupported Knowledge Source protocol for graph neighbors: ${source.protocol}`)
+}
+
+function sourceToolLimit(args, defaultValue, maxValue) {
+  const parsed = readNumber(args, 'limit')
+  if (!Number.isFinite(parsed)) return defaultValue
+  return Math.max(1, Math.min(maxValue, Math.trunc(parsed)))
+}
+
+function sourceToolDepth(args) {
+  const parsed = readNumber(args, 'depth')
+  if (!Number.isFinite(parsed)) return DEFAULT_GRAPH_NEIGHBOR_DEPTH
+  return Math.max(1, Math.min(MAX_GRAPH_NEIGHBOR_DEPTH, Math.trunc(parsed)))
+}
+
+function graphNeighborDirection(args) {
+  const value = readString(args, 'direction').trim()
+  return ['out', 'in', 'both'].includes(value) ? value : 'both'
+}
+
+function graphNeighborRelations(args) {
+  return uniqueNonEmptyStrings([
+    readString(args, 'relation'),
+    ...readStringArray(args.relations),
+  ])
+}
+
+function knowledgeSourceToolSummary(source) {
+  return removeUndefinedProperties({
+    id: source.id,
+    name: source.name,
+    description: source.description,
+    protocol: source.protocol,
+    status: source.status,
+    selected: source.selected !== false,
+    url: source.url,
+    readiness: knowledgeSourceReadiness(source),
+    capabilities: source.capabilities,
+    adapter: source.adapter,
+    implementation: source.implementation,
+  })
+}
+
+function knowledgeSourceReadiness(source) {
+  if (source.selected === false) return { ready: false, reason: 'not_selected' }
+  if (source.status !== 'ready') return { ready: false, reason: 'status_not_ready' }
+  if (!source.url) return { ready: false, reason: 'missing_url' }
+  if (!['llmwiki-http', 'mcp', 'a2a'].includes(source.protocol)) return { ready: false, reason: 'unsupported_protocol' }
+  return { ready: true }
+}
+
+function normalizeSearchToolResult(source, query, payload) {
+  const rawResults = searchResultsFromPayload(payload)
+  return {
+    source: knowledgeSourceToolSummary(source),
+    query,
+    results: rawResults.map((item, index) => normalizeSearchToolItem(source, item, index)),
+  }
+}
+
+function normalizeSearchToolItem(source, item, index) {
+  const rawId = readString(item, 'id') || readString(item, 'page_id') || readString(item, 'pageId') || readString(item, 'path') || String(index + 1)
+  const id = sourcePrefixedId(source, rawId)
+  return removeUndefinedProperties({
+    id,
+    pageId: readString(item, 'page_id') || readString(item, 'pageId') || rawId,
+    title: readString(item, 'title') || 'Untitled',
+    path: readString(item, 'path'),
+    snippet: readableMarkdown(readString(item, 'snippet')),
+    score: readNumber(item, 'score'),
+    sourceRefs: readStringArray(item.sourceRefs ?? item.source_refs),
+  })
+}
+
+function normalizeGraphNeighborsToolResult(source, nodeIds, { depth, direction, relations, limit, payload }) {
+  const graph = namespaceGraph(graphFromKnowledgePayload(payload) || emptyGraph(), source)
+  const citations = normalizeCitations(source, payload)
+  return {
+    source: knowledgeSourceToolSummary(source),
+    nodeIds: nodeIds.map((nodeId) => sourcePrefixedId(source, nodeId)),
+    depth,
+    direction,
+    relations,
+    limit,
+    graph,
+    citations,
+  }
+}
+
+function graphNeighborNodeIds(args) {
+  return uniqueNonEmptyStrings([
+    readString(args, 'nodeId'),
+    readString(args, 'node_id'),
+    ...readStringArray(args.nodeIds),
+    ...readStringArray(args.node_ids),
+  ])
+}
+
+function graphNeighborNodeIdsForSource(source, nodeIds, sourcePrefixes) {
+  const prefix = `${source.id}:`
+  const localNodeIds = nodeIds.map((nodeId) => {
+    if (nodeId.startsWith(prefix)) return nodeId.slice(prefix.length)
+    if (sourcePrefixes.some((candidate) => candidate !== prefix && nodeId.startsWith(candidate))) return ''
+    return nodeId
+  })
+  return uniqueNonEmptyStrings(localNodeIds)
+}
+
+function listSourcesSummary(sources) {
+  if (!sources.length) return 'No Knowledge Sources are registered.'
+  return [
+    `Registered Knowledge Sources: ${sources.length}.`,
+    ...sources.map((source) => {
+      const readiness = source.readiness?.ready
+        ? 'ready'
+        : `unavailable: ${source.readiness?.reason || 'unknown'}`
+      return `- ${source.id}: ${source.name} (${source.protocol}, ${source.status}, ${readiness}${source.selected === false ? ', not selected' : ''})`
+    }),
+  ].join('\n')
+}
+
+function sourceContextSummary(context) {
+  return [
+    `Context from ${context.source.name}: ${context.citations.length} citation(s), ${context.orientation.length} orientation item(s).`,
+    `Graph: ${context.graph.nodes.length} node(s), ${context.graph.edges.length} edge(s).`,
+  ].join('\n')
+}
+
+function sourceSearchSummary(search) {
+  return `Search ${search.source.name}: ${search.results.length} result(s) for "${search.query}".`
+}
+
+function sourceReadSummary(result) {
+  const page = asRecord(result.page) || {}
+  const title = readString(page, 'title') || readString(page, 'name') || result.pageId
+  const found = page.found === false ? 'not found' : 'read'
+  return `Page ${found} from ${result.source.name}: ${title}.`
+}
+
+function sourceGraphSummary(result) {
+  return `Graph from ${result.source.name}: ${result.graph.nodes.length} node(s), ${result.graph.edges.length} edge(s).`
+}
+
+function sourceGraphNeighborsSummary(result) {
+  return `Graph neighborhoods from ${result.sources.length} source(s): ${result.graph.nodes.length} node(s), ${result.graph.edges.length} edge(s), ${result.citations.length} citation(s).`
+}
+
+function sourceBundleSummary(result) {
+  if (!result.sourceBundle) return `No source bundle metadata was available from ${result.source.name}.`
+  const title = result.sourceBundle.title || result.sourceBundle.bundleId || result.sourceBundle.sourceId
+  return `Source bundle from ${result.source.name}: ${title}.`
 }
 
 async function readSourceBundle(source, config, steps, parentId, diagnostics = []) {
@@ -1548,8 +2404,11 @@ async function callMcpTool(source, name, args, config) {
   if (!result) throw new Error('MCP tool returned no result object.')
   if (result.isError === true) throw new Error('MCP tool returned an error result.')
 
-  return asRecord(result.structuredContent)
-    || asRecord(result.structured_content)
+  const structuredContent = asRecord(result.structuredContent) || asRecord(result.structured_content)
+  const structuredToolValue = asRecord(structuredContent?.[name])
+
+  return structuredToolValue
+    || structuredContent
     || asRecord(result.data)
     || extractRecordFromParts(result.content)
     || result
@@ -1656,20 +2515,26 @@ async function callHermesChatCompletions({ query, sourceResults, sourceFailures,
 function hermesMessages({ query, sourceResults, sourceFailures, citations, graph }) {
   const sourceCorpusSummaries = sourceResults.map(({ source, result }) => sourceCorpusSummary(source, result))
   const mergedCorpusSummary = mergeCorpusSummaries(sourceCorpusSummaries)
-  const sourceBundles = sourceResults.map(({ sourceBundle }) => sourceBundle).filter(Boolean)
+  const citationIndexById = new Map(citations.map((citation, index) => [citation.id, index + 1]))
   const evidenceBundle = {
-    question: query,
+    schema: 'llmwiki-agent-bridge.answer-evidence.v1',
+    runtimeContract: {
+      citations: 'Use the top-level citations array as the only citation anchor source.',
+      graph: 'Graph and source bundle details are returned in the bridge artifact and source tools, not in this answer prompt.',
+    },
     citationDigest: rankedCitationDigest(query, citations),
     citations,
-    sources: sourceResults.map(({ result, sourceBundle }, index) => ({
+    sources: sourceResults.map(({ result }, index) => ({
       ...sourceCorpusSummaries[index],
-      ...(sourceBundle ? { sourceBundle } : {}),
       orientation: result.orientation,
-      citations: result.citations,
+      citationIndexes: result.citations
+        .map((citation) => citationIndexById.get(citation.id))
+        .filter(Boolean),
+      citationCount: result.citations.length,
       limitations: result.limitations,
       graph: {
-        nodes: result.graph?.nodes?.slice(0, 40) || [],
-        edges: result.graph?.edges?.slice(0, 80) || [],
+        nodeCount: result.graph?.nodes?.length || 0,
+        edgeCount: result.graph?.edges?.length || 0,
       },
     })),
     sourceFailures: sourceFailures.map(({ source, error, diagnostic }) => ({
@@ -1677,18 +2542,16 @@ function hermesMessages({ query, sourceResults, sourceFailures, citations, graph
       name: source.name,
       protocol: source.protocol,
       error,
-      ...(diagnostic ? { diagnostic } : {}),
+      ...(diagnostic?.message ? { message: diagnostic.message } : {}),
+      ...(diagnostic?.remediation ? { remediation: diagnostic.remediation } : {}),
     })),
     mergedGraphSummary: {
       nodeCount: graph.nodes.length,
       edgeCount: graph.edges.length,
       ...(mergedCorpusSummary.pageCount !== undefined ? { corpusPageCount: mergedCorpusSummary.pageCount } : {}),
       ...(mergedCorpusSummary.approvedPageCount !== undefined ? { corpusApprovedPageCount: mergedCorpusSummary.approvedPageCount } : {}),
-      sampleNodes: graph.nodes.slice(0, 20),
-      sampleEdges: graph.edges.slice(0, 40),
     },
     mergedCorpusSummary,
-    sourceBundles,
     citationCount: citations.length,
   }
 
@@ -2209,7 +3072,7 @@ function normalizeCitations(source, payload) {
 
   return rawCitations.map((item, index) => {
     const rawId = readString(item, 'id') || readString(item, 'page_id') || readString(item, 'path') || String(index + 1)
-    const id = rawId.includes(':') ? rawId : `${source.id}:${rawId}`
+    const id = sourcePrefixedId(source, rawId)
     return {
       id,
       title: readString(item, 'title') || 'Untitled',
@@ -2246,15 +3109,20 @@ function normalizeGraphPayload(payload) {
   }
 }
 
-function namespaceGraph(graph, source) {
+function sourcePrefixedId(source, id) {
+  const value = String(id || '').trim()
+  if (!value) return ''
   const prefix = `${source.id}:`
+  return value.startsWith(prefix) ? value : `${prefix}${value}`
+}
+
+function namespaceGraph(graph, source) {
   const nodeIds = new Set(graph.nodes.map((node) => node.id))
-  const namespacedId = (id) => id.startsWith(prefix) ? id : `${prefix}${id}`
 
   return {
     nodes: graph.nodes.map((node) => ({
       ...node,
-      id: namespacedId(node.id),
+      id: sourcePrefixedId(source, node.id),
       metadata: {
         ...(node.metadata || {}),
         connectionId: source.id,
@@ -2262,8 +3130,8 @@ function namespaceGraph(graph, source) {
     })),
     edges: graph.edges.map((edge) => ({
       ...edge,
-      source: nodeIds.has(edge.source) ? namespacedId(edge.source) : edge.source,
-      target: nodeIds.has(edge.target) ? namespacedId(edge.target) : edge.target,
+      source: nodeIds.has(edge.source) ? sourcePrefixedId(source, edge.source) : edge.source,
+      target: nodeIds.has(edge.target) ? sourcePrefixedId(source, edge.target) : edge.target,
       metadata: {
         ...(edge.metadata || {}),
         connectionId: source.id,
@@ -2460,7 +3328,13 @@ function parseA2aRunRequest(body, config) {
   const sourceValue = data.knowledgeSources ?? data.knowledge_sources
   const requestSuppliesSources = sourceValue !== undefined
   const rawSources = requestSuppliesSources ? sourceValue : config.registeredSources
-  const sources = readRecordArray(rawSources).map((source, index) => ({
+  const sources = normalizeKnowledgeSourceDescriptors(rawSources)
+
+  return { query, sources, orchestrationMode }
+}
+
+function normalizeKnowledgeSourceDescriptors(rawSources) {
+  return readRecordArray(rawSources).map((source, index) => ({
     id: readString(source, 'id') || `source-${index + 1}`,
     name: readString(source, 'name') || readString(source, 'title') || `Source ${index + 1}`,
     description: readString(source, 'description'),
@@ -2472,8 +3346,6 @@ function parseA2aRunRequest(body, config) {
     adapter: readString(source, 'adapter'),
     implementation: readString(source, 'implementation'),
   }))
-
-  return { query, sources, orchestrationMode }
 }
 
 function requestOrchestrationMode(data, envelope) {
@@ -2527,7 +3399,20 @@ function agentCard(config) {
         a2a: 'compatible',
         mcp: 'compatible',
       },
+      sourceRegistry: sourceRegistrySummary(config),
     },
+  }
+}
+
+function sourceRegistrySummary(config) {
+  const sources = normalizeKnowledgeSourceDescriptors(config.registeredSources)
+  const selectedSources = sources.filter((source) => source.selected !== false)
+  const readySources = sources.filter(isSelectedReadySource)
+  return {
+    registeredSourceCount: sources.length,
+    selectedSourceCount: selectedSources.length,
+    selectedReadySourceCount: readySources.length,
+    unavailableSourceCount: sources.length - readySources.length,
   }
 }
 
@@ -5408,6 +6293,23 @@ function joinUrl(base, path) {
   return `${trimTrailingSlashes(base)}${path}`
 }
 
+function urlWithQuery(value, params) {
+  const url = new URL(value)
+  for (const [key, raw] of Object.entries(params)) {
+    if (raw === undefined || raw === null) continue
+    if (Array.isArray(raw)) {
+      url.searchParams.delete(key)
+      for (const item of raw) {
+        const value = String(item || '').trim()
+        if (value) url.searchParams.append(key, value)
+      }
+      continue
+    }
+    url.searchParams.set(key, String(raw))
+  }
+  return url.toString()
+}
+
 function pathName(url) {
   try {
     return trimTrailingSlashes(new URL(url).pathname)
@@ -5485,6 +6387,18 @@ function dedupeCitations(citations) {
     seen.add(key)
     return true
   })
+}
+
+function uniqueNonEmptyStrings(values) {
+  const seen = new Set()
+  const unique = []
+  for (const value of values) {
+    const item = String(value || '').trim()
+    if (!item || seen.has(item)) continue
+    seen.add(item)
+    unique.push(item)
+  }
+  return unique
 }
 
 function emptyGraph() {

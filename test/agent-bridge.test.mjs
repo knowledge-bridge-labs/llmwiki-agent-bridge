@@ -47,6 +47,12 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(card.metadata.hermesModelConfigured, true)
     assert.equal(card.metadata.sourcePolicy, 'private-http')
     assert.equal(card.metadata.settingsUrl, '/settings')
+    assert.deepEqual(card.metadata.sourceRegistry, {
+      registeredSourceCount: 0,
+      selectedSourceCount: 0,
+      selectedReadySourceCount: 0,
+      unavailableSourceCount: 0,
+    })
 
     const healthResponse = await fetch(`${bridge.url}/health`)
     const health = await healthResponse.json()
@@ -60,6 +66,12 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(health.modelConfigured, true)
     assert.equal(health.hermesModelConfigured, true)
     assert.equal(health.sourcePolicy, 'private-http')
+    assert.deepEqual(health.sourceRegistry, {
+      registeredSourceCount: 0,
+      selectedSourceCount: 0,
+      selectedReadySourceCount: 0,
+      unavailableSourceCount: 0,
+    })
   })
 
   it('can be discovered by the official A2A SDK agent-card resolver', async (t) => {
@@ -77,6 +89,7 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(card.url, '/message:send')
     assert.equal(card.metadata.settingsUrl, '/settings')
     assert.equal(card.metadata.protocolSurface.a2a, 'compatible')
+    assert.equal(card.metadata.sourceRegistry.registeredSourceCount, 0)
   })
 
   it('serves a static settings screen and redacted authenticated settings JSON', async (t) => {
@@ -699,6 +712,30 @@ describe('llmwiki-agent-bridge', () => {
     assert(
       Object.hasOwn(schema.components.schemas, 'McpJsonRpcResponse'),
       'McpJsonRpcResponse schema missing',
+    )
+    assert(
+      Object.hasOwn(schema.components.schemas, 'McpSourcesResult'),
+      'McpSourcesResult schema missing',
+    )
+    assert.equal(
+      schema.components.schemas.McpToolCallResult.properties.structuredContent.properties.llmwiki_sources.$ref,
+      '#/components/schemas/McpSourcesResult',
+    )
+    assert.deepEqual(
+      schema.components.schemas.McpSourcesResult.required,
+      ['sources', 'totalSourceCount', 'selectedSourceCount', 'readySourceCount', 'unavailableSourceCount'],
+    )
+    assert.equal(
+      schema.components.schemas.McpSourcesResult.properties.sources.items.$ref,
+      '#/components/schemas/McpSourceSummary',
+    )
+    assert.deepEqual(
+      schema.components.schemas.McpSourceSummary.required,
+      ['id', 'name', 'description', 'protocol', 'status', 'selected', 'url', 'readiness', 'capabilities', 'adapter', 'implementation'],
+    )
+    assert.equal(
+      schema.components.schemas.McpSourceSummary.properties.readiness.$ref,
+      '#/components/schemas/McpSourceReadiness',
     )
   })
 
@@ -1344,6 +1381,669 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(hermes.requests.length, 1)
   })
 
+  it('exposes read-only MCP source tools for progressive source exploration without calling runtime', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      if (url.pathname === '/query') {
+        assert.equal(request.method, 'POST')
+        assert.equal(body.query, 'release readiness')
+        assert.equal(body.limit, 3)
+        writeJson(response, 200, {
+          wiki_title: 'Progressive Source',
+          orientation: [
+            {
+              page_id: 'hot',
+              title: 'Hot',
+              path: 'hot.md',
+              snippet: 'Start with current release context.',
+              role: 'hot',
+            },
+          ],
+          evidence: [
+            {
+              page_id: 'release-readiness',
+              title: 'Release Readiness',
+              path: 'release-readiness.md',
+              snippet: 'Release readiness evidence.',
+              source_refs: ['REL-1'],
+            },
+          ],
+          graph: {
+            nodes: [{ id: 'release-readiness', label: 'Release Readiness' }],
+            edges: [],
+          },
+        })
+        return
+      }
+
+      if (url.pathname === '/search') {
+        assert.equal(request.method, 'POST')
+        assert.equal(body.query, 'owner risk')
+        writeJson(response, 200, {
+          results: [
+            {
+              page_id: 'owner-risk',
+              title: 'Owner Risk',
+              path: 'owner-risk.md',
+              snippet: 'Owner risk search result.',
+              score: 0.9,
+            },
+          ],
+        })
+        return
+      }
+
+      if (url.pathname === '/read/release-readiness') {
+        assert.equal(request.method, 'GET')
+        writeJson(response, 200, {
+          id: 'release-readiness',
+          title: 'Release Readiness',
+          path: 'release-readiness.md',
+          markdown: '# Release Readiness\n\nRelease readiness evidence.',
+        })
+        return
+      }
+
+      if (url.pathname === '/graph') {
+        assert.equal(request.method, 'GET')
+        assert.equal(url.searchParams.get('limit'), '4')
+        writeJson(response, 200, {
+          nodes: [{ id: 'release-readiness', label: 'Release Readiness' }],
+          edges: [{ source: 'release-readiness', target: 'owner-risk', relation: 'mentions' }],
+        })
+        return
+      }
+
+      if (url.pathname === '/graph/neighborhood') {
+        assert.equal(request.method, 'GET')
+        assert.deepEqual(url.searchParams.getAll('seed'), ['release-readiness'])
+        assert.equal(url.searchParams.get('depth'), '2')
+        assert.equal(url.searchParams.get('direction'), 'out')
+        assert.deepEqual(url.searchParams.getAll('relation'), ['mentions'])
+        assert.equal(url.searchParams.get('limit'), '5')
+        assert.equal(url.searchParams.get('include_drafts'), 'true')
+        writeJson(response, 200, {
+          nodes: [
+            { id: 'release-readiness', label: 'Release Readiness' },
+            { id: 'owner-risk', label: 'Owner Risk' },
+          ],
+          edges: [{ source: 'release-readiness', target: 'owner-risk', relation: 'mentions' }],
+          citations: [
+            {
+              page_id: 'page:owner-risk',
+              title: 'Owner Risk',
+              path: 'owner-risk.md',
+              snippet: 'Owner risk citation from graph traversal.',
+            },
+          ],
+        })
+        return
+      }
+
+      if (url.pathname === '/source-bundle') {
+        assert.equal(request.method, 'GET')
+        writeJson(response, 200, {
+          source_id: 'progressive-source',
+          bundle_id: 'progressive-bundle',
+          title: 'Progressive Bundle',
+          projection: { page_count: 2, graph_node_count: 2 },
+        })
+        return
+      }
+
+      writeJson(response, 404, { error: 'not found' })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      registeredSources: [
+        knowledgeSource('progressive-source', 'Progressive Source', 'llmwiki-http', source.url),
+        {
+          ...knowledgeSource('warming-source', 'Warming Source', 'llmwiki-http', `${source.url}/warming-private-path?token=source-secret`),
+          status: 'warming',
+        },
+      ],
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const tools = await callBridgeMcp(bridge, 1, 'tools/list')
+    assert.deepEqual(
+      tools.result.tools.map((tool) => tool.name),
+      [
+        'llmwiki_agent_run',
+        'llmwiki_list_sources',
+        'llmwiki_context',
+        'llmwiki_search',
+        'llmwiki_read',
+        'llmwiki_graph',
+        'llmwiki_graph_neighbors',
+        'llmwiki_source_bundle',
+      ],
+    )
+
+    const listed = await callBridgeMcpTool(bridge, 'list', 'llmwiki_list_sources', {})
+    const listedSources = listed.result.structuredContent.llmwiki_sources
+    const listedSerialized = JSON.stringify(listed)
+
+    assert.equal(listed.result.isError, false)
+    assert.equal(listedSources.totalSourceCount, 2)
+    assert.equal(listedSources.selectedSourceCount, 2)
+    assert.equal(listedSources.readySourceCount, 1)
+    assert.equal(listedSources.unavailableSourceCount, 1)
+    assert.equal(listedSources.sources[0].id, 'progressive-source')
+    assert.equal(listedSources.sources[0].url, source.url)
+    assert.deepEqual(listedSources.sources[0].readiness, { ready: true })
+    assert.equal(listedSources.sources[1].id, 'warming-source')
+    assert.equal(listedSources.sources[1].url, `${source.url}/warming-private-path?token=source-secret`)
+    assert.deepEqual(listedSources.sources[1].readiness, { ready: false, reason: 'status_not_ready' })
+    assert.match(listed.result.content[0].text, /progressive-source: Progressive Source \(llmwiki-http, ready, ready\)/)
+    assert.doesNotMatch(listed.result.content[0].text, /127\.0\.0\.1/)
+    assert.doesNotMatch(listed.result.content[0].text, /warming-private-path/)
+    assert.doesNotMatch(listed.result.content[0].text, /source-secret/)
+    assert.match(listedSerialized, /warming-private-path/)
+
+    const context = await callBridgeMcpTool(bridge, 'context', 'llmwiki_context', {
+      query: 'release readiness',
+      limit: 3,
+    })
+    assert.equal(context.result.isError, false)
+    assert.deepEqual(context.result.structuredContent.llmwiki_context.citations.map((item) => item.id), [
+      'progressive-source:release-readiness',
+    ])
+    assert.equal(context.result.structuredContent.llmwiki_context.orientation[0].id, 'hot')
+
+    const search = await callBridgeMcpTool(bridge, 'search', 'llmwiki_search', {
+      query: 'owner risk',
+    })
+    assert.equal(search.result.isError, false)
+    assert.deepEqual(search.result.structuredContent.llmwiki_search.results.map((item) => item.id), [
+      'progressive-source:owner-risk',
+    ])
+
+    const read = await callBridgeMcpTool(bridge, 'read', 'llmwiki_read', {
+      pageId: 'release-readiness',
+    })
+    assert.equal(read.result.isError, false)
+    assert.equal(read.result.structuredContent.llmwiki_read.page.title, 'Release Readiness')
+
+    const graph = await callBridgeMcpTool(bridge, 'graph', 'llmwiki_graph', {
+      limit: 4,
+    })
+    assert.equal(graph.result.isError, false)
+    assert.deepEqual(graph.result.structuredContent.llmwiki_graph.graph.nodes.map((node) => node.id), [
+      'progressive-source:release-readiness',
+    ])
+
+    const neighbors = await callBridgeMcpTool(bridge, 'neighbors', 'llmwiki_graph_neighbors', {
+      nodeId: 'progressive-source:release-readiness',
+      depth: 2,
+      direction: 'out',
+      relation: 'mentions',
+      limit: 5,
+      includeDrafts: true,
+    })
+    const neighborResult = neighbors.result.structuredContent.llmwiki_graph_neighbors
+    assert.equal(neighbors.result.isError, false)
+    assert.deepEqual(neighborResult.sources.map((item) => item.id), ['progressive-source'])
+    assert.deepEqual(neighborResult.nodeIds, ['progressive-source:release-readiness'])
+    assert.equal(neighborResult.direction, 'out')
+    assert.deepEqual(neighborResult.relations, ['mentions'])
+    assert.deepEqual(neighborResult.neighborhoods[0].nodeIds, ['progressive-source:release-readiness'])
+    assert.equal(neighborResult.neighborhoods[0].direction, 'out')
+    assert.deepEqual(neighborResult.neighborhoods[0].relations, ['mentions'])
+    assert.deepEqual(neighborResult.graph.nodes.map((node) => node.id), [
+      'progressive-source:release-readiness',
+      'progressive-source:owner-risk',
+    ])
+    assert.deepEqual(neighborResult.graph.edges.map((edge) => [edge.source, edge.target, edge.relation]), [
+      ['progressive-source:release-readiness', 'progressive-source:owner-risk', 'mentions'],
+    ])
+    assert.deepEqual(neighborResult.citations.map((citation) => citation.id), [
+      'progressive-source:page:owner-risk',
+    ])
+
+    const sourceBundle = await callBridgeMcpTool(bridge, 'bundle', 'llmwiki_source_bundle', {})
+    assert.equal(sourceBundle.result.isError, false)
+    assert.equal(sourceBundle.result.structuredContent.llmwiki_source_bundle.sourceBundle.bundleId, 'progressive-bundle')
+
+    assert.equal(source.requests.filter((item) => item.url.pathname === '/query').length, 1)
+    assert.equal(source.requests.filter((item) => item.url.pathname === '/search').length, 1)
+    assert.equal(source.requests.filter((item) => item.url.pathname === '/graph/neighborhood').length, 1)
+  })
+
+  it('resolves source-prefixed llmwiki_read ids before upstream reads', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, response }) => {
+      assert.equal(request.method, 'GET')
+
+      if (url.pathname === '/alpha/read/topic') {
+        writeJson(response, 200, {
+          id: 'topic',
+          title: 'Alpha Topic',
+          markdown: '# Alpha Topic',
+        })
+        return
+      }
+
+      if (url.pathname === '/beta/read/topic') {
+        writeJson(response, 200, {
+          id: 'topic',
+          title: 'Beta Topic',
+          markdown: '# Beta Topic',
+        })
+        return
+      }
+
+      writeJson(response, 404, { error: 'unexpected read path' })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      registeredSources: [
+        knowledgeSource('alpha', 'Alpha Source', 'llmwiki-http', `${source.url}/alpha`),
+        knowledgeSource('beta', 'Beta Source', 'llmwiki-http', `${source.url}/beta`),
+      ],
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const inferred = await callBridgeMcpTool(bridge, 'read-alpha-prefixed', 'llmwiki_read', {
+      pageId: 'alpha:topic',
+    })
+
+    assert.equal(inferred.result.isError, false)
+    assert.equal(inferred.result.structuredContent.llmwiki_read.source.id, 'alpha')
+    assert.equal(inferred.result.structuredContent.llmwiki_read.pageId, 'alpha:topic')
+    assert.equal(inferred.result.structuredContent.llmwiki_read.page.title, 'Alpha Topic')
+    assert.deepEqual(source.requests.map((item) => item.url.pathname), [
+      '/alpha/read/topic',
+    ])
+
+    const explicit = await callBridgeMcpTool(bridge, 'read-alpha-explicit-prefixed', 'llmwiki_read', {
+      sourceId: 'alpha',
+      pageId: 'alpha:topic',
+    })
+
+    assert.equal(explicit.result.isError, false)
+    assert.equal(explicit.result.structuredContent.llmwiki_read.source.id, 'alpha')
+    assert.equal(explicit.result.structuredContent.llmwiki_read.page.title, 'Alpha Topic')
+    assert.deepEqual(source.requests.map((item) => item.url.pathname), [
+      '/alpha/read/topic',
+      '/alpha/read/topic',
+    ])
+
+    const mismatch = await callBridgeMcpTool(bridge, 'read-alpha-beta-prefixed', 'llmwiki_read', {
+      sourceId: 'alpha',
+      pageId: 'beta:topic',
+    })
+
+    assert.equal(mismatch.result, undefined)
+    assert.equal(mismatch.error.code, -32602)
+    assert.match(mismatch.error.message, /pageId source prefix beta does not match sourceId: alpha/)
+    assert.deepEqual(source.requests.map((item) => item.url.pathname), [
+      '/alpha/read/topic',
+      '/alpha/read/topic',
+    ])
+  })
+
+  it('proxies read-only MCP source tools to MCP Knowledge Source tools', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      assert.equal(request.method, 'POST')
+      assert.equal(url.pathname, '/mcp')
+      assert.equal(body.method, 'tools/call')
+      const name = body.params.name
+      const args = body.params.arguments
+
+      if (name === 'llmwiki_context') {
+        assert.equal(args.query, 'architecture')
+        writeJson(response, 200, {
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            wiki_title: 'MCP Source',
+            evidence: [
+              {
+                page_id: 'architecture',
+                title: 'Architecture',
+                path: 'architecture.md',
+                snippet: 'Architecture context.',
+              },
+            ],
+            graph: { nodes: [], edges: [] },
+          },
+        })
+        return
+      }
+
+      if (name === 'llmwiki_search') {
+        writeJson(response, 200, {
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            results: [
+              {
+                page_id: 'operations',
+                title: 'Operations',
+                path: 'operations.md',
+                snippet: 'Operations search result.',
+              },
+            ],
+          },
+        })
+        return
+      }
+
+      if (name === 'llmwiki_read') {
+        assert.equal(args.page_id, 'operations')
+        writeJson(response, 200, {
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            id: 'operations',
+            title: 'Operations',
+            markdown: '# Operations',
+          },
+        })
+        return
+      }
+
+      if (name === 'llmwiki_graph') {
+        assert.equal(args.limit, 2)
+        writeJson(response, 200, {
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            nodes: [{ id: 'operations', label: 'Operations' }],
+            edges: [],
+          },
+        })
+        return
+      }
+
+      if (name === 'llmwiki_graph_neighbors') {
+        assert.equal(args.seed, 'operations')
+        assert.deepEqual(args.seeds, ['operations'])
+        assert.equal(args.depth, 2)
+        assert.equal(args.direction, 'both')
+        assert.deepEqual(args.relations, ['links_to'])
+        assert.equal(args.limit, 3)
+        writeJson(response, 200, {
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            structuredContent: {
+              llmwiki_graph_neighbors: {
+                nodes: [
+                  { id: 'operations', label: 'Operations' },
+                  { id: 'runbook', label: 'Runbook' },
+                ],
+                edges: [{ source: 'operations', target: 'runbook', relation: 'links_to' }],
+                citations: [
+                  {
+                    page_id: 'runbook',
+                    title: 'Runbook',
+                    path: 'runbook.md',
+                    snippet: 'Runbook neighbor.',
+                  },
+                ],
+              },
+            },
+          },
+        })
+        return
+      }
+
+      writeJson(response, 500, { error: 'unexpected tool' })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      registeredSources: [
+        knowledgeSource('mcp-source', 'MCP Source', 'mcp', source.url),
+      ],
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const context = await callBridgeMcpTool(bridge, 'mcp-context', 'llmwiki_context', {
+      query: 'architecture',
+    })
+    assert.deepEqual(context.result.structuredContent.llmwiki_context.citations.map((item) => item.id), [
+      'mcp-source:architecture',
+    ])
+
+    const search = await callBridgeMcpTool(bridge, 'mcp-search', 'llmwiki_search', {
+      query: 'operations',
+    })
+    assert.deepEqual(search.result.structuredContent.llmwiki_search.results.map((item) => item.id), [
+      'mcp-source:operations',
+    ])
+
+    const read = await callBridgeMcpTool(bridge, 'mcp-read', 'llmwiki_read', {
+      pageId: 'mcp-source:operations',
+    })
+    assert.equal(read.result.structuredContent.llmwiki_read.page.title, 'Operations')
+
+    const graph = await callBridgeMcpTool(bridge, 'mcp-graph', 'llmwiki_graph', {
+      limit: 2,
+    })
+    assert.deepEqual(graph.result.structuredContent.llmwiki_graph.graph.nodes.map((node) => node.id), [
+      'mcp-source:operations',
+    ])
+
+    const neighbors = await callBridgeMcpTool(bridge, 'mcp-neighbors', 'llmwiki_graph_neighbors', {
+      nodeId: 'mcp-source:operations',
+      depth: 2,
+      relations: ['links_to'],
+      limit: 3,
+    })
+    const neighborResult = neighbors.result.structuredContent.llmwiki_graph_neighbors
+    assert.deepEqual(neighborResult.graph.nodes.map((node) => node.id), [
+      'mcp-source:operations',
+      'mcp-source:runbook',
+    ])
+    assert.deepEqual(neighborResult.graph.edges.map((edge) => [edge.source, edge.target, edge.relation]), [
+      ['mcp-source:operations', 'mcp-source:runbook', 'links_to'],
+    ])
+    assert.deepEqual(neighborResult.citations.map((citation) => citation.id), [
+      'mcp-source:runbook',
+    ])
+
+    assert.deepEqual(source.requests.map((item) => item.body.params.name), [
+      'llmwiki_context',
+      'llmwiki_search',
+      'llmwiki_read',
+      'llmwiki_graph',
+      'llmwiki_graph_neighbors',
+    ])
+  })
+
+  it('fans out graph neighborhoods across selected sources in deterministic order', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, response }) => {
+      assert.equal(request.method, 'GET')
+      const sourceId = url.pathname.split('/')[1]
+      assert(['alpha', 'beta'].includes(sourceId))
+      assert.equal(url.pathname, `/${sourceId}/graph/neighborhood`)
+      assert.deepEqual(url.searchParams.getAll('seed'), ['topic'])
+      assert.equal(url.searchParams.get('limit'), '2')
+      writeJson(response, 200, {
+        nodes: [
+          { id: 'topic', label: 'Topic' },
+          { id: `related-${sourceId}`, label: `Related ${sourceId}` },
+        ],
+        edges: [{ source: 'topic', target: `related-${sourceId}`, relation: 'related' }],
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      registeredSources: [
+        knowledgeSource('alpha', 'Alpha Source', 'llmwiki-http', `${source.url}/alpha`),
+        knowledgeSource('beta', 'Beta Source', 'llmwiki-http', `${source.url}/beta`),
+        { ...knowledgeSource('skipped', 'Skipped Source', 'llmwiki-http', `${source.url}/skipped`), selected: false },
+      ],
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const neighbors = await callBridgeMcpTool(bridge, 'multi-neighbors', 'llmwiki_graph_neighbors', {
+      nodeId: 'topic',
+      limit: 2,
+    })
+    const neighborResult = neighbors.result.structuredContent.llmwiki_graph_neighbors
+
+    assert.equal(neighbors.result.isError, false)
+    assert.deepEqual(source.requests.map((item) => item.url.pathname), [
+      '/alpha/graph/neighborhood',
+      '/beta/graph/neighborhood',
+    ])
+    assert.deepEqual(neighborResult.sources.map((item) => item.id), ['alpha', 'beta'])
+    assert.deepEqual(neighborResult.neighborhoods.map((item) => item.source.id), ['alpha', 'beta'])
+    assert.deepEqual(neighborResult.graph.nodes.map((node) => node.id), [
+      'alpha:topic',
+      'alpha:related-alpha',
+      'beta:topic',
+      'beta:related-beta',
+    ])
+
+    const narrowed = await callBridgeMcpTool(bridge, 'beta-neighbors', 'llmwiki_graph_neighbors', {
+      sourceId: 'beta',
+      nodeId: 'topic',
+      limit: 2,
+    })
+    const narrowedResult = narrowed.result.structuredContent.llmwiki_graph_neighbors
+
+    assert.equal(narrowed.result.isError, false)
+    assert.deepEqual(source.requests.map((item) => item.url.pathname), [
+      '/alpha/graph/neighborhood',
+      '/beta/graph/neighborhood',
+      '/beta/graph/neighborhood',
+    ])
+    assert.deepEqual(narrowedResult.sources.map((item) => item.id), ['beta'])
+    assert.deepEqual(narrowedResult.neighborhoods.map((item) => item.source.id), ['beta'])
+    assert.deepEqual(narrowedResult.graph.nodes.map((node) => node.id), [
+      'beta:topic',
+      'beta:related-beta',
+    ])
+  })
+
+  it('GOV/OBS returns redacted source-tool errors when graph neighbors selected source fails', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, response }) => {
+      assert.equal(request.method, 'GET')
+
+      if (url.pathname === '/alpha/graph/neighborhood') {
+        assert.deepEqual(url.searchParams.getAll('seed'), ['topic'])
+        writeJson(response, 200, {
+          nodes: [
+            { id: 'topic', label: 'Topic' },
+            { id: 'related-alpha', label: 'Related Alpha' },
+          ],
+          edges: [{ source: 'topic', target: 'related-alpha', relation: 'related' }],
+        })
+        return
+      }
+
+      if (url.pathname === '/bad-private-path/graph/neighborhood') {
+        writeJson(response, 503, {
+          error: 'raw upstream body with token sk-secret-source',
+          sourceUrl: 'http://user:pass@private-source.example.test/raw?token=source-secret',
+          stack: 'Error: upstream stack\n    at sourceHandler (private-source.js:12:34)',
+        })
+        return
+      }
+
+      writeJson(response, 404, { error: 'unexpected graph neighbor path' })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      registeredSources: [
+        knowledgeSource('alpha', 'Alpha Source', 'llmwiki-http', `${source.url}/alpha`),
+        knowledgeSource('bad', 'Bad Source', 'llmwiki-http', `${source.url}/bad-private-path`),
+      ],
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const failure = await callBridgeMcpTool(bridge, 'failing-neighbors', 'llmwiki_graph_neighbors', {
+      nodeId: 'topic',
+      limit: 2,
+    })
+    const sourceError = failure.result.structuredContent.llmwiki_source_error
+    const serialized = JSON.stringify(failure)
+
+    assert.equal(failure.error, undefined)
+    assert.equal(failure.result.isError, true)
+    assert.equal(sourceError.tool, 'llmwiki_graph_neighbors')
+    assert.equal(sourceError.message, 'llmwiki-http graph neighborhood returned HTTP 503')
+    assert.equal(failure.result.content[0].text, sourceError.message)
+    assert.equal(failure.result.structuredContent.llmwiki_graph_neighbors, undefined)
+    assert.deepEqual(source.requests.map((item) => item.url.pathname), [
+      '/alpha/graph/neighborhood',
+      '/bad-private-path/graph/neighborhood',
+    ])
+    assert.doesNotMatch(serialized, /bad-private-path/)
+    assert.doesNotMatch(serialized, /127\.0\.0\.1/)
+    assert.doesNotMatch(serialized, /raw upstream body/)
+    assert.doesNotMatch(serialized, /sk-secret-source/)
+    assert.doesNotMatch(serialized, /private-source\.example\.test/)
+    assert.doesNotMatch(serialized, /user:pass/)
+    assert.doesNotMatch(serialized, /sourceHandler/)
+    assert.doesNotMatch(serialized, /\bat .*:\d+:\d+/)
+  })
+
+  it('GOV/OBS returns redacted source-tool errors when graph neighbors source policy blocks a selected source', async (t) => {
+    const originalFetch = globalThis.fetch
+    const unsafeSourceUrl = 'http://192.168.80.10:8765/private-source?token=source-secret'
+    const sourceRequests = []
+    let bridge
+
+    globalThis.fetch = async (input, init = {}) => {
+      const url = new URL(input instanceof URL ? input.toString() : typeof input === 'string' ? input : input.url)
+      if (bridge && url.href.startsWith(`${bridge.url}/`)) return originalFetch(input, init)
+
+      sourceRequests.push({ url, body: parseJsonFetchBody(init.body) })
+      return jsonFetchResponse(200, { nodes: [] })
+    }
+
+    t.after(async () => {
+      globalThis.fetch = originalFetch
+      if (bridge) await closeServer(bridge.server)
+    })
+
+    bridge = await startAgentBridge({
+      port: 0,
+      sourcePolicy: 'allowlist',
+      registeredSources: [
+        knowledgeSource('blocked', 'Blocked Source', 'llmwiki-http', unsafeSourceUrl),
+      ],
+      logger: silentLogger,
+    })
+
+    const blocked = await callBridgeMcpTool(bridge, 'blocked-neighbors', 'llmwiki_graph_neighbors', {
+      sourceId: 'blocked',
+      nodeId: 'blocked:topic',
+    })
+    const sourceError = blocked.result.structuredContent.llmwiki_source_error
+    const serialized = JSON.stringify(blocked)
+
+    assert.equal(blocked.error, undefined)
+    assert.equal(blocked.result.isError, true)
+    assert.equal(sourceError.tool, 'llmwiki_graph_neighbors')
+    assert.equal(sourceError.message, 'Knowledge Source URL is not allowed by this bridge source policy.')
+    assert.equal(blocked.result.content[0].text, sourceError.message)
+    assert.equal(blocked.result.structuredContent.llmwiki_graph_neighbors, undefined)
+    assert.equal(sourceRequests.length, 0)
+    assert.doesNotMatch(serialized, /192\.168\.80\.10/)
+    assert.doesNotMatch(serialized, /source-secret/)
+    assert.doesNotMatch(serialized, /private-source/)
+    assert.doesNotMatch(serialized, /\bat .*:\d+:\d+/)
+  })
+
   it('returns evidence-only artifacts without calling runtime and includes safe source bundle metadata', async (t) => {
     const source = await startFixtureServer(async ({ request, url, body, response }) => {
       if (url.pathname === '/source-bundle') {
@@ -1438,14 +2138,15 @@ describe('llmwiki-agent-bridge', () => {
         wiki_title: missing ? 'Missing Manifest Wiki' : 'Manifest Wiki',
         evidence: [
           {
-            page_id: missing ? 'missing-page' : 'manifest-page',
-            title: missing ? 'Missing Manifest Evidence' : 'Manifest Evidence',
-            path: missing ? 'missing.md' : 'manifest.md',
+            page_id: 'shared-page',
+            title: 'Shared Evidence',
+            path: 'shared.md',
             snippet: `Evidence-only citation for ${body.query}.`,
+            source_refs: [missing ? 'SRC-MISSING' : 'SRC-MANIFEST'],
           },
         ],
         graph: {
-          nodes: [{ id: missing ? 'page:missing' : 'page:manifest', label: missing ? 'Missing' : 'Manifest' }],
+          nodes: [{ id: 'page:shared', label: 'Shared Evidence' }],
           edges: [],
         },
       })
@@ -1493,14 +2194,56 @@ describe('llmwiki-agent-bridge', () => {
     assert.match(artifact.answer, /^Evidence-only result:/)
     assert.equal(artifact.orchestrationMode, 'evidence-only')
     assert.deepEqual(artifact.citations.map((citation) => citation.id), [
-      'manifest-wiki:manifest-page',
-      'missing-manifest:missing-page',
+      'manifest-wiki:shared-page',
+      'missing-manifest:shared-page',
     ])
+    assert.equal(artifact.citations.some((citation) => citation.id === 'shared-page'), false)
     assert.deepEqual(artifact.graph.nodes.map((node) => node.id), [
-      'manifest-wiki:page:manifest',
-      'missing-manifest:page:missing',
+      'manifest-wiki:page:shared',
+      'missing-manifest:page:shared',
     ])
-    assert.equal(artifact.steps.some((step) => step.id === 'runtime-chat-completions'), false)
+    assert.equal(artifact.graph.nodes.some((node) => node.id === 'page:shared'), false)
+    assert.equal(artifact.steps.find((step) => step.id === 'runtime-chat-completions'), undefined)
+    assert.deepEqual(
+      artifact.steps
+        .filter((step) => step.id.startsWith('tool-') && step.connectionId)
+        .map((step) => step.connectionId),
+      ['manifest-wiki', 'missing-manifest'],
+    )
+    for (const expected of [
+      {
+        stepId: 'tool-manifest_wiki',
+        connectionId: 'manifest-wiki',
+        toolName: 'llmwiki_context__manifest_wiki',
+        citationId: 'manifest-wiki:shared-page',
+        sourceRef: 'SRC-MANIFEST',
+      },
+      {
+        stepId: 'tool-missing_manifest',
+        connectionId: 'missing-manifest',
+        toolName: 'llmwiki_context__missing_manifest',
+        citationId: 'missing-manifest:shared-page',
+        sourceRef: 'SRC-MISSING',
+      },
+    ]) {
+      const sourceStep = artifact.steps.find(
+        (step) => step.id === expected.stepId && step.connectionId === expected.connectionId,
+      )
+      assert.ok(sourceStep)
+      assert.equal(sourceStep.status, 'done')
+      assert.equal(sourceStep.parentId, 'bridge-plan')
+      assert.equal(sourceStep.toolName, expected.toolName)
+      assert.deepEqual(sourceStep.citationIds, [expected.citationId])
+      assert.deepEqual(sourceStep.citationRefs, [
+        {
+          id: expected.citationId,
+          title: 'Shared Evidence',
+          path: 'shared.md',
+          sourceRefs: [expected.sourceRef],
+        },
+      ])
+      assert.match(sourceStep.detail, /shared\.md \(Shared Evidence\)/)
+    }
     assert.equal(artifact.steps.find((step) => step.id === 'source-manifest-manifest_wiki').status, 'done')
     assert.equal(artifact.steps.find((step) => step.id === 'source-manifest-missing_manifest').status, 'error')
     assert.equal(artifact.steps.find((step) => step.id === 'source-manifest-missing_manifest').error, 'Source bundle unavailable.')
@@ -1968,8 +2711,7 @@ describe('llmwiki-agent-bridge', () => {
     const hermesUserMessage = hermes.lastBody.messages.find((message) => message.role === 'user').content
     const evidenceBundle = parseHermesEvidenceBundle(hermesUserMessage)
     const mcpArtifactBundle = artifact.sourceBundles.find((bundle) => bundle.connectionId === 'mcp-wiki')
-    const mcpRuntimeBundle = evidenceBundle.sourceBundles.find((bundle) => bundle.connectionId === 'mcp-wiki')
-    const mcpSourceRuntimeBundle = evidenceBundle.sources.find((source) => source.id === 'mcp-wiki').sourceBundle
+    const mcpRuntimeSource = evidenceBundle.sources.find((source) => source.id === 'mcp-wiki')
     const mcpToolCalls = mcpSource.requests.map((item) => item.body.params?.name)
 
     assert.equal(response.status, 200)
@@ -2016,8 +2758,9 @@ describe('llmwiki-agent-bridge', () => {
       ],
       sourceRefCount: 1,
     })
-    assert.deepEqual(mcpRuntimeBundle, mcpArtifactBundle)
-    assert.deepEqual(mcpSourceRuntimeBundle, mcpArtifactBundle)
+    assert.equal(evidenceBundle.sourceBundles, undefined)
+    assert.equal(mcpRuntimeSource.sourceBundle, undefined)
+    assert.deepEqual(mcpRuntimeSource.citationIndexes, [2])
     assert.doesNotMatch(hermesUserMessage, /mcp-workspace/)
     assert.doesNotMatch(hermesUserMessage, /mcp-root/)
     assert.doesNotMatch(hermesUserMessage, /mcp-private\.md/)
@@ -2221,6 +2964,106 @@ describe('llmwiki-agent-bridge', () => {
     assert.match(runtimeUserMessage, /Hybrid evidence/)
   })
 
+  it('keeps graph payloads and source bundles out of runtime prompts while preserving full artifacts', async (t) => {
+    const graphNodes = Array.from({ length: 60 }, (_, index) => ({
+      id: `page:${index + 1}`,
+      label: `Page ${index + 1}`,
+      kind: 'topic',
+      path: `pages/${index + 1}.md`,
+      metadata: {
+        marker: 'FULL_GRAPH_METADATA_SENTINEL',
+        detail: 'runtime prompt should not inline graph node metadata',
+      },
+    }))
+    const sourceRefs = Array.from({ length: 40 }, (_, index) => ({
+      id: `src-${index + 1}`,
+      label: index === 39 ? 'FULL_SOURCE_BUNDLE_REF_SENTINEL' : `SRC-${index + 1}`,
+      type: 'source_ref',
+      uri: `urn:llmwiki:source-ref:src-${index + 1}`,
+    }))
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      if (url.pathname === '/source-bundle') {
+        assert.equal(request.method, 'GET')
+        writeJson(response, 200, {
+          source_id: 'large-bundle-source',
+          bundle_id: 'large-runtime-bundle',
+          title: 'Large Runtime Bundle',
+          source_refs: sourceRefs,
+        })
+        return
+      }
+
+      assert.equal(request.method, 'POST')
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        wiki_title: 'Runtime Prompt Wiki',
+        evidence: [
+          {
+            page_id: 'answerable',
+            title: 'Answerable Evidence',
+            path: 'answerable.md',
+            snippet: `Answerable evidence for ${body.query}.`,
+          },
+        ],
+        graph: {
+          nodes: graphNodes,
+          edges: [{ source: 'page:1', target: 'page:2', relation: 'links', metadata: { marker: 'FULL_GRAPH_METADATA_SENTINEL' } }],
+        },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const hermes = await startFixtureServer(async ({ body, response }) => {
+      hermes.lastBody = body
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'Runtime prompt answer.' } }],
+      })
+    })
+    t.after(() => closeServer(hermes.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${hermes.url}/v1`,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'What can be answered without inlining graph payloads?',
+          knowledgeSources: [
+            knowledgeSource('runtime-wiki', 'Runtime Wiki', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts[0].parts[0].data
+    const hermesUserMessage = hermes.lastBody.messages.find((message) => message.role === 'user').content
+    const evidenceBundle = parseHermesEvidenceBundle(hermesUserMessage)
+
+    assert.equal(response.status, 200)
+    assert.equal(artifact.citations.length, 1)
+    assert.equal(artifact.graph.nodes.length, 60)
+    assert.equal(artifact.graph.nodes[0].metadata.marker, 'FULL_GRAPH_METADATA_SENTINEL')
+    assert.equal(artifact.sourceBundles[0].sourceRefs.length, 40)
+    assert.equal(artifact.sourceBundles[0].sourceRefs[39].label, 'FULL_SOURCE_BUNDLE_REF_SENTINEL')
+    assert.equal(evidenceBundle.schema, 'llmwiki-agent-bridge.answer-evidence.v1')
+    assert.deepEqual(evidenceBundle.sources[0].citationIndexes, [1])
+    assert.equal(evidenceBundle.sources[0].graph.nodeCount, 60)
+    assert.equal(evidenceBundle.sources[0].graph.nodes, undefined)
+    assert.equal(evidenceBundle.sourceBundles, undefined)
+    assert.doesNotMatch(hermesUserMessage, /FULL_GRAPH_METADATA_SENTINEL/)
+    assert.doesNotMatch(hermesUserMessage, /FULL_SOURCE_BUNDLE_REF_SENTINEL/)
+  })
+
   it('keeps corpus page counts distinct from graph node counts in Hermes evidence', async (t) => {
     const graphNodes = Array.from({ length: 120 }, (_, index) => ({
       id: `page:${index + 1}`,
@@ -2300,7 +3143,9 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(sourceEvidence.adapter, 'obsidian')
     assert.equal(sourceEvidence.implementation, 'Obsidian vault')
     assert.equal(sourceEvidence.description, 'Large approved corpus with a bounded graph projection.')
-    assert.equal(sourceEvidence.graph.nodes.length, 40)
+    assert.equal(sourceEvidence.graph.nodeCount, 120)
+    assert.equal(sourceEvidence.graph.edgeCount, 0)
+    assert.equal(sourceEvidence.graph.nodes, undefined)
     assert.equal(evidenceBundle.mergedGraphSummary.nodeCount, 120)
     assert.equal(evidenceBundle.mergedGraphSummary.corpusPageCount, 1600)
     assert.equal(evidenceBundle.mergedGraphSummary.corpusApprovedPageCount, 1500)
@@ -2398,15 +3243,11 @@ describe('llmwiki-agent-bridge', () => {
       'protocol-wiki:protocol-overview',
       'protocol-wiki:adr-protocol-layer',
     ])
-    assert.deepEqual(evidenceBundle.sources[0].citations.map((citation) => citation.id), [
-      'protocol-wiki:protocol-overview',
-      'protocol-wiki:adr-protocol-layer',
-    ])
+    assert.deepEqual(evidenceBundle.sources[0].citationIndexes, [1, 2])
     assert.equal(evidenceBundle.sources[0].orientation[0].title, 'Protocol Map')
     assert.deepEqual(evidenceBundle.sources[0].limitations, ['Primary query did not include all ADRs.'])
-    assert.deepEqual(evidenceBundle.sources[0].graph.nodes.map((node) => node.id), [
-      'protocol-wiki:page:protocol-overview',
-    ])
+    assert.equal(evidenceBundle.sources[0].graph.nodeCount, 1)
+    assert.equal(evidenceBundle.sources[0].graph.nodes, undefined)
   })
 
   it('deduplicates llmwiki-http search augmentation citations', async (t) => {
@@ -2498,10 +3339,7 @@ describe('llmwiki-agent-bridge', () => {
       'dup-wiki:adr-protocol-layer',
       'dup-wiki:supplement',
     ])
-    assert.deepEqual(evidenceBundle.sources[0].citations.map((citation) => citation.id), [
-      'dup-wiki:adr-protocol-layer',
-      'dup-wiki:supplement',
-    ])
+    assert.deepEqual(evidenceBundle.sources[0].citationIndexes, [1, 2])
   })
 
   it('ranks query-relevant citations first in the chat completions evidence digest', async (t) => {
@@ -2573,10 +3411,7 @@ describe('llmwiki-agent-bridge', () => {
       'adr-wiki:release-notes',
       'adr-wiki:adr-0042',
     ])
-    assert.deepEqual(evidenceBundle.sources[0].citations.map((citation) => citation.id), [
-      'adr-wiki:release-notes',
-      'adr-wiki:adr-0042',
-    ])
+    assert.deepEqual(evidenceBundle.sources[0].citationIndexes, [1, 2])
     assert.deepEqual(evidenceBundle.citations.map((citation) => citation.id), [
       'adr-wiki:release-notes',
       'adr-wiki:adr-0042',
@@ -2879,8 +3714,9 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(JSON.stringify(failedStep), /127\.0\.0\.1/)
     assert.match(hermesUserMessage, /"sourceFailures"/)
     assert.match(hermesUserMessage, /"error": "Source query failed\."/)
-    assert.match(hermesUserMessage, /"diagnostic"/)
-    assert.match(hermesUserMessage, /"httpStatus"/)
+    assert.match(hermesUserMessage, /"message": "Bad Wiki could not be queried by the bridge\."/)
+    assert.doesNotMatch(hermesUserMessage, /"diagnostic"/)
+    assert.doesNotMatch(hermesUserMessage, /"httpStatus"/)
     assert.doesNotMatch(hermesUserMessage, /backend exposed detail/)
     assert.doesNotMatch(hermesUserMessage, /127\.0\.0\.1/)
   })
@@ -2997,6 +3833,29 @@ function parseHermesEvidenceBundle(content) {
   const markerIndex = content.indexOf(marker)
   assert(markerIndex >= 0)
   return JSON.parse(content.slice(markerIndex + marker.length))
+}
+
+async function callBridgeMcp(bridge, id, method, params = undefined) {
+  const response = await fetch(`${bridge.url}/mcp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      method,
+      ...(params === undefined ? {} : { params }),
+    }),
+  })
+  const body = await response.json()
+  assert.equal(response.status, 200)
+  return body
+}
+
+async function callBridgeMcpTool(bridge, id, name, args) {
+  return callBridgeMcp(bridge, id, 'tools/call', {
+    name,
+    arguments: args,
+  })
 }
 
 async function startFixtureServer(handler) {

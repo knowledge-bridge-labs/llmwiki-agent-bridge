@@ -142,8 +142,8 @@ surface for tool-oriented clients. It supports:
 
 | Method | Behavior |
 | --- | --- |
-| `tools/list` | Returns one tool named `llmwiki_agent_run`. |
-| `tools/call` | Runs `llmwiki_agent_run` with the same fields accepted by `/message:send`. |
+| `tools/list` | Returns `llmwiki_agent_run` plus read-only source exploration tools. |
+| `tools/call` | Runs a named tool. `llmwiki_agent_run` uses the `/message:send` run path; source tools query registered or request-supplied Knowledge Sources directly. |
 
 Example call:
 
@@ -165,6 +165,47 @@ Example call:
 The tool uses the same internal run path as `/message:send`. Successful calls
 return answer text in `result.content` and the structured result in
 `result.structuredContent.llmwiki_agent_result`.
+
+Read-only source tools are intended for progressive disclosure by a host agent:
+
+| Tool | Required args | Structured result |
+| --- | --- | --- |
+| `llmwiki_list_sources` | none | `structuredContent.llmwiki_sources` |
+| `llmwiki_context` | `query` | `structuredContent.llmwiki_context` |
+| `llmwiki_search` | `query` | `structuredContent.llmwiki_search` |
+| `llmwiki_read` | `pageId` | `structuredContent.llmwiki_read` |
+| `llmwiki_graph` | none | `structuredContent.llmwiki_graph` |
+| `llmwiki_graph_neighbors` | `nodeId` or `nodeIds` | `structuredContent.llmwiki_graph_neighbors` |
+| `llmwiki_source_bundle` | none | `structuredContent.llmwiki_source_bundle` |
+
+Each source-specific tool accepts `sourceId`/`source_id` and optional
+`knowledgeSources`/`knowledge_sources`. If no inline sources are supplied, the
+bridge uses sources registered through `/settings`. When more than one ready
+selected source is available, source-specific tools require `sourceId`. Source
+tools do not call the configured Hermes, DeepAgents, or OpenAI-compatible
+runtime and do not mutate bridge settings or wiki content.
+
+`llmwiki_list_sources` text content returns source IDs, names, protocol,
+selected status, and readiness metadata without endpoint URLs. Its structured
+`llmwiki_sources.sources` descriptors include source URLs so local workbenches
+can select bridge-managed sources and pass the selected descriptors back to
+`/message:send` or `llmwiki_agent_run`. Do not copy private local URLs into
+public docs, issues, examples, or traces.
+
+Source tools return citation, search result, graph node, and graph-neighborhood
+ids with the bridge source prefix (`<sourceId>:<upstreamId>`) when needed to
+avoid collisions across sources. Host agents may pass those source-prefixed ids
+back to `llmwiki_read`. If the prefix matches a ready selected source, the
+bridge routes the read to that source and strips the prefix before calling the
+upstream Knowledge Source. If `sourceId` is also supplied, the prefix must match
+that source; mismatches return a JSON-RPC bad-request error without reading the
+wrong source.
+
+Use `llmwiki_context` first for orientation, then call
+`llmwiki_graph_neighbors` when the question depends on relationships such as
+dependencies, ownership, prerequisites, policy, or source lineage. The
+neighborhood tool proxies `llmwiki-serve` bounded traversal over HTTP or MCP and
+keeps node and citation ids source-prefixed in the bridge result.
 
 ## Result Artifact
 

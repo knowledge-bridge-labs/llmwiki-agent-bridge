@@ -582,6 +582,34 @@
               "allowlist",
               "public-https"
             ]
+          },
+          "sourceRegistry": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "registeredSourceCount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "selectedSourceCount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "selectedReadySourceCount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "unavailableSourceCount": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "registeredSourceCount",
+              "selectedSourceCount",
+              "selectedReadySourceCount",
+              "unavailableSourceCount"
+            ]
           }
         },
         "required": [
@@ -593,7 +621,8 @@
           "modelConfigured",
           "hermesModelConfigured",
           "configuredAllowedOrigins",
-          "sourcePolicy"
+          "sourcePolicy",
+          "sourceRegistry"
         ]
       },
       "AgentCardResponse": {
@@ -709,6 +738,34 @@
                   "a2a",
                   "mcp"
                 ]
+              },
+              "sourceRegistry": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "registeredSourceCount": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "selectedSourceCount": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "selectedReadySourceCount": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "unavailableSourceCount": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "registeredSourceCount",
+                  "selectedSourceCount",
+                  "selectedReadySourceCount",
+                  "unavailableSourceCount"
+                ]
               }
             },
             "required": [
@@ -718,7 +775,8 @@
               "hermesModelConfigured",
               "sourcePolicy",
               "settingsUrl",
-              "protocolSurface"
+              "protocolSurface",
+              "sourceRegistry"
             ]
           }
         },
@@ -1576,7 +1634,16 @@
         "additionalProperties": false,
         "properties": {
           "name": {
-            "const": "llmwiki_agent_run"
+            "enum": [
+              "llmwiki_agent_run",
+              "llmwiki_list_sources",
+              "llmwiki_context",
+              "llmwiki_search",
+              "llmwiki_read",
+              "llmwiki_graph",
+              "llmwiki_graph_neighbors",
+              "llmwiki_source_bundle"
+            ]
           },
           "description": {
             "type": "string"
@@ -1604,15 +1671,43 @@
           },
           "structuredContent": {
             "type": "object",
-            "additionalProperties": false,
+            "additionalProperties": true,
             "properties": {
               "llmwiki_agent_result": {
                 "$ref": "#/components/schemas/AgentResult"
+              },
+              "llmwiki_sources": {
+                "$ref": "#/components/schemas/McpSourcesResult"
+              },
+              "llmwiki_context": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "llmwiki_search": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "llmwiki_read": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "llmwiki_graph": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "llmwiki_graph_neighbors": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "llmwiki_source_bundle": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "llmwiki_source_error": {
+                "type": "object",
+                "additionalProperties": true
               }
-            },
-            "required": [
-              "llmwiki_agent_result"
-            ]
+            }
           },
           "isError": {
             "type": "boolean"
@@ -1638,6 +1733,120 @@
         "required": [
           "type",
           "text"
+        ]
+      },
+      "McpSourcesResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpSourceSummary"
+            }
+          },
+          "totalSourceCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "selectedSourceCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "readySourceCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unavailableSourceCount": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "sources",
+          "totalSourceCount",
+          "selectedSourceCount",
+          "readySourceCount",
+          "unavailableSourceCount"
+        ]
+      },
+      "McpSourceSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "protocol": {
+            "enum": [
+              "llmwiki-http",
+              "mcp",
+              "a2a"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "selected": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string"
+          },
+          "readiness": {
+            "$ref": "#/components/schemas/McpSourceReadiness"
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "adapter": {
+            "type": "string"
+          },
+          "implementation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "protocol",
+          "status",
+          "selected",
+          "url",
+          "readiness",
+          "capabilities",
+          "adapter",
+          "implementation"
+        ]
+      },
+      "McpSourceReadiness": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ready": {
+            "type": "boolean"
+          },
+          "reason": {
+            "enum": [
+              "not_selected",
+              "status_not_ready",
+              "missing_url",
+              "unsupported_protocol"
+            ]
+          }
+        },
+        "required": [
+          "ready"
         ]
       },
       "Citation": {

@@ -193,7 +193,10 @@ The bundled `examples/message-send.local.json` points at
 different port, copy that file to a temporary path, update the source URL, and
 post it to the bridge URL you started.
 
-MCP-style clients can list and call the bridge tool at `/mcp`:
+MCP-style clients can list bridge tools at `/mcp`. Use
+`llmwiki_agent_run` when you want the bridge to produce a full grounded answer,
+or use the read-only source tools when your host agent wants to inspect sources
+progressively:
 
 ```sh
 curl -s http://127.0.0.1:8788/mcp \
@@ -203,11 +206,23 @@ curl -s http://127.0.0.1:8788/mcp \
 curl -s http://127.0.0.1:8788/mcp \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"llmwiki_agent_run","arguments":{"query":"release readiness"}}}'
+
+curl -s http://127.0.0.1:8788/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"llmwiki_context","arguments":{"sourceId":"sample-wiki","query":"release readiness","limit":5}}}'
+
+curl -s http://127.0.0.1:8788/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"llmwiki_graph_neighbors","arguments":{"sourceId":"sample-wiki","nodeId":"sample-wiki:overview","direction":"out","relation":"supports","limit":20}}}'
 ```
 
 Omit `knowledgeSources` to use sources registered through `/settings`. Passing
 `knowledgeSources: []` means "run with no sources" and is useful only for
 negative tests.
+The human-readable source list omits endpoint URLs. The structured
+`llmwiki_sources.sources` descriptors include source URLs so local workbenches
+can select bridge-managed sources and pass them back to `/message:send`.
+Do not copy private local URLs into public docs, issues, or examples.
 
 The sample request asks `release readiness`. Exact answer wording may vary by
 runtime; the stable integration target is the completed task plus the
@@ -254,14 +269,14 @@ The bridge exposes one small local HTTP surface:
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /health` | Runtime, configuration, and source policy health snapshot. |
-| `GET /.well-known/agent-card.json` | Local A2A-style agent card metadata. |
+| `GET /health` | Runtime, configuration, source policy, and redacted source-registry readiness snapshot. |
+| `GET /.well-known/agent-card.json` | Local A2A-style agent card metadata with redacted source-registry readiness counts. |
 | `GET /settings` | Guided local setup UI: connect runtime, register Knowledge Sources, and verify with `POST /message:send`. |
 | `GET /settings.json` | Redacted runtime, bridge, persistence, and endpoint metadata. |
 | `PUT /settings/config.json` | Persists runtime configuration plus advanced access, CORS, timeout, and source-policy settings. |
 | `GET/PUT /settings/sources.json` | Reads or persists registered Knowledge Sources. |
 | `POST /message:send` | A2A-style request that returns a completed task artifact. |
-| `POST /mcp` | MCP-style JSON-RPC endpoint with `tools/list` and `tools/call` for `llmwiki_agent_run`. |
+| `POST /mcp` | MCP-style JSON-RPC endpoint with `llmwiki_agent_run` plus read-only source tools. |
 
 For each `POST /message:send` request, the bridge:
 
@@ -274,9 +289,15 @@ For each `POST /message:send` request, the bridge:
    evidence summary.
 6. Returns answer text plus the `llmwiki_agent_result` artifact.
 
-`POST /mcp` calls the same internal run path as `/message:send`. Its
-`llmwiki_agent_run` tool returns text content plus
-`structuredContent.llmwiki_agent_result` for tool-oriented clients.
+`POST /mcp` exposes two layers. `llmwiki_agent_run` calls the same internal run
+path as `/message:send` and returns text content plus
+`structuredContent.llmwiki_agent_result`. The read-only source tools
+`llmwiki_list_sources`, `llmwiki_context`, `llmwiki_search`, `llmwiki_read`,
+`llmwiki_graph`, `llmwiki_graph_neighbors`, and `llmwiki_source_bundle` do not
+call the configured runtime; they let a host agent list sources, read
+orientation-first context, search, open a page, inspect graph data, traverse a
+bounded neighborhood, or read safe source-bundle metadata before deciding
+whether more source exploration or a full answer run is needed.
 
 Requests may supply `knowledgeSources` directly, or omit them and use the
 bridge's registered Knowledge Sources. Register sources in Step 2 of
