@@ -102,3 +102,19 @@
       pass with empty `failureCodes`.
 - [x] Confirm Loop 15 keeps no-strict-mapping fixtures free of both the
       strict claim checklist and strict answer format skeleton.
+- [x] Add Loop 16 live-only strict oracle coverage rows after strict claim rows
+      and supplemental citation coverage rows.
+- [x] Derive Loop 16 oracle coverage rows from strict
+      `answerOracle.requiredTerms`, `requiredPhrases`, and
+      `requiredRelations` that strict claim rows do not already cover.
+- [x] Add Loop 16 graph-linear-chain prompt inspection proving a
+      `Runtime Prompt Validation`/`validation` oracle coverage row appears
+      before the limitations row.
+- [x] Add Loop 16 mock live pass coverage where the mock runtime includes the
+      validation oracle term only when the new oracle coverage row is present,
+      and both strict fixtures pass with empty `failureCodes`.
+- [x] Add Loop 16 negative mock coverage where required anchors and expected
+      mappings pass but omitting `Runtime Prompt Validation`/`validation` still
+      fails with `oracle_omission`.
+- [x] Confirm Loop 16 keeps no-strict-mapping/no-strict-oracle fixtures free
+      of checklist, skeleton, supplemental coverage, and oracle coverage rows.

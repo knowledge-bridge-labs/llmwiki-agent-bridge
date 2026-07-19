@@ -146,3 +146,21 @@
     - preserve strict answer-oracle, expected-citation mapping, occurrence,
       unsupported/contradictory, distortion, truncation, and citation-anchor
       validation unchanged.
+22. Loop 16 strict oracle coverage rows:
+    - extend the live-only strict answer-format skeleton with oracle coverage
+      rows after strict expected-citation claim rows and supplemental
+      citation-coverage rows;
+    - derive rows generically from strict `answerOracle.requiredTerms`,
+      `requiredPhrases`, and `requiredRelations` that are not already
+      textually covered by strict expected-citation claim rows;
+    - instruct the runtime to write one evidence-supported sentence including
+      the required oracle text and ending with an exact markdown citation
+      anchor, preferring a determinable top-level supporting anchor and
+      otherwise the nearest supporting evidence anchor;
+    - add prompt-inspection and mock-live pass/fail coverage for the remaining
+      `graph-linear-chain` validation oracle omission;
+    - keep fixtures without effective strict expected citation mappings or
+      strict answer oracles free of oracle coverage rows;
+    - preserve strict answer-oracle, expected-citation mapping, occurrence,
+      unsupported/contradictory, distortion, truncation, and citation-anchor
+      validation unchanged.

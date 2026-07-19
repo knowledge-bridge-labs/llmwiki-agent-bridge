@@ -172,10 +172,25 @@ quality gates.
   strict mapping, with the exact configured claim phrase ending in the exact
   resolved markdown citation anchor or anchors, and then emits required
   citation-coverage rows for top-level citation anchors not already forced by
-  those claim rows. A limitations row appears only after all claim and coverage
-  rows and states that factual limitations also need citations. Fixtures
+  those claim rows. A limitations row appears only after all claim,
+  citation-coverage, and oracle coverage rows and states that factual
+  limitations also need citations. Fixtures
   without effective strict expected citation mappings and without supplemental
   top-level citation coverage rows omit the skeleton. This remains
   benchmark-only/live-eval-only behavior and must not change or loosen
   answer-oracle, expected-citation, occurrence, distortion, unsupported,
   contradictory, truncation, or citation-anchor validation.
+- `REQ-032`: The benchmark-only strict answer-format skeleton also emits
+  oracle coverage rows after strict expected-citation claim rows and
+  supplemental citation-coverage rows. Rows are derived generically from strict
+  `answerOracle.requiredTerms`, `requiredPhrases`, and `requiredRelations`
+  that are not already textually covered by the strict claim rows. Each row
+  instructs the runtime to write one evidence-supported sentence including the
+  required oracle text and ending with an exact markdown citation anchor,
+  preferring a determinable top-level supporting anchor and otherwise the
+  nearest supporting evidence anchor. Fixtures without effective strict
+  expected citation mappings, or without a strict answer oracle, omit oracle
+  coverage rows. This remains benchmark-only/live-eval-only behavior and must
+  not change or loosen answer-oracle, expected-citation, occurrence,
+  distortion, unsupported, contradictory, truncation, or citation-anchor
+  validation.

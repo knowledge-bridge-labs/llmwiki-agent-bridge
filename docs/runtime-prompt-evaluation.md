@@ -24,7 +24,7 @@ quality gates pass.
 | Expected citation mappings | Configured claims resolve to expected citation anchors within `windowChars`, with opt-in every-occurrence mode for repeated claims | Required when a strict fixture defines mappings |
 | Failure taxonomy | Live reports include `failureCodes` and aggregate `failureCodeCounts` | Required for failure attribution |
 | Safe live diagnostics | Live reports summarize failure codes, missing configured oracle terms/relations, missing expected claim phrases, citation coverage, finish reason, truncation, and output length without raw model text or private runtime/local values | Required for prompt-contract versus renderer-loss isolation |
-| Benchmark-only strict answer format | Live user prompts provide exact row-shaped claim/citation skeletons plus supplemental required-anchor coverage rows | Required when strict expected citation mappings leave top-level citation anchors otherwise unforced |
+| Benchmark-only strict answer format | Live user prompts provide exact row-shaped claim/citation skeletons plus supplemental required-anchor and strict oracle coverage rows | Required when strict expected citation mappings leave top-level citation anchors or strict oracle items otherwise unforced |
 | Live recommendation | `live.recommendation` ranks renderers quality-first | Size can recommend a renderer only after strict live pass rate is 100% and strict quality failures are zero |
 | Representative strict fixture coverage | Built-in strict fixtures include multi-hop citation mappings, every-occurrence repeated claims, nearby-wrong-anchor failures, unsupported/contradictory claims, and privacy/source-path claims | Required before using live recommendations as promotion evidence |
 
@@ -107,10 +107,17 @@ The skeleton adds required citation coverage rows for any top-level citation
 anchor not already forced by claim rows, which keeps fixtures such as
 `graph-linear-chain` from missing `[1](#citation-1)` while preserving
 claim-level citation placement for `[2](#citation-2)` and
-`[3](#citation-3)`. The limitations row appears after claim and coverage rows
-only, and factual limitations also require citations. Fixtures without
-effective strict mappings omit both the checklist and skeleton. This remains
-live-eval-only prompt guidance; strict validators are unchanged.
+`[3](#citation-3)`. It then adds oracle coverage rows for strict
+`answerOracle.requiredTerms`, `requiredPhrases`, and `requiredRelations` that
+are not already textually covered by the strict expected-citation claim rows.
+Those rows ask for one evidence-supported sentence including the required
+oracle text and ending in an exact markdown citation anchor, preferring a
+determinable top-level supporting anchor and otherwise the nearest supporting
+evidence anchor. The limitations row appears after claim, citation coverage,
+and oracle coverage rows only, and factual limitations also require
+citations. Fixtures without effective strict mappings omit both the checklist
+and skeleton. This remains live-eval-only prompt guidance; strict validators
+are unchanged.
 Live renderer and totals aggregates also roll these occurrence fields up as
 totals plus `occurrenceCoveragePct` and
 `averageExpectedCitationOccurrenceCoveragePct`, so renderer comparison can
@@ -560,3 +567,43 @@ These metrics can evolve as fixtures improve:
   contract change is needed, and answer-oracle, expected-citation mapping,
   occurrence, distortion, unsupported, contradictory, truncation, and
   citation-anchor validation are unchanged.
+
+### Loop 16: Strict oracle coverage rows
+
+- Research/analysis: Loop 15 left one live strict omission in
+  `graph-linear-chain`: the expected citation rows forced the mapped claims
+  and anchors, but no row explicitly required the validation oracle term.
+- TDD target: prompt inspection proves the strict answer-format skeleton adds
+  an oracle coverage row for `Runtime Prompt Validation` or `validation`
+  before the limitations row, and a mock runtime passes both strict fixtures
+  only when it sees that row and includes the validation concept.
+- Quality gates added: live-only strict prompts now derive oracle coverage
+  rows generically from strict `requiredTerms`, `requiredPhrases`, and
+  `requiredRelations` that are not already textually covered by strict
+  expected-citation claim rows. Rows prefer a determinable supporting
+  top-level citation anchor and otherwise ask for the nearest supporting
+  evidence anchor.
+- Regression coverage: no-strict-mapping/no-strict-oracle fixtures remain free
+  of checklist, skeleton, supplemental coverage, and oracle coverage rows; a
+  negative mock still fails with `oracle_omission` when anchors and expected
+  mappings pass but the validation oracle term is omitted.
+- Optional live smoke: ran an isolated private-safe `compact-json` one-run
+  smoke for `graph-linear-chain` and `graph-strict-evidence-fidelity`. Raw
+  stdout/stderr stayed outside the repo, and the sensitive scan found 0 raw
+  sensitive matches.
+- Result: `liveExit=0`, `validationOk=true`, `liveValidationOk=true`,
+  `status=ok`, `recommendationStatus=recommended`, and
+  `recommendedRendererId=compact-json`. Totals were 2 runs, 2 passed, 0
+  failed, 100% pass rate, 100% required-anchor coverage, empty
+  `failureCodes`, empty missing expected claim phrases, empty missing
+  relations, `finishReasonCounts.stop=2`, `truncation.truncatedCount=0`,
+  `truncation.inferredTruncatedCount=0`, and output text length min 556, max
+  640, average 598.
+- Retrospective: the strict oracle coverage rows closed the Loop 15
+  validation-concept omission in this limited smoke. This is evidence for one
+  private-safe compact-json run per strict fixture only; it is not a broad
+  renderer/model promotion across all renderers, models, or repeated-run
+  samples. This remains benchmark-only/live-eval-only prompt guidance and does
+  not require a new ADR or production contract change. Strict answer-oracle,
+  expected-citation mapping, occurrence, distortion, unsupported,
+  contradictory, truncation, and citation-anchor validators remain unchanged.

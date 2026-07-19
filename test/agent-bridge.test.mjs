@@ -4369,12 +4369,15 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(runtime.requests.length, 1)
   })
 
-  it('passes row-shaped strict answer format mock answers for both strict fixtures', async (t) => {
+  it('passes row-shaped strict answer format mock answers with oracle coverage for both strict fixtures', async (t) => {
     const runtime = await startFixtureServer(async ({ body, response }) => {
       const userPrompt = body.messages.find((message) => message.role === 'user')?.content || ''
+      const hasValidationOracleCoverageRow = (
+        /^- Oracle coverage row: .*Runtime Prompt Validation.*\[3\]\(#citation-3\)$/m.test(userPrompt)
+      )
       const content = userPrompt.includes('Promotion Decision requires Citation Fidelity Gate')
         ? strictEvidenceFidelityRowAnswer()
-        : linearChainRowAnswer()
+        : linearChainRowAnswer({ includeValidation: hasValidationOracleCoverageRow })
       writeJson(response, 200, {
         choices: [
           {
@@ -4410,6 +4413,13 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(report.live.validation.ok, true)
     assert.equal(report.live.status, 'ok')
     assert.equal(runtime.requests.length, 2)
+    assert(
+      runtime.requests.some((request) => (
+        /^- Oracle coverage row: .*Runtime Prompt Validation.*\[3\]\(#citation-3\)$/m.test(
+          request.body.messages.find((message) => message.role === 'user')?.content || '',
+        )
+      )),
+    )
 
     for (const fixture of report.live.fixtures) {
       const rendererReport = fixture.renderers['compact-json']
@@ -4501,6 +4511,7 @@ describe('llmwiki-agent-bridge', () => {
       /^- Privacy Redaction Gate blocks Source Path Leak \[5\]\(#citation-5\)$/m,
     )
     assert.doesNotMatch(userMessage.content, /Required citation coverage row:/)
+    assert.doesNotMatch(userMessage.content, /Oracle coverage row:/)
     assert(
       userMessage.content.indexOf('- Privacy Redaction Gate blocks Source Path Leak [5](#citation-5)')
         < userMessage.content.indexOf('- Limitations:'),
@@ -4558,12 +4569,82 @@ describe('llmwiki-agent-bridge', () => {
       userMessage.content,
       /^- Required citation coverage row: write one evidence-supported sentence for this otherwise-unforced top-level citation and end it with \[1\]\(#citation-1\)$/m,
     )
+    assert.match(
+      userMessage.content,
+      /^- Oracle coverage row: write one evidence-supported sentence including the required term "Runtime Prompt Validation \(or validation\)" and end it with \[3\]\(#citation-3\)$/m,
+    )
     assert(
       userMessage.content.indexOf('Required citation coverage row:')
+        < userMessage.content.indexOf('Oracle coverage row:'),
+    )
+    assert(
+      userMessage.content.indexOf('Oracle coverage row:')
         < userMessage.content.indexOf('- Limitations:'),
     )
     assert.doesNotMatch(userMessage.content, /otherwise-unforced top-level citation and end it with \[2\]\(#citation-2\)/)
     assert.doesNotMatch(userMessage.content, /otherwise-unforced top-level citation and end it with \[3\]\(#citation-3\)/)
+  })
+
+  it('fails graph-linear-chain when strict oracle validation coverage is omitted despite covered anchors and mappings', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: linearChainRowAnswer({ includeValidation: false }),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 40,
+          completion_tokens: 54,
+          total_tokens: 94,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'graph-linear-chain',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '256',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          ...mockRuntimeEnv(runtime),
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /oracle_omission/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+
+    assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
+    assert.equal(rendererReport.expectedCitationMappings.ok, true)
+    assert.equal(rendererReport.answerOracle.ok, false)
+    assert.equal(rendererReport.answerOracle.metrics.missingRequiredTermCount, 1)
+    assert.deepEqual(rendererReport.failureCodes, ['oracle_omission'])
+    assert(
+      rendererReport.answerOracle.missingTerms.some((term) => /Runtime Prompt Validation|validation/.test(term)),
+    )
   })
 
   it('omits strict claim checklist and strict answer format for live fixtures without strict expected citation mappings', async (t) => {
@@ -4609,6 +4690,7 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(userMessage.content, /# Benchmark-only strict answer format/)
     assert.doesNotMatch(userMessage.content, /Expected claim phrase:/)
     assert.doesNotMatch(userMessage.content, /Required citation coverage row:/)
+    assert.doesNotMatch(userMessage.content, /Oracle coverage row:/)
   })
 
   it('emits a safe diagnostic summary for failing live mock runs', async (t) => {
@@ -6232,11 +6314,13 @@ function strictEvidenceFidelityAnswer({
   ].filter(Boolean).join(' ')
 }
 
-function linearChainRowAnswer() {
+function linearChainRowAnswer({ includeValidation = true } = {}) {
   return [
     'Runtime Prompt Decision requires Prompt Codec Implementation [2](#citation-2)',
     'Prompt Codec Implementation measured by Prompt renderer benchmark [3](#citation-3)',
-    'Runtime Prompt Validation preserves the top-level Runtime Prompt Decision evidence [1](#citation-1)',
+    includeValidation
+      ? 'Runtime Prompt Validation preserves the top-level Runtime Prompt Decision evidence [1](#citation-1)'
+      : 'Runtime Prompt Decision keeps the top-level decision evidence anchored [1](#citation-1)',
     'Limitations: Synthetic linear CKG fixture validates graph row rendering only [1](#citation-1).',
   ].join('\n')
 }

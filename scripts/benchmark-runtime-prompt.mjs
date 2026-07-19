@@ -382,15 +382,200 @@ function renderStrictAnswerFormatSkeleton(fixture) {
     .map((index) => (
       `- Required citation coverage row: write one evidence-supported sentence for this otherwise-unforced top-level citation and end it with ${citationAnchor(index)}`
     ))
+  const oracleCoverageRows = strictOracleCoverageRows(fixture, rows)
 
   return [
     '# Benchmark-only strict answer format',
-    'Use this row-shaped skeleton only for this live benchmark run. Copy each claim row exactly and end it with the exact markdown citation anchor(s) shown. Include required citation coverage rows for top-level anchors not already present in claim rows. Add the limitations row after claim and coverage rows only; factual limitations also need citations.',
+    'Use this row-shaped skeleton only for this live benchmark run. Copy each claim row exactly and end it with the exact markdown citation anchor(s) shown. Include required citation coverage rows for top-level anchors not already present in claim rows, then oracle coverage rows for strict required terms, phrases, or relations not already present in claim rows. Add the limitations row after claim, citation coverage, and oracle coverage rows only; factual limitations also need citations.',
     '',
     ...rows.map((row) => `- ${row.text}`),
     ...coverageRows,
+    ...oracleCoverageRows,
     '- Limitations: state only evidence-supported limitations; factual limitations also need exact markdown citation anchors.',
   ].join('\n')
+}
+
+function strictOracleCoverageRows(fixture, strictClaimRows = []) {
+  const oracle = fixture?.answerOracle
+  if (!oracle || typeof oracle !== 'object' || oracle.gate === 'report-only') return []
+
+  const claimText = strictClaimRows.map((row) => row.text).join('\n')
+  const coverageItems = [
+    ...oracleCoverageItems(oracle.requiredTerms, 'required term'),
+    ...oracleCoverageItems(oracle.requiredPhrases, 'required phrase'),
+    ...oracleCoverageItems(oracle.requiredRelations, 'required relation'),
+  ]
+  const seen = new Set()
+  const rows = []
+
+  for (const item of coverageItems) {
+    if (oracleCoverageItemIsCoveredByText(item, claimText)) continue
+
+    const dedupeKey = normalizeOracleText(`${item.kind}:${item.text}`)
+    if (!dedupeKey || seen.has(dedupeKey)) continue
+    seen.add(dedupeKey)
+
+    const citationIndex = inferOracleCoverageCitationIndex(item, fixture?.evidenceBundle)
+    const citationInstruction = citationIndex
+      ? citationAnchor(citationIndex)
+      : 'the exact markdown citation anchor for the nearest supporting evidence'
+    rows.push(
+      `- Oracle coverage row: write one evidence-supported sentence including the ${item.kind} "${item.text}" and end it with ${citationInstruction}`
+    )
+  }
+
+  return rows
+}
+
+function oracleCoverageItems(items, kind) {
+  const values = Array.isArray(items) ? items.filter(Boolean) : []
+  return values
+    .map((value) => {
+      const text = kind === 'required relation'
+        ? formatRequiredRelationCoverageItem(value)
+        : formatOracleCoverageItem(value)
+      return text ? { kind, value, text } : null
+    })
+    .filter(Boolean)
+}
+
+function oracleCoverageItemIsCoveredByText(item, text) {
+  if (!text) return false
+  if (item.kind === 'required relation') {
+    return relationCoverageComponents(item.value).every((component) => (
+      oracleCoverageCandidates(component).some((candidate) => textContainsPhrase(text, candidate))
+    ))
+  }
+  return oracleCoverageCandidates(item.value).some((candidate) => textContainsPhrase(text, candidate))
+}
+
+function formatOracleCoverageItem(item) {
+  const candidates = oracleCoverageCandidates(item)
+  if (candidates.length > 1) return `${candidates[0]} (or ${candidates.slice(1).join(' or ')})`
+  return candidates[0] || formatOracleItem(item)
+}
+
+function formatRequiredRelationCoverageItem(relation) {
+  if (!relation || typeof relation !== 'object') return String(relation || '').trim()
+  if (Array.isArray(relation.terms) && relation.terms.length) {
+    return relation.terms.map(formatOracleCoverageItem).filter(Boolean).join(' + ')
+  }
+  return [relation.from, relation.relation, relation.to]
+    .map(formatOracleCoverageItem)
+    .filter(Boolean)
+    .join(' ')
+}
+
+function relationCoverageComponents(relation) {
+  if (!relation || typeof relation !== 'object') return [relation]
+  if (Array.isArray(relation.terms) && relation.terms.length) return relation.terms.filter(Boolean)
+  return [relation.from, relation.relation, relation.to].filter(Boolean)
+}
+
+function oracleCoverageCandidates(item) {
+  const candidates = oraclePhraseCandidates(item)
+    .map((candidate) => String(candidate || '').trim())
+    .filter(Boolean)
+  if (candidates.length) return candidates
+  const formatted = formatOracleItem(item)
+  return formatted ? [formatted] : []
+}
+
+function inferOracleCoverageCitationIndex(item, evidenceBundle = {}) {
+  if (item.kind === 'required relation') {
+    const edgeIndex = inferRelationCitationIndex(item.value, evidenceBundle)
+    if (edgeIndex) return edgeIndex
+  }
+
+  const directIndex = inferCitationIndexForOracleCandidates(
+    item.kind === 'required relation'
+      ? relationCoverageComponents(item.value).flatMap(oracleCoverageCandidates)
+      : oracleCoverageCandidates(item.value),
+    evidenceBundle,
+  )
+  if (directIndex) return directIndex
+
+  if (item.kind !== 'required relation') {
+    return inferGraphNodeCitationIndexForOracleCandidates(oracleCoverageCandidates(item.value), evidenceBundle)
+  }
+
+  return ''
+}
+
+function inferRelationCitationIndex(relation, evidenceBundle = {}) {
+  if (!relation || typeof relation !== 'object') return ''
+
+  const graphEdges = Array.isArray(evidenceBundle.graphEdges) ? evidenceBundle.graphEdges : []
+  const graphNodes = Array.isArray(evidenceBundle.graphNodes) ? evidenceBundle.graphNodes : []
+  const citationCount = Number.isInteger(evidenceBundle.citationCount)
+    ? evidenceBundle.citationCount
+    : Array.isArray(evidenceBundle.citations)
+      ? evidenceBundle.citations.length
+      : 0
+  const nodeTextById = new Map(graphNodes.map((node) => [
+    node.id,
+    [node.id, node.label, node.kind].filter(Boolean).join(' '),
+  ]))
+  const fromCandidates = oracleCoverageCandidates(relation?.from)
+  const relationCandidates = oracleCoverageCandidates(relation?.relation)
+  const toCandidates = oracleCoverageCandidates(relation?.to)
+
+  for (const edge of graphEdges) {
+    const citationIdx = Number(edge?.citationIdx)
+    if (!Number.isInteger(citationIdx) || citationIdx < 1 || citationIdx > citationCount) continue
+
+    const fromText = [edge.from, nodeTextById.get(edge.from)].filter(Boolean).join(' ')
+    const relationText = String(edge.relation || '').replace(/_/g, ' ')
+    const toText = [edge.to, nodeTextById.get(edge.to)].filter(Boolean).join(' ')
+    const fromMatches = !fromCandidates.length || fromCandidates.some((candidate) => textContainsPhrase(fromText, candidate))
+    const relationMatches = !relationCandidates.length || relationCandidates.some((candidate) => textContainsPhrase(relationText, candidate))
+    const toMatches = !toCandidates.length || toCandidates.some((candidate) => textContainsPhrase(toText, candidate))
+    if (fromMatches && relationMatches && toMatches) return citationIdx
+  }
+
+  return ''
+}
+
+function inferCitationIndexForOracleCandidates(candidates, evidenceBundle = {}) {
+  const citations = Array.isArray(evidenceBundle.citations) ? evidenceBundle.citations : []
+  const normalizedCandidates = candidates.map((candidate) => String(candidate || '').trim()).filter(Boolean)
+  if (!normalizedCandidates.length) return ''
+
+  const titleMatch = citations.findIndex((citation) => (
+    normalizedCandidates.some((candidate) => textContainsPhrase(citation?.title || '', candidate))
+  ))
+  if (titleMatch >= 0) return titleMatch + 1
+
+  const citationMatch = citations.findIndex((citation) => {
+    const text = [
+      citation?.title,
+      citation?.snippet,
+      citation?.pageId,
+      citation?.id,
+      citation?.path,
+    ].filter(Boolean).join(' ')
+    return normalizedCandidates.some((candidate) => textContainsPhrase(text, candidate))
+  })
+  return citationMatch >= 0 ? citationMatch + 1 : ''
+}
+
+function inferGraphNodeCitationIndexForOracleCandidates(candidates, evidenceBundle = {}) {
+  const graphNodes = Array.isArray(evidenceBundle.graphNodes) ? evidenceBundle.graphNodes : []
+  const citationCount = Number.isInteger(evidenceBundle.citationCount)
+    ? evidenceBundle.citationCount
+    : Array.isArray(evidenceBundle.citations)
+      ? evidenceBundle.citations.length
+      : 0
+  const normalizedCandidates = candidates.map((candidate) => String(candidate || '').trim()).filter(Boolean)
+
+  for (const node of graphNodes) {
+    const citationIdx = Number(node?.citationIdx)
+    if (!Number.isInteger(citationIdx) || citationIdx < 1 || citationIdx > citationCount) continue
+    const text = [node.id, node.label, node.kind].filter(Boolean).join(' ')
+    if (normalizedCandidates.some((candidate) => textContainsPhrase(text, candidate))) return citationIdx
+  }
+
+  return ''
 }
 
 function strictExpectedCitationMappingRows(fixture) {
