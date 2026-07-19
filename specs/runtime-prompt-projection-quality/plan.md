@@ -79,3 +79,14 @@
       data safety, live good-answer eligibility, relation omission failure,
       wrong-nearby-anchor failure, repeated-occurrence failure, and
       unsupported/contradictory distortion classification.
+17. Loop 11 private-safe real-runtime calibration:
+    - run the repeated live benchmark against the configured legacy `HERMES_*`
+      runtime environment for `graph-linear-chain` plus
+      `graph-strict-evidence-fidelity` and compact JSON, markdown summary, and
+      TOON renderers;
+    - use a fallback one-run smoke when the full repeated run is slow, fails
+      strict gates, or risks blocking the supervisor turn;
+    - redirect raw stdout/stderr to an OS temp directory outside the repo;
+    - record only sanitized aggregate live/recommendation metrics in docs;
+    - verify raw-report redaction before copying aggregates into tracked
+      files.

@@ -60,3 +60,7 @@
       wrong anchors as `expected_citation_mismatch`, fails one uncited repeated
       occurrence as `expected_citation_every_occurrence_failed`, and classifies
       unsupported plus contradictory claims as strict oracle distortion.
+- [x] Run Loop 11 private-safe fallback `--live-runs 1` real-runtime smoke with
+      the configured legacy `HERMES_*` environment, keep raw stdout/stderr
+      outside the repo, pass redaction checks, and document only sanitized
+      aggregate live/recommendation results plus the fallback rationale.

@@ -102,11 +102,33 @@
   remain visible, but they do not block recommendation eligibility.
 - Fixture-authoring guidance documents compact, deterministic, private-data-safe
   oracle and expected-citation mapping patterns.
+- Manual/private live smoke for Loop 11 runs the configured legacy `HERMES_*`
+  runtime environment across `graph-linear-chain` and
+  `graph-strict-evidence-fidelity`, records only aggregate live/recommendation
+  fields, and does not check in raw benchmark stdout, stderr, model answers,
+  temp paths, endpoint, model name, credentials, or private local paths.
+- The Loop 11 fallback `--live-runs 1` smoke is acceptable when the full
+  `--live-runs 3` smoke is slow, fails strict gates, or risks blocking the
+  supervisor turn; the docs must state that fallback reason.
+- Loop 11 per-renderer table entries such as `Pass/fail 0 / 2` represent the
+  two fixture-runs from that fallback mode: `graph-linear-chain` once and
+  `graph-strict-evidence-fidelity` once, not two repeated live runs of the same
+  fixture.
+- Loop 11 raw-report redaction checks confirm no `"outputText"` field, no
+  key-like tokens, no configured endpoint/model/credential value, and no
+  absolute local paths before sanitized aggregates are copied into docs.
 
 ## Commands
 
 ```sh
 npm run bench:runtime-prompt
+# Manual/private live smoke: redirect raw stdout/stderr to an OS temp
+# directory outside the repo, leak-check the raw files, and copy only
+# sanitized aggregate fields into tracked docs/specs.
+: "${OS_TEMP_DIR:?set OS_TEMP_DIR to an OS temp directory outside the repo}"
+node scripts/benchmark-runtime-prompt.mjs --live --fixture graph-linear-chain,graph-strict-evidence-fidelity --renderer compact-json,markdown-summary,toon --live-runs 1 --temperature 0.2 --max-tokens 768 --timeout-ms 120000 > "$OS_TEMP_DIR/runtime-prompt-loop11.stdout.json" 2> "$OS_TEMP_DIR/runtime-prompt-loop11.stderr.txt"
+# Optional only when the fallback run completes quickly and safely:
+node scripts/benchmark-runtime-prompt.mjs --live --fixture graph-linear-chain,graph-strict-evidence-fidelity --renderer compact-json,markdown-summary,toon --live-runs 3 --temperature 0.2 --max-tokens 768 --timeout-ms 120000 > "$OS_TEMP_DIR/runtime-prompt-loop11-runs3.stdout.json" 2> "$OS_TEMP_DIR/runtime-prompt-loop11-runs3.stderr.txt"
 npm test -- --test-name-pattern "offline.*size-only|runtime prompt rendering offline|quality-first|recommendation"
 npm test -- --test-name-pattern "runtime prompt rendering offline|graph-strict-evidence-fidelity|strict evidence-fidelity"
 npm test -- --test-name-pattern "Graphify graph fixture|exact citation anchors|answer oracle|unsupported|contradictory|oracle distortion|repeated live|finish reason|inferred live runtime truncation|citation stuffing|expected citation mapping|every-occurrence|occurrenceMode|occurrence coverage|smaller live renderer|size-saving live renderer|every renderer fails|report-only aggregate diagnostics"

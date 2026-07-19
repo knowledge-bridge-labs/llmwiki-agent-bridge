@@ -55,6 +55,13 @@ and `reportOnlyDistortionCount`. Strict counts participate in recommendation
 eligibility; report-only counts remain visible for calibration but do not block
 eligibility.
 
+Metric interpretation note: `distortionCount` is a configured
+negative-pattern hit aggregate and may include unsupported or contradictory
+claim hits when those categories are configured. `strictQualityFailureCount`
+is a quality-first eligibility guard for renderer recommendation and may
+intentionally count overlapping failure indicators; it should not be read as
+an orthogonal defect count.
+
 Expected citation mappings are calibrated independently from the rest of the
 answer oracle. Fixtures may set `answerOracle.expectedCitationMappingsGate` to
 `report-only`, or set an individual mapping `gate: "report-only"`, to keep
@@ -355,3 +362,38 @@ These metrics can evolve as fixtures improve:
   without changing public contracts or architecture. The checks remain
   deterministic configured-pattern gates; future real-runtime calibration
   should use this fixture alongside `graph-linear-chain`.
+
+### Loop 11: Private-safe repeated real-runtime smoke
+
+- Research/analysis: ran a fallback `--live-runs 1` smoke against the
+  configured legacy `HERMES_*` real-runtime environment using
+  `graph-linear-chain` and `graph-strict-evidence-fidelity` across compact
+  JSON, markdown summary, and TOON. Raw stdout/stderr stayed outside the repo;
+  no endpoint, model name, key, raw answer text, temp path, or private local
+  path is recorded here.
+- TDD target: no new code target; this loop records private-safe manual live
+  acceptance using the existing repeated live benchmark and redaction checks.
+- Result: strict live gates failed and no renderer was recommendation-eligible.
+  The live report had `live.status: failed`,
+  `recommendation.status: blocked`, `recommendedRendererId: null`, and
+  `requestCount: 6`.
+- Table note: each per-renderer `Pass/fail 0 / 2` entry means two fixture-runs
+  in fallback `--live-runs 1` mode: one run of `graph-linear-chain` and one
+  run of `graph-strict-evidence-fidelity`. It does not mean two repeated live
+  runs of the same fixture.
+
+  | Renderer | Pass rate | Pass/fail | Failure code counts | Truncated / inferred | Avg required citation anchor coverage | Avg answer-oracle required-item coverage | Avg expected citation mapping coverage | Avg expected citation occurrence coverage | Recommendation strict quality failures |
+  | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+  | compact-json | 0% | 0 / 2 | `oracle_omission=2`, `expected_claim_missing=2` | 0 / 0 | 100% | 65% | 0% | n/a | 10 |
+  | markdown-summary | 0% | 0 / 2 | `citation_anchor_missing=2`, `oracle_omission=2`, `expected_claim_missing=2` | 0 / 0 | 73.34% | 50% | 0% | n/a | 12 |
+  | toon | 0% | 0 / 2 | `oracle_omission=2`, `expected_claim_missing=2`, `citation_anchor_missing=1` | 0 / 0 | 90% | 85% | 0% | n/a | 11 |
+
+- Redaction checks: raw stdout/stderr passed checks for no `"outputText"`
+  field, no key-like tokens, no configured legacy `HERMES_*` values, and no
+  absolute local paths.
+- Retrospective: Loop 11 intentionally used the fallback one-run smoke because
+  the fallback run took about two minutes and exited nonzero on strict quality
+  gates. The optional `--live-runs 3` smoke was not rerun in this supervisor
+  turn after previous full-run hangs; future calibration should rerun the
+  three-run smoke only after the runtime responds reliably enough to avoid
+  blocking.
