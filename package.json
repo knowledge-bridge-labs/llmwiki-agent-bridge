@@ -37,6 +37,7 @@
     "specs",
     "scripts/export-openapi.mjs",
     "scripts/benchmark-runtime-prompt.mjs",
+    "scripts/validate-runtime-prompt-live-safe.mjs",
     "examples",
     "integrations",
     "README.md",
@@ -54,12 +55,13 @@
     "npm": ">=10"
   },
   "scripts": {
-    "lint": "node --check src/index.mjs && node --check bin/llmwiki-agent-bridge.mjs && node --check test/agent-bridge.test.mjs && node --check scripts/benchmark-runtime-prompt.mjs",
+    "lint": "node --check src/index.mjs && node --check bin/llmwiki-agent-bridge.mjs && node --check test/agent-bridge.test.mjs && node --check scripts/benchmark-runtime-prompt.mjs && node --check scripts/validate-runtime-prompt-live-safe.mjs",
     "test": "node --test test/agent-bridge.test.mjs",
     "check": "npm run lint && npm run contracts:check && npm test && npm run pack:dry-run",
     "bench:runtime-prompt": "node scripts/benchmark-runtime-prompt.mjs",
     "eval:runtime-prompt": "node scripts/benchmark-runtime-prompt.mjs",
     "bench:runtime-prompt:live": "node scripts/benchmark-runtime-prompt.mjs --live",
+    "eval:runtime-prompt:live:safe": "node scripts/validate-runtime-prompt-live-safe.mjs",
     "contracts:generate": "node scripts/export-openapi.mjs",
     "contracts:check": "node scripts/export-openapi.mjs --check",
     "pack:dry-run": "npm pack --dry-run --json --ignore-scripts",

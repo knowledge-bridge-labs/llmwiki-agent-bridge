@@ -24,6 +24,7 @@ quality gates pass.
 | Expected citation mappings | Configured claims resolve to expected citation anchors within `windowChars`, with opt-in every-occurrence mode for repeated claims | Required when a strict fixture defines mappings |
 | Failure taxonomy | Live reports include `failureCodes` and aggregate `failureCodeCounts` | Required for failure attribution |
 | Safe live diagnostics | Live reports summarize failure codes, missing configured oracle terms/relations, missing expected claim phrases, citation coverage, finish reason, truncation, and output length without raw model text or private runtime/local values | Required for prompt-contract versus renderer-loss isolation |
+| Private-safe live wrapper | Tracked wrapper captures raw child stdout/stderr only in OS temp, enforces an overall timeout, scans raw and sanitized output for sensitive patterns, and prints sanitized aggregate JSON only | Required before copying live aggregate metrics into docs |
 | Benchmark-only strict answer format | Live user prompts provide exact row-shaped claim/citation skeletons plus supplemental required-anchor and strict oracle coverage rows | Required when strict expected citation mappings leave top-level citation anchors or strict oracle items otherwise unforced |
 | Live recommendation | `live.recommendation` ranks renderers quality-first | Size can recommend a renderer only after strict live pass rate is 100% and strict quality failures are zero |
 | Representative strict fixture coverage | Built-in strict fixtures include multi-hop citation mappings, every-occurrence repeated claims, nearby-wrong-anchor failures, unsupported/contradictory claims, and privacy/source-path claims | Required before using live recommendations as promotion evidence |
@@ -147,6 +148,33 @@ gates are satisfied. Among eligible renderers, the recommendation uses
 `runtimeUserPrompt.estimatedTokens` as the size metric. If no renderer is
 eligible, the recommendation is blocked with renderer-specific reasons and
 `recommendedRendererId: null`.
+
+For private live calibration that may be copied into docs, prefer the tracked
+safe wrapper:
+
+```sh
+npm run eval:runtime-prompt:live:safe -- --profile loop17-smoke --overall-timeout-ms 180000
+```
+
+The wrapper invokes `scripts/benchmark-runtime-prompt.mjs --live`, applies
+profile defaults only when matching benchmark options are absent, and accepts
+pass-through benchmark arguments. `loop17-smoke` runs the two strict fixtures
+with compact JSON once; `loop17-full` runs the same fixtures across compact
+JSON, markdown summary, and TOON three times; `none` forces `--live` without
+other defaults.
+
+Raw child stdout/stderr stay in OS temp files and their paths are not printed.
+The wrapper scans those raw files plus its own emitted summary for raw
+`"outputText"` fields, configured endpoint/model/key values, key-like tokens,
+bearer tokens, `api_key` query values, temp paths, and absolute local paths.
+It reports only counts/categories and exits nonzero on child failure, timeout,
+JSON parse failure, or scan failure. The emitted JSON summary contains safe
+command option names, fixture/renderer ids, live validation and recommendation
+status, renderer totals, pass/fail rates, citation coverage, oracle and
+expected-citation mapping aggregates, finish-reason counts, truncation counts,
+and `outputTextLength` summaries; it intentionally omits raw prompts, model
+answers, endpoint values, model names, keys, temp paths, and local absolute
+paths.
 
 ## Fixture Authoring Notes
 
@@ -607,3 +635,49 @@ These metrics can evolve as fixtures improve:
   not require a new ADR or production contract change. Strict answer-oracle,
   expected-citation mapping, occurrence, distortion, unsupported,
   contradictory, truncation, and citation-anchor validators remain unchanged.
+
+### Loop 17: Private-safe live validation wrapper
+
+- Research/analysis: prior live-smoke documentation depended on an operator
+  manually redirecting raw benchmark streams to temp files and manually
+  redaction-checking them before copying aggregate metrics into docs. Loop 17
+  makes that workflow tracked, repeatable, and fail-closed.
+- TDD target: mock live wrapper tests prove a passing `loop17-smoke` run emits
+  sanitized aggregate JSON without raw `outputText`, prompt text, endpoint,
+  model, key, temp path, or local path values; a parseable benchmark failure
+  propagates nonzero while still emitting sanitized aggregates; and synthetic
+  redaction canaries are detected without printing matched values.
+- Quality gates added: `scripts/validate-runtime-prompt-live-safe.mjs` wraps
+  the existing live benchmark, supports `loop17-smoke`, `loop17-full`, and
+  `none` profiles, writes raw child stdout/stderr only to OS temp, enforces an
+  overall timeout, scans raw and sanitized output for sensitive categories,
+  and prints only docs-suitable aggregate JSON.
+- Result: local mock coverage passed for sanitized success, sanitized nonzero
+  propagation, and redaction scan failure. The wrapper is available through
+  `npm run eval:runtime-prompt:live:safe`. A private-safe repeated compact JSON
+  profile was also run through the wrapper for the two strict graph fixtures
+  with three live runs each, low temperature, a bounded response budget, and
+  per-request plus overall timeouts. Wrapper behavior passed: raw child streams
+  stayed outside the repo, JSON parsing succeeded, no timeout occurred, and
+  raw plus sanitized sensitive scans reported zero matches.
+- Repeated live result: quality acceptance did not pass. The sanitized
+  aggregate reported 6 requests/runs, 5 passes, 1 failure, `passRatePct:
+  83.33`, `liveValidationOk: false`, `recommendation.status: blocked`, and
+  `recommendedRendererId: null`. Finish reasons were all `stop`; truncation
+  was 0; required citation-anchor coverage was 100%; answer-oracle strict
+  failures were 0 with required-item coverage at 100%. Expected citation
+  mappings had one strict failure, average coverage 95.83%, one missing
+  expected claim, one strict missing expected claim, and occurrence coverage at
+  100%. The only failure code was `expected_claim_missing`.
+- Safe diagnostic: the failed fixture was `graph-strict-evidence-fidelity`.
+  The only missing expected claim phrase was `Promotion Decision requires
+  Citation Fidelity Gate measured by Live Prompt Evaluation`; missing terms and
+  missing relations were empty. This points to a remaining strict expected-claim
+  stability gap, not a wrapper safety failure.
+- Retrospective: Loop 17 validation tooling is now tracked and private-safe,
+  but repeated live stability acceptance remains unmet. The loop does not
+  change the production bridge runtime contract, public API, source policy,
+  security defaults, answer validators, or renderer recommendation rules, so no
+  new ADR is needed. Follow-up work should target the remaining strict expected
+  claim omission before treating compact JSON as recommendation-eligible under
+  repeated live runs.

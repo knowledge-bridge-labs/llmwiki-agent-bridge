@@ -4796,6 +4796,259 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(serialized, /\/(?:Users|home)\//)
   })
 
+  it('live safe profile wrapper emits sanitized aggregate JSON without raw runtime values', async (t) => {
+    const modelName = 'loop-17-live-safe-model-canary'
+    const apiKey = 'sk-proj-live-safe-success-canary-1234567890'
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      const userPrompt = body.messages.find((message) => message.role === 'user')?.content || ''
+      const content = userPrompt.includes('Promotion Decision requires Citation Fidelity Gate')
+        ? strictEvidenceFidelityRowAnswer()
+        : linearChainRowAnswer()
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { content },
+          },
+        ],
+        usage: {
+          prompt_tokens: 60,
+          completion_tokens: 80,
+          total_tokens: 140,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const { stdout, stderr } = await runRuntimePromptLiveSafe([
+      '--overall-timeout-ms',
+      '30000',
+      '--timeout-ms',
+      '10000',
+      '--max-tokens',
+      '384',
+    ], {
+      env: mockRuntimeEnv(runtime, { model: modelName, apiKey }),
+    })
+
+    const summary = JSON.parse(stdout)
+
+    assert.equal(stderr, '')
+    assert.equal(summary.schema, 'llmwiki-agent-bridge.runtime-prompt-live-safe.v1')
+    assert.equal(summary.profile.id, 'loop17-smoke')
+    assert.equal(summary.child.status, 'ok')
+    assert.equal(summary.child.exitCode, 0)
+    assert.equal(summary.child.jsonParse.ok, true)
+    assert.equal(summary.live.status, 'ok')
+    assert.equal(summary.live.validation.ok, true)
+    assert.equal(summary.live.recommendation.status, 'recommended')
+    assert.equal(summary.live.recommendation.recommendedRendererId, 'compact-json')
+    assert.equal(summary.live.totals.requestCount, 2)
+    assert.equal(summary.live.totals.passCount, 2)
+    assert.equal(summary.live.totals.passRatePct, 100)
+    assert.deepEqual(summary.live.totals.failureCodeCounts, {})
+    assert.equal(summary.live.totals.finishReasonCounts.stop, 2)
+    assert.equal(summary.live.renderers['compact-json'].passRatePct, 100)
+    assert.equal(summary.live.renderers['compact-json'].outputTextLength.min > 0, true)
+    assert.equal(summary.sensitiveScan.ok, true)
+    assert.equal(summary.sensitiveScan.totalMatches, 0)
+    assert.equal(runtime.requests.length, 2)
+    assert(runtime.requests.every((request) => request.body.model === modelName))
+
+    assert.doesNotMatch(stdout, /"outputText"\s*:/)
+    assert.doesNotMatch(stdout, /Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation/)
+    assert.doesNotMatch(stdout, /Runtime Prompt Validation preserves the top-level Runtime Prompt Decision evidence/)
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(modelName)))
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(apiKey)))
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(tmpdir())))
+    assert.doesNotMatch(stdout, /[A-Za-z]:\\\\/)
+    assert.doesNotMatch(stdout, /\/(?:Users|home|tmp)\//)
+  })
+
+  it('live safe profile wrapper propagates benchmark failure with sanitized aggregate summary', async (t) => {
+    const modelName = 'loop-17-live-safe-failure-model-canary'
+    const apiKey = 'sk-proj-live-safe-failure-canary-1234567890'
+    const rawAnswerCanary = 'Live safe failure canary uses a bare citation [1].'
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: rawAnswerCanary,
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 10,
+          total_tokens: 30,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await runRuntimePromptLiveSafe([
+        '--profile',
+        'none',
+        '--overall-timeout-ms',
+        '30000',
+        '--fixture',
+        'single-source',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '64',
+        '--timeout-ms',
+        '10000',
+      ], {
+        env: mockRuntimeEnv(runtime, { model: modelName, apiKey }),
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.equal(error.stderr, '')
+
+    const summary = JSON.parse(error.stdout)
+
+    assert.equal(summary.child.status, 'failed')
+    assert.equal(summary.child.exitCode, 1)
+    assert.equal(summary.child.jsonParse.ok, true)
+    assert.equal(summary.live.status, 'failed')
+    assert.equal(summary.live.validation.ok, false)
+    assert.equal(summary.live.totals.requestCount, 1)
+    assert.equal(summary.live.totals.passCount, 0)
+    assert.equal(summary.live.totals.failCount, 1)
+    assert.equal(summary.live.totals.failureCodeCounts.citation_anchor_missing, 1)
+    assert.equal(summary.live.recommendation.status, 'blocked')
+    assert.equal(summary.live.recommendation.recommendedRendererId, null)
+    assert.equal(summary.sensitiveScan.ok, true)
+
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(rawAnswerCanary)))
+    assert.doesNotMatch(error.stdout, /"outputText"\s*:/)
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(modelName)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(apiKey)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(tmpdir())))
+  })
+
+  it('live safe profile wrapper fails closed on overall timeout without printing runtime values', async () => {
+    const endpointCanary = 'http://127.0.0.1:1/v1'
+    const modelName = 'loop-17-live-safe-timeout-model-canary'
+    const apiKey = 'sk-proj-live-safe-timeout-canary-1234567890'
+
+    let error
+    try {
+      await runRuntimePromptLiveSafe([
+        '--profile',
+        'none',
+        '--overall-timeout-ms',
+        '1',
+        '--fixture',
+        'single-source',
+        '--renderer',
+        'compact-json',
+        '--timeout-ms',
+        '10000',
+      ], {
+        env: {
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: endpointCanary,
+          LLMWIKI_AGENT_BRIDGE_MODEL: modelName,
+          LLMWIKI_AGENT_BRIDGE_API_KEY: apiKey,
+        },
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.equal(error.stderr, '')
+
+    const summary = JSON.parse(error.stdout)
+
+    assert.equal(summary.child.status, 'timeout')
+    assert.equal(summary.child.timedOut, true)
+    assert.equal(summary.child.overallTimeoutMs, 1)
+    assert.equal(summary.child.jsonParse.ok, false)
+    assert.equal(summary.live, null)
+    assert.equal(summary.sensitiveScan.ok, true)
+
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(endpointCanary)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(modelName)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(apiKey)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(tmpdir())))
+  })
+
+  it('redaction scan catches synthetic raw outputText, keys, bearer tokens, query keys, and local paths without printing values', async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), 'llmwiki-live-safe-scan-test-'))
+    t.after(() => rm(dir, { recursive: true, force: true }))
+    const scanInputPath = join(dir, 'raw-output.txt')
+    const outputTextCanary = 'raw-output-text-canary-loop17'
+    const keyCanary = 'sk-proj-live-safe-redaction-canary-ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    const bearerCanary = 'Bearer liveSafeBearerCanary1234567890'
+    const apiKeyQueryCanary = 'api_key=live-safe-query-canary'
+    const endpointCanary = 'https://runtime.loop17.example.test/v1'
+    const modelCanary = 'loop-17-redaction-scan-model-canary'
+    const localPathCanary = 'C:\\Users\\Loop17\\AppData\\Local\\Temp\\live-safe-canary.txt'
+    await writeFile(scanInputPath, [
+      JSON.stringify({ outputText: outputTextCanary }),
+      keyCanary,
+      bearerCanary,
+      `${endpointCanary}?${apiKeyQueryCanary}`,
+      modelCanary,
+      localPathCanary,
+    ].join('\n'))
+
+    let error
+    try {
+      await runRuntimePromptLiveSafe(['--scan-file', scanInputPath], {
+        env: {
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: endpointCanary,
+          LLMWIKI_AGENT_BRIDGE_MODEL: modelCanary,
+          LLMWIKI_AGENT_BRIDGE_API_KEY: keyCanary,
+        },
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.equal(error.stderr, '')
+
+    const summary = JSON.parse(error.stdout)
+    const categories = summary.sensitiveScan.raw.categories
+
+    assert.equal(summary.mode, 'scan-only')
+    assert.equal(summary.sensitiveScan.ok, false)
+    assert.equal(summary.sensitiveScan.raw.ok, false)
+    assert.equal(summary.sensitiveScan.sanitizedOutput.ok, true)
+    assert.equal(categories.rawOutputTextField, 1)
+    assert(categories.configuredEnvValue >= 3)
+    assert(categories.keyLikeToken >= 1)
+    assert.equal(categories.bearerToken, 1)
+    assert.equal(categories.apiKeyQueryValue, 1)
+    assert(categories.tempPath >= 1)
+    assert(categories.absoluteLocalPath >= 1)
+
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(outputTextCanary)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(keyCanary)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(bearerCanary)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(apiKeyQueryCanary)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(endpointCanary)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(modelCanary)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(localPathCanary)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(scanInputPath)))
+    assert.doesNotMatch(error.stdout, /"outputText"\s*:/)
+  })
+
   it('flags strict evidence-fidelity omissions for graph-strict-evidence-fidelity multi-hop relations', async (t) => {
     const runtime = await startFixtureServer(async ({ response }) => {
       writeJson(response, 200, {
@@ -6241,6 +6494,7 @@ describe('llmwiki-agent-bridge', () => {
     assert(files.has('docs/openapi.json'))
     assert(files.has('scripts/export-openapi.mjs'))
     assert(files.has('scripts/benchmark-runtime-prompt.mjs'))
+    assert(files.has('scripts/validate-runtime-prompt-live-safe.mjs'))
     assert(files.has('README.md'))
     assert(files.has('LICENSE'))
     assert(files.has('integrations/README.md'))
@@ -6261,11 +6515,26 @@ async function runRuntimePromptBenchmark(args, { env = {}, maxBuffer = 1024 * 10
   })
 }
 
-function mockRuntimeEnv(runtime) {
+async function runRuntimePromptLiveSafe(args, { env = {}, maxBuffer = 1024 * 1024 } = {}) {
+  return await execFileAsync(process.execPath, ['scripts/validate-runtime-prompt-live-safe.mjs', ...args], {
+    cwd: packageRoot,
+    env: {
+      ...process.env,
+      ...env,
+    },
+    maxBuffer,
+  })
+}
+
+function mockRuntimeEnv(runtime, {
+  model = 'mock-runtime-model',
+  apiKey = 'mock-runtime-key',
+  baseUrl = `${runtime.url}/v1`,
+} = {}) {
   return {
-    LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
-    LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
-    LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+    LLMWIKI_AGENT_BRIDGE_BASE_URL: baseUrl,
+    LLMWIKI_AGENT_BRIDGE_MODEL: model,
+    LLMWIKI_AGENT_BRIDGE_API_KEY: apiKey,
   }
 }
 

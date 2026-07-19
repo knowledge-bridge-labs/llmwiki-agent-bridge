@@ -164,3 +164,22 @@
     - preserve strict answer-oracle, expected-citation mapping, occurrence,
       unsupported/contradictory, distortion, truncation, and citation-anchor
       validation unchanged.
+23. Loop 17 private-safe live validation wrapper:
+    - add a no-dependency wrapper around
+      `scripts/benchmark-runtime-prompt.mjs --live` with `loop17-smoke`,
+      `loop17-full`, and pass-through/no-default profile support;
+    - write raw child stdout/stderr only to OS temp files and never print raw
+      output, model output, prompts, endpoints, model names, keys, temp paths,
+      or absolute local paths;
+    - enforce `--overall-timeout-ms` around the whole child process and fail
+      closed on timeout, child nonzero exit, JSON parse failure, or sensitive
+      scan failure;
+    - scan raw files and the emitted sanitized summary for raw `"outputText"`
+      fields, configured endpoint/model/key env values, key-like tokens,
+      bearer tokens, `api_key` query values, temp paths, and absolute local
+      paths;
+    - print only docs-suitable aggregate JSON with safe command option names,
+      live validation/recommendation status, renderer totals, pass/fail rates,
+      failure-code and finish-reason counts, citation coverage, oracle and
+      expected-citation mapping aggregates, truncation counts,
+      `outputTextLength` summaries, and sensitive scan counts/categories.

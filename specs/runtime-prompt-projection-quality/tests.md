@@ -138,6 +138,29 @@
 - A synthetic configured runtime model name is sent to the mock chat
   completions request but does not appear anywhere in the serialized live
   report.
+- The private-safe live wrapper invokes the existing runtime prompt benchmark
+  with `--live`, profile defaults, and pass-through benchmark arguments while
+  printing only safe command option names and safe fixture/renderer ids.
+- The private-safe live wrapper writes raw child stdout/stderr only to OS temp
+  files, does not print temp file paths, and emits a sanitized aggregate JSON
+  summary suitable for docs.
+- The private-safe live wrapper summary includes live validation status,
+  recommendation status/id, renderer totals, pass/fail rates, failure-code
+  counts, finish-reason counts, citation coverage, answer-oracle aggregate
+  metrics, expected-citation mapping aggregate metrics, truncation counts,
+  `outputTextLength` summaries, and sensitive scan categories/counts.
+- The private-safe live wrapper exits nonzero when the benchmark child exits
+  nonzero while still emitting the parseable sanitized aggregate summary when
+  child stdout contains benchmark JSON.
+- The private-safe live wrapper exits nonzero on overall timeout, benchmark
+  JSON parse failure, or sensitive scan failure.
+- The private-safe live wrapper scans raw files and the emitted summary for raw
+  `"outputText"` fields, configured endpoint/model/key values, key-like
+  tokens, bearer tokens, `api_key` query values, temp paths, and absolute local
+  paths; scan reports include categories/counts only, never matched values.
+- Synthetic redaction-scan canaries for raw `"outputText"`, key-like tokens,
+  bearer tokens, `api_key` query values, configured runtime values, temp paths,
+  and absolute local paths are detected without printing the canary values.
 - Good live mock answers for `graph-linear-chain` and
   `graph-strict-evidence-fidelity` still pass strict oracle and expected
   citation gates after the prompt-contract change.
@@ -200,11 +223,17 @@ npm run bench:runtime-prompt
 node scripts/benchmark-runtime-prompt.mjs --live --fixture graph-linear-chain,graph-strict-evidence-fidelity --renderer compact-json,markdown-summary,toon --live-runs 1 --temperature 0.2 --max-tokens 768 --timeout-ms 120000 > "$OS_TEMP_DIR/runtime-prompt-loop11.stdout.json" 2> "$OS_TEMP_DIR/runtime-prompt-loop11.stderr.txt"
 # Optional only when the fallback run completes quickly and safely:
 node scripts/benchmark-runtime-prompt.mjs --live --fixture graph-linear-chain,graph-strict-evidence-fidelity --renderer compact-json,markdown-summary,toon --live-runs 3 --temperature 0.2 --max-tokens 768 --timeout-ms 120000 > "$OS_TEMP_DIR/runtime-prompt-loop11-runs3.stdout.json" 2> "$OS_TEMP_DIR/runtime-prompt-loop11-runs3.stderr.txt"
+# Preferred tracked Loop 17 wrapper for private-safe live aggregate summaries:
+npm run eval:runtime-prompt:live:safe -- --profile loop17-smoke --overall-timeout-ms 180000
+# Optional repeated renderer profile when the runtime is stable enough:
+npm run eval:runtime-prompt:live:safe -- --profile loop17-full --overall-timeout-ms 420000
 npm test -- --test-name-pattern "offline.*size-only|runtime prompt rendering offline|quality-first|recommendation"
 npm test -- --test-name-pattern "strict claim checklist|claim-preserving|safe diagnostic|graph-strict-evidence-fidelity|runtime prompt rendering offline"
 npm test -- --test-name-pattern "oracle coverage|strict answer format|strict claim checklist|claim-preserving|safe diagnostic|graph-strict-evidence-fidelity|expected citation mapping|runtime prompt rendering offline"
 npm test -- --test-name-pattern "runtime prompt rendering offline|graph-strict-evidence-fidelity|strict evidence-fidelity"
 npm test -- --test-name-pattern "Graphify graph fixture|exact citation anchors|answer oracle|unsupported|contradictory|oracle distortion|repeated live|finish reason|inferred live runtime truncation|citation stuffing|expected citation mapping|every-occurrence|occurrenceMode|occurrence coverage|smaller live renderer|size-saving live renderer|every renderer fails|report-only aggregate diagnostics"
+npm test -- --test-name-pattern "live safe profile|redaction scan"
+node --check scripts/validate-runtime-prompt-live-safe.mjs
 node --check scripts/benchmark-runtime-prompt.mjs
 node --check test/agent-bridge.test.mjs
 npm run check

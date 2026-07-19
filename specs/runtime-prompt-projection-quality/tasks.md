@@ -118,3 +118,30 @@
       fails with `oracle_omission`.
 - [x] Confirm Loop 16 keeps no-strict-mapping/no-strict-oracle fixtures free
       of checklist, skeleton, supplemental coverage, and oracle coverage rows.
+- [x] Add Loop 17 tracked no-dependency private-safe live wrapper
+      `scripts/validate-runtime-prompt-live-safe.mjs` around the existing
+      runtime prompt benchmark.
+- [x] Add Loop 17 `loop17-smoke`, `loop17-full`, and `none` profile/default
+      support while preserving pass-through benchmark arguments and forcing
+      `--live`.
+- [x] Ensure Loop 17 raw child stdout/stderr go only to OS temp files, are not
+      printed with temp paths, and are scanned before a sanitized aggregate is
+      emitted.
+- [x] Enforce Loop 17 `--overall-timeout-ms` and fail closed on timeout, child
+      nonzero exit, benchmark JSON parse failure, or sensitive scan failure.
+- [x] Print Loop 17 sanitized aggregate JSON with safe command option names,
+      live validation/recommendation status, renderer totals, pass/fail rates,
+      failure-code counts, finish-reason counts, citation coverage, oracle and
+      expected-citation mapping aggregates, truncation counts,
+      `outputTextLength` summaries, and sensitive scan categories/counts.
+- [x] Add Loop 17 npm script `eval:runtime-prompt:live:safe` and include the
+      wrapper in package lint/pack coverage.
+- [x] Add Loop 17 mock live wrapper tests for sanitized success, parseable
+      nonzero benchmark propagation, and redaction scan canaries without
+      printing matched values.
+- [x] Run and document Loop 17 private-safe repeated compact JSON smoke through
+      the wrapper: wrapper safety/parsing/timeout behavior passed and sensitive
+      scans found zero matches, but live quality acceptance remained blocked.
+- [ ] Achieve repeated compact JSON live quality acceptance for the two strict
+      graph fixtures; Loop 17 still had one strict `expected_claim_missing`
+      failure and no recommendation-eligible renderer.

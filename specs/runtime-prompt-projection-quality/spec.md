@@ -194,3 +194,12 @@ quality gates.
   not change or loosen answer-oracle, expected-citation, occurrence,
   distortion, unsupported, contradictory, truncation, or citation-anchor
   validation.
+- `REQ-033`: A tracked private-safe live validation wrapper invokes the
+  benchmark in `--live` mode with documented profiles and pass-through
+  benchmark arguments, writes raw child stdout/stderr only to OS temp files,
+  enforces an overall timeout, scans raw files and the emitted summary for raw
+  `"outputText"` fields, configured endpoint/model/key values, key-like
+  tokens, bearer tokens, `api_key` query values, temp paths, and absolute local
+  paths, and prints only sanitized aggregate JSON. The wrapper exits nonzero
+  when the child exits nonzero, times out, produces unparsable JSON, or any
+  sensitive scan fails.
