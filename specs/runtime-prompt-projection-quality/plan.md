@@ -128,3 +128,21 @@
     - keep answer oracle, expected citation mapping, repeated-occurrence,
       unsupported/contradictory, distortion, and citation-anchor validation
       unchanged, and keep reports private-data-safe.
+21. Loop 15 benchmark-only strict answer format skeleton:
+    - add a live-only prompt skeleton headed
+      `# Benchmark-only strict answer format`;
+    - derive claim rows from effective strict
+      `answerOracle.expectedCitationMappings`, copying each exact claim phrase
+      and ending the row with the exact resolved markdown anchor or anchors;
+    - add required citation coverage rows for top-level citation anchors not
+      already forced by those claim rows, including the `graph-linear-chain`
+      `[1](#citation-1)` anchor;
+    - place a limitations row after claim/coverage rows only, and state that
+      factual limitations also need citations;
+    - omit both checklist and skeleton for fixtures without effective strict
+      expected citation mappings;
+    - add row-shaped mock live answers for `graph-linear-chain` and
+      `graph-strict-evidence-fidelity` that pass with empty failure codes;
+    - preserve strict answer-oracle, expected-citation mapping, occurrence,
+      unsupported/contradictory, distortion, truncation, and citation-anchor
+      validation unchanged.

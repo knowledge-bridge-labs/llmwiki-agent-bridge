@@ -157,6 +157,26 @@
   omission, wrong-anchor, every-occurrence, unsupported, contradictory,
   distortion, and citation-anchor failures still fail through existing strict
   gates; Loop 14 does not loosen oracle behavior.
+- Live mock request inspection proves strict live prompts include
+  `# Benchmark-only strict answer format`.
+- `graph-strict-evidence-fidelity` strict answer-format skeleton includes
+  exact claim rows ending with:
+  `Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation [1](#citation-1) [2](#citation-2)`,
+  `Live Prompt Evaluation checks Exact Citation Anchor [3](#citation-3)`,
+  `Citation Fidelity Gate enforces Repeated Citation Gate [4](#citation-4)`,
+  and `Privacy Redaction Gate blocks Source Path Leak [5](#citation-5)`.
+- `graph-linear-chain` strict answer-format skeleton includes a required
+  citation coverage row for otherwise-unforced `[1](#citation-1)` while not
+  duplicating coverage rows for claim-forced `[2](#citation-2)` or
+  `[3](#citation-3)`.
+- Fixtures without effective strict expected citation mappings omit both the
+  strict claim checklist and the strict answer-format skeleton.
+- Row-shaped mock live answers for `graph-linear-chain` and
+  `graph-strict-evidence-fidelity` pass strict oracle, expected-citation,
+  occurrence, and citation-anchor gates with empty `failureCodes`.
+- Existing negative tests still prove wrong nearby anchors fail as
+  `expected_citation_mismatch` and omitted anchors fail as
+  `citation_anchor_missing`; Loop 15 does not loosen validation.
 
 ## Commands
 
@@ -171,6 +191,7 @@ node scripts/benchmark-runtime-prompt.mjs --live --fixture graph-linear-chain,gr
 node scripts/benchmark-runtime-prompt.mjs --live --fixture graph-linear-chain,graph-strict-evidence-fidelity --renderer compact-json,markdown-summary,toon --live-runs 3 --temperature 0.2 --max-tokens 768 --timeout-ms 120000 > "$OS_TEMP_DIR/runtime-prompt-loop11-runs3.stdout.json" 2> "$OS_TEMP_DIR/runtime-prompt-loop11-runs3.stderr.txt"
 npm test -- --test-name-pattern "offline.*size-only|runtime prompt rendering offline|quality-first|recommendation"
 npm test -- --test-name-pattern "strict claim checklist|claim-preserving|safe diagnostic|graph-strict-evidence-fidelity|runtime prompt rendering offline"
+npm test -- --test-name-pattern "strict answer format|strict claim checklist|claim-preserving|safe diagnostic|graph-strict-evidence-fidelity|expected citation mapping|runtime prompt rendering offline"
 npm test -- --test-name-pattern "runtime prompt rendering offline|graph-strict-evidence-fidelity|strict evidence-fidelity"
 npm test -- --test-name-pattern "Graphify graph fixture|exact citation anchors|answer oracle|unsupported|contradictory|oracle distortion|repeated live|finish reason|inferred live runtime truncation|citation stuffing|expected citation mapping|every-occurrence|occurrenceMode|occurrence coverage|smaller live renderer|size-saving live renderer|every renderer fails|report-only aggregate diagnostics"
 node --check scripts/benchmark-runtime-prompt.mjs

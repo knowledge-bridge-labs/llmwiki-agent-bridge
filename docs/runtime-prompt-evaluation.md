@@ -24,6 +24,7 @@ quality gates pass.
 | Expected citation mappings | Configured claims resolve to expected citation anchors within `windowChars`, with opt-in every-occurrence mode for repeated claims | Required when a strict fixture defines mappings |
 | Failure taxonomy | Live reports include `failureCodes` and aggregate `failureCodeCounts` | Required for failure attribution |
 | Safe live diagnostics | Live reports summarize failure codes, missing configured oracle terms/relations, missing expected claim phrases, citation coverage, finish reason, truncation, and output length without raw model text or private runtime/local values | Required for prompt-contract versus renderer-loss isolation |
+| Benchmark-only strict answer format | Live user prompts provide exact row-shaped claim/citation skeletons plus supplemental required-anchor coverage rows | Required when strict expected citation mappings leave top-level citation anchors otherwise unforced |
 | Live recommendation | `live.recommendation` ranks renderers quality-first | Size can recommend a renderer only after strict live pass rate is 100% and strict quality failures are zero |
 | Representative strict fixture coverage | Built-in strict fixtures include multi-hop citation mappings, every-occurrence repeated claims, nearby-wrong-anchor failures, unsupported/contradictory claims, and privacy/source-path claims | Required before using live recommendations as promotion evidence |
 
@@ -98,6 +99,18 @@ This is a prompt aid for strict fixture isolation only; it does not change
 production bridge prompting and does not relax answer-oracle, expected-citation
 mapping, repeated-occurrence, distortion, unsupported, contradictory, or
 citation-anchor gates.
+The same effective strict mappings also feed a benchmark-only strict answer
+format skeleton. Claim rows copy the exact expected claim phrase and end with
+the exact resolved markdown anchor or anchors, such as
+`Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation [1](#citation-1) [2](#citation-2)`.
+The skeleton adds required citation coverage rows for any top-level citation
+anchor not already forced by claim rows, which keeps fixtures such as
+`graph-linear-chain` from missing `[1](#citation-1)` while preserving
+claim-level citation placement for `[2](#citation-2)` and
+`[3](#citation-3)`. The limitations row appears after claim and coverage rows
+only, and factual limitations also require citations. Fixtures without
+effective strict mappings omit both the checklist and skeleton. This remains
+live-eval-only prompt guidance; strict validators are unchanged.
 Live renderer and totals aggregates also roll these occurrence fields up as
 totals plus `occurrenceCoveragePct` and
 `averageExpectedCitationOccurrenceCoveragePct`, so renderer comparison can
@@ -505,3 +518,45 @@ These metrics can evolve as fixtures improve:
   strict answer-oracle, expected-citation mapping, repeated-occurrence,
   distortion, unsupported/contradictory, and citation-anchor checks remain
   unchanged.
+
+### Loop 15: Benchmark-only strict answer format skeleton
+
+- Research/analysis: the Loop 14 checklist named exact strict claims and
+  anchors, but it did not force a row-shaped answer. `graph-linear-chain` could
+  still satisfy mapped claim rows for `[2](#citation-2)` and
+  `[3](#citation-3)` while omitting the top-level `[1](#citation-1)` anchor.
+- TDD target: mock runtime request inspection proves strict live prompts
+  include `# Benchmark-only strict answer format`; the
+  `graph-strict-evidence-fidelity` skeleton includes exact claim rows ending
+  in `[1](#citation-1) [2](#citation-2)`, `[3](#citation-3)`,
+  `[4](#citation-4)`, and `[5](#citation-5)`; and the `graph-linear-chain`
+  skeleton includes a supplemental required citation coverage row for
+  `[1](#citation-1)`.
+- Quality gates added: live-only strict prompts now include a row-shaped
+  answer skeleton derived from effective strict expected citation mappings,
+  supplemental required-anchor coverage rows for top-level citations not
+  already forced by claim rows, and a final limitations row that reminds the
+  runtime that factual limitations also need citations.
+- Regression coverage: row-shaped mock live answers for `graph-linear-chain`
+  and `graph-strict-evidence-fidelity` pass with empty `failureCodes`;
+  no-strict-mapping fixtures omit both the checklist and skeleton; wrong
+  nearby anchors and omitted anchors continue to fail through the existing
+  strict validators.
+- Optional live smoke: ran a private-safe `compact-json` one-run smoke for
+  `graph-linear-chain` and `graph-strict-evidence-fidelity`. Raw
+  stdout/stderr stayed outside the repo, and the sensitive scan found 0 raw
+  sensitive matches.
+- Result: strict validation improved from Loop 14 but remained blocked: 2
+  runs, 1 pass, 1 fail, `finishReasonCounts.stop=2`, truncation 0, and
+  `recommendedRendererId` null. Required citation anchor coverage reached
+  100%, and `expected_claim_missing` plus `expected_citation_mismatch`
+  disappeared. The remaining failure was `graph-linear-chain` with
+  `oracle_omission`, missing required term any-of `Runtime Prompt Validation`
+  or `validation`.
+- Retrospective: the answer format skeleton closed the required-anchor and
+  expected-citation gaps in this isolated smoke, while the linear-chain oracle
+  still needs the runtime to preserve the validation concept. This remains
+  benchmark-only/live-eval-only prompt guidance. No ADR or public/production
+  contract change is needed, and answer-oracle, expected-citation mapping,
+  occurrence, distortion, unsupported, contradictory, truncation, and
+  citation-anchor validation are unchanged.

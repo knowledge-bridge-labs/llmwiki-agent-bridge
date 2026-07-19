@@ -4369,7 +4369,59 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(runtime.requests.length, 1)
   })
 
-  it('sends claim-preserving live prompt contract and strict claim checklist to the mock runtime', async (t) => {
+  it('passes row-shaped strict answer format mock answers for both strict fixtures', async (t) => {
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      const userPrompt = body.messages.find((message) => message.role === 'user')?.content || ''
+      const content = userPrompt.includes('Promotion Decision requires Citation Fidelity Gate')
+        ? strictEvidenceFidelityRowAnswer()
+        : linearChainRowAnswer()
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { content },
+          },
+        ],
+        usage: {
+          prompt_tokens: 60,
+          completion_tokens: 80,
+          total_tokens: 140,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const { stdout } = await runRuntimePromptBenchmark([
+      '--live',
+      '--fixture',
+      'graph-linear-chain,graph-strict-evidence-fidelity',
+      '--renderer',
+      'compact-json',
+      '--max-tokens',
+      '384',
+      '--timeout-ms',
+      '10000',
+    ], {
+      env: mockRuntimeEnv(runtime),
+    })
+
+    const report = JSON.parse(stdout)
+
+    assert.equal(report.live.validation.ok, true)
+    assert.equal(report.live.status, 'ok')
+    assert.equal(runtime.requests.length, 2)
+
+    for (const fixture of report.live.fixtures) {
+      const rendererReport = fixture.renderers['compact-json']
+      assert.equal(rendererReport.pass, true, fixture.id)
+      assert.deepEqual(rendererReport.failureCodes, [], fixture.id)
+      assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true, fixture.id)
+      assert.equal(rendererReport.answerOracle.ok, true, fixture.id)
+      assert.equal(rendererReport.expectedCitationMappings.ok, true, fixture.id)
+    }
+  })
+
+  it('sends claim-preserving live prompt contract, strict claim checklist, and strict answer format to the mock runtime', async (t) => {
     const runtime = await startFixtureServer(async ({ response }) => {
       writeJson(response, 200, {
         choices: [
@@ -4429,9 +4481,92 @@ describe('llmwiki-agent-bridge', () => {
     assert.match(userMessage.content, /Expected citation anchor\(s\): \[4\]\(#citation-4\)/)
     assert.match(userMessage.content, /Occurrence intent: every occurrence/)
     assert.match(userMessage.content, /Nearby\/window intent: expected anchor\(s\) within 90 chars/)
+
+    assert.match(userMessage.content, /# Benchmark-only strict answer format/)
+    assert.match(userMessage.content, /row-shaped skeleton only for this live benchmark run/i)
+    assert.match(
+      userMessage.content,
+      /^- Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation \[1\]\(#citation-1\) \[2\]\(#citation-2\)$/m,
+    )
+    assert.match(
+      userMessage.content,
+      /^- Live Prompt Evaluation checks Exact Citation Anchor \[3\]\(#citation-3\)$/m,
+    )
+    assert.match(
+      userMessage.content,
+      /^- Citation Fidelity Gate enforces Repeated Citation Gate \[4\]\(#citation-4\)$/m,
+    )
+    assert.match(
+      userMessage.content,
+      /^- Privacy Redaction Gate blocks Source Path Leak \[5\]\(#citation-5\)$/m,
+    )
+    assert.doesNotMatch(userMessage.content, /Required citation coverage row:/)
+    assert(
+      userMessage.content.indexOf('- Privacy Redaction Gate blocks Source Path Leak [5](#citation-5)')
+        < userMessage.content.indexOf('- Limitations:'),
+    )
+    assert.match(userMessage.content, /^- Limitations: .*factual limitations also need exact markdown citation anchors\.$/m)
   })
 
-  it('omits strict claim checklist for live fixtures without strict expected citation mappings', async (t) => {
+  it('adds strict answer format coverage row for graph-linear-chain otherwise-unforced required citation anchors', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: linearChainRowAnswer(),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 40,
+          completion_tokens: 54,
+          total_tokens: 94,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    await runRuntimePromptBenchmark([
+      '--live',
+      '--fixture',
+      'graph-linear-chain',
+      '--renderer',
+      'compact-json',
+      '--max-tokens',
+      '256',
+      '--timeout-ms',
+      '10000',
+    ], {
+      env: mockRuntimeEnv(runtime),
+    })
+
+    assert.equal(runtime.requests.length, 1)
+    const userMessage = runtime.requests[0].body.messages.find((message) => message.role === 'user')
+    assert(userMessage)
+    assert.match(userMessage.content, /# Benchmark-only strict answer format/)
+    assert.match(
+      userMessage.content,
+      /^- Runtime Prompt Decision requires Prompt Codec Implementation \[2\]\(#citation-2\)$/m,
+    )
+    assert.match(
+      userMessage.content,
+      /^- Prompt Codec Implementation measured by Prompt renderer benchmark \[3\]\(#citation-3\)$/m,
+    )
+    assert.match(
+      userMessage.content,
+      /^- Required citation coverage row: write one evidence-supported sentence for this otherwise-unforced top-level citation and end it with \[1\]\(#citation-1\)$/m,
+    )
+    assert(
+      userMessage.content.indexOf('Required citation coverage row:')
+        < userMessage.content.indexOf('- Limitations:'),
+    )
+    assert.doesNotMatch(userMessage.content, /otherwise-unforced top-level citation and end it with \[2\]\(#citation-2\)/)
+    assert.doesNotMatch(userMessage.content, /otherwise-unforced top-level citation and end it with \[3\]\(#citation-3\)/)
+  })
+
+  it('omits strict claim checklist and strict answer format for live fixtures without strict expected citation mappings', async (t) => {
     const runtime = await startFixtureServer(async ({ response }) => {
       writeJson(response, 200, {
         choices: [
@@ -4471,7 +4606,9 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(report.live.validation.ok, true)
     assert(userMessage)
     assert.doesNotMatch(userMessage.content, /# Benchmark-only strict claim checklist/)
+    assert.doesNotMatch(userMessage.content, /# Benchmark-only strict answer format/)
     assert.doesNotMatch(userMessage.content, /Expected claim phrase:/)
+    assert.doesNotMatch(userMessage.content, /Required citation coverage row:/)
   })
 
   it('emits a safe diagnostic summary for failing live mock runs', async (t) => {
@@ -6093,6 +6230,25 @@ function strictEvidenceFidelityAnswer({
     privacyClaim,
     distortionClaims,
   ].filter(Boolean).join(' ')
+}
+
+function linearChainRowAnswer() {
+  return [
+    'Runtime Prompt Decision requires Prompt Codec Implementation [2](#citation-2)',
+    'Prompt Codec Implementation measured by Prompt renderer benchmark [3](#citation-3)',
+    'Runtime Prompt Validation preserves the top-level Runtime Prompt Decision evidence [1](#citation-1)',
+    'Limitations: Synthetic linear CKG fixture validates graph row rendering only [1](#citation-1).',
+  ].join('\n')
+}
+
+function strictEvidenceFidelityRowAnswer() {
+  return [
+    'Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation [1](#citation-1) [2](#citation-2)',
+    'Live Prompt Evaluation checks Exact Citation Anchor [3](#citation-3)',
+    'Citation Fidelity Gate enforces Repeated Citation Gate [4](#citation-4)',
+    'Privacy Redaction Gate blocks Source Path Leak [5](#citation-5)',
+    'Limitations: Synthetic strict evidence-fidelity fixture paths and claims are portable and private-data-safe [1](#citation-1).',
+  ].join('\n')
 }
 
 async function tempConfigPath(t) {

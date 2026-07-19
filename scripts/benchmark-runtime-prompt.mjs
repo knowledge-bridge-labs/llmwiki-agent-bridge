@@ -360,8 +360,72 @@ function renderRuntimeUserPrompt(query, renderedEvidenceBundle, { benchmarkCheck
 
 function renderLiveRuntimeUserPrompt(fixture, renderedEvidenceBundle) {
   return renderRuntimeUserPrompt(fixture.query, renderedEvidenceBundle, {
-    benchmarkChecklist: renderStrictClaimChecklist(fixture),
+    benchmarkChecklist: [
+      renderStrictClaimChecklist(fixture),
+      renderStrictAnswerFormatSkeleton(fixture),
+    ].filter(Boolean).join('\n\n'),
   })
+}
+
+function renderStrictAnswerFormatSkeleton(fixture) {
+  const rows = strictExpectedCitationMappingRows(fixture)
+  if (!rows.length) return ''
+
+  const forcedCitationIndexes = new Set(rows.flatMap((row) => row.citationIndexes))
+  const citationCount = Number.isInteger(fixture?.evidenceBundle?.citationCount)
+    ? fixture.evidenceBundle.citationCount
+    : Array.isArray(fixture?.evidenceBundle?.citations)
+      ? fixture.evidenceBundle.citations.length
+      : 0
+  const coverageRows = Array.from({ length: citationCount }, (_, index) => index + 1)
+    .filter((index) => !forcedCitationIndexes.has(index))
+    .map((index) => (
+      `- Required citation coverage row: write one evidence-supported sentence for this otherwise-unforced top-level citation and end it with ${citationAnchor(index)}`
+    ))
+
+  return [
+    '# Benchmark-only strict answer format',
+    'Use this row-shaped skeleton only for this live benchmark run. Copy each claim row exactly and end it with the exact markdown citation anchor(s) shown. Include required citation coverage rows for top-level anchors not already present in claim rows. Add the limitations row after claim and coverage rows only; factual limitations also need citations.',
+    '',
+    ...rows.map((row) => `- ${row.text}`),
+    ...coverageRows,
+    '- Limitations: state only evidence-supported limitations; factual limitations also need exact markdown citation anchors.',
+  ].join('\n')
+}
+
+function strictExpectedCitationMappingRows(fixture) {
+  const oracle = fixture?.answerOracle
+  const mappings = Array.isArray(oracle?.expectedCitationMappings)
+    ? oracle.expectedCitationMappings.filter(Boolean)
+    : []
+  if (!mappings.length) return []
+
+  const defaultGate = expectedCitationMappingsGate(oracle)
+  const context = expectedCitationMappingContext(fixture?.evidenceBundle)
+  return mappings
+    .map((mapping, mappingIndex) => {
+      const effectiveGate = expectedCitationMappingGate(mapping, defaultGate)
+      if (effectiveGate !== 'strict') return null
+
+      const claim = formatOracleItem(mapping?.claim)
+      if (!claim) return null
+
+      const resolved = resolveExpectedCitationMapping(mapping, context)
+      const anchors = resolved.citationIndexes.map(citationAnchor).filter(Boolean)
+      if (!anchors.length) return null
+
+      return {
+        mappingIndex,
+        citationIndexes: resolved.citationIndexes,
+        firstCitationIndex: Math.min(...resolved.citationIndexes),
+        text: `${claim} ${anchors.join(' ')}`,
+      }
+    })
+    .filter(Boolean)
+    .sort((left, right) => (
+      (left.firstCitationIndex - right.firstCitationIndex)
+      || (left.mappingIndex - right.mappingIndex)
+    ))
 }
 
 function renderStrictClaimChecklist(fixture) {

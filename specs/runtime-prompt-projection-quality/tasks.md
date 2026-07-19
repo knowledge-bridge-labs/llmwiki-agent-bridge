@@ -91,3 +91,14 @@
 - [x] Implement Loop 14 live-only strict claim checklist rendering without
       weakening answer-oracle, expected-citation, repeated-occurrence,
       distortion, unsupported/contradictory, or citation-anchor checks.
+- [x] Add Loop 15 live-only strict answer format skeleton rendering with exact
+      expected claim rows ending in resolved markdown citation anchors.
+- [x] Add Loop 15 required citation coverage rows for top-level citation
+      anchors not already forced by strict expected claim rows.
+- [x] Add Loop 15 prompt-inspection coverage for
+      `graph-strict-evidence-fidelity` exact skeleton rows and the
+      `graph-linear-chain` `[1](#citation-1)` coverage row.
+- [x] Add Loop 15 row-shaped mock live answers proving both strict fixtures
+      pass with empty `failureCodes`.
+- [x] Confirm Loop 15 keeps no-strict-mapping fixtures free of both the
+      strict claim checklist and strict answer format skeleton.

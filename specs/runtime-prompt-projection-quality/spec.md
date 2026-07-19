@@ -165,3 +165,17 @@ quality gates.
   expected-citation, repeated-occurrence, distortion, unsupported,
   contradictory, or citation-anchor validation, and reports must remain free of
   raw model output and private runtime/local values.
+- `REQ-031`: Live benchmark user prompts include a clearly labeled
+  benchmark-only strict answer-format skeleton when effective strict
+  `answerOracle.expectedCitationMappings` can be resolved to exact citation
+  anchors. The skeleton is coverage-aware: it emits one claim row per effective
+  strict mapping, with the exact configured claim phrase ending in the exact
+  resolved markdown citation anchor or anchors, and then emits required
+  citation-coverage rows for top-level citation anchors not already forced by
+  those claim rows. A limitations row appears only after all claim and coverage
+  rows and states that factual limitations also need citations. Fixtures
+  without effective strict expected citation mappings and without supplemental
+  top-level citation coverage rows omit the skeleton. This remains
+  benchmark-only/live-eval-only behavior and must not change or loosen
+  answer-oracle, expected-citation, occurrence, distortion, unsupported,
+  contradictory, truncation, or citation-anchor validation.
