@@ -25,7 +25,7 @@ quality gates pass.
 | Failure taxonomy | Live reports include `failureCodes` and aggregate `failureCodeCounts` | Required for failure attribution |
 | Safe live diagnostics | Live reports summarize failure codes, missing configured oracle terms/relations, missing expected claim phrases, citation coverage, finish reason, truncation, and output length without raw model text or private runtime/local values | Required for prompt-contract versus renderer-loss isolation |
 | Private-safe live wrapper | Tracked wrapper captures raw child stdout/stderr only in OS temp, enforces an overall timeout, scans raw and sanitized output for sensitive patterns, and prints sanitized aggregate JSON only | Required before copying live aggregate metrics into docs |
-| Benchmark-only strict answer format | Live user prompts provide exact row-shaped claim/citation skeletons plus supplemental required-anchor and strict oracle coverage rows | Required when strict expected citation mappings leave top-level citation anchors or strict oracle items otherwise unforced |
+| Benchmark-only strict answer format | Live user prompts provide mandatory completeness instructions, `Expected claim row` skeletons, supplemental required-anchor rows, and strict oracle coverage rows | Required when strict expected citation mappings leave top-level citation anchors or strict oracle items otherwise unforced |
 | Live recommendation | `live.recommendation` ranks renderers quality-first | Size can recommend a renderer only after strict live pass rate is 100% and strict quality failures are zero |
 | Representative strict fixture coverage | Built-in strict fixtures include multi-hop citation mappings, every-occurrence repeated claims, nearby-wrong-anchor failures, unsupported/contradictory claims, and privacy/source-path claims | Required before using live recommendations as promotion evidence |
 
@@ -101,9 +101,14 @@ production bridge prompting and does not relax answer-oracle, expected-citation
 mapping, repeated-occurrence, distortion, unsupported, contradictory, or
 citation-anchor gates.
 The same effective strict mappings also feed a benchmark-only strict answer
-format skeleton. Claim rows copy the exact expected claim phrase and end with
-the exact resolved markdown anchor or anchors, such as
-`Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation [1](#citation-1) [2](#citation-2)`.
+format skeleton. Before the skeleton rows, a mandatory completeness checklist
+states that the final answer must include every `Expected claim row` exactly
+once, that these rows are not optional and must not be omitted, split, merged,
+or rephrased, and that multi-hop rows must stay intact with all shown anchors
+on the same row near the claim. Expected-claim rows are labeled
+`Expected claim row:` and copy the exact expected claim phrase ending with the
+exact resolved markdown anchor or anchors, such as
+`Expected claim row: Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation [1](#citation-1) [2](#citation-2)`.
 The skeleton adds required citation coverage rows for any top-level citation
 anchor not already forced by claim rows, which keeps fixtures such as
 `graph-linear-chain` from missing `[1](#citation-1)` while preserving
@@ -681,3 +686,58 @@ These metrics can evolve as fixtures improve:
   new ADR is needed. Follow-up work should target the remaining strict expected
   claim omission before treating compact JSON as recommendation-eligible under
   repeated live runs.
+
+### Loop 18: Mandatory expected-claim row completeness
+
+- Research/analysis: Loop 17 isolated the remaining repeated live failure to
+  omission of the multi-hop expected claim
+  `Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation`.
+  The strict answer-format skeleton already showed the row, but it did not
+  explicitly state that every expected-claim row was mandatory and must remain
+  intact.
+- TDD target: mock runtime request inspection proves
+  `graph-strict-evidence-fidelity` live prompts include mandatory completeness
+  language requiring every `Expected claim row` exactly once, stating that
+  expected rows are not optional and must not be omitted, split, merged, or
+  rephrased, and requiring multi-hop rows to keep all shown anchors on or near
+  the same row. Prompt row assertions now expect the `Expected claim row:`
+  label.
+- Quality gates added: the benchmark-only strict answer-format skeleton now
+  emits a short mandatory completeness checklist before skeleton rows and
+  labels every strict expected-citation mapping row as an `Expected claim row`.
+  Coverage rows, oracle coverage rows, limitations-row ordering, and
+  no-strict-mapping fixture omissions remain unchanged.
+- Regression coverage: row-shaped mock answers now copy the
+  `Expected claim row:` labels and still pass strict oracle and expected
+  citation mapping gates. The multi-hop omission negative path still fails
+  with `expected_claim_missing` and `oracle_omission`, proving validators were
+  not loosened.
+- Result: local validation passed: `npm run check`, `git diff --check`, and
+  docs secret scanning reported no issues. A private-safe repeated
+  `compact-json` profile was run through the tracked wrapper for the two
+  strict graph fixtures with three live runs each and a bounded overall
+  timeout. Wrapper behavior passed: no timeout occurred, benchmark JSON parsing
+  succeeded, and raw plus sanitized sensitive scans reported zero matches.
+  Repeated live quality still did not fully pass: 6 runs, 5 passed, 1 failed,
+  `passRatePct: 83.33`, `recommendation.status: blocked`, and
+  `recommendedRendererId: null`.
+- Targeted fix result: the expected-claim completeness issue disappeared.
+  Expected-citation mappings reported `strictFailureCount: 0`,
+  `missingClaimCount: 0`, `expectedCitationMismatchCount: 0`, and
+  `occurrenceCoveragePct: 100`; the prior `expected_claim_missing` failure code
+  did not recur.
+- Remaining diagnostic: the only remaining failure code was
+  `citation_anchor_invalid=1` in `graph-strict-evidence-fidelity` run 3.
+  Required citation-anchor coverage stayed at 100%, but
+  `invalidCitationAnchorCount` was 1. Answer-oracle strict failures were 0,
+  finish reasons were all `stop`, and truncation was 0. The sanitized report
+  exposes only the invalid-anchor count, not the invalid anchor value.
+- Retrospective: this is another benchmark-only/live-eval-only prompt guidance
+  refinement. It does not change the production bridge runtime contract,
+  public API, source policy, security defaults, answer validators, fixture
+  validators, expected-citation matching, truncation handling, or renderer
+  recommendation rules, so no new ADR is needed. The Loop 18 prompt change
+  stabilized expected-claim row completeness, but repeated live acceptance
+  remains blocked pending invalid citation-anchor stabilization or
+  private-safe diagnostics that identify the malformed anchor without exposing
+  raw model output.

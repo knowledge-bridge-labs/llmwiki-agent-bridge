@@ -183,3 +183,19 @@
       failure-code and finish-reason counts, citation coverage, oracle and
       expected-citation mapping aggregates, truncation counts,
       `outputTextLength` summaries, and sensitive scan counts/categories.
+24. Loop 18 mandatory expected-claim row completeness:
+    - add benchmark-only mandatory completeness instructions before strict
+      answer-format skeleton rows;
+    - label each strict expected-citation mapping skeleton row as an
+      `Expected claim row`;
+    - state that every `Expected claim row` must appear exactly once in the
+      final answer and that expected rows are not optional;
+    - state that expected rows must not be omitted, split, merged, or
+      rephrased;
+    - state that multi-hop rows must stay intact with all shown anchors on the
+      same row and anchors remaining on or near the same claim row;
+    - keep supplemental citation coverage rows, oracle coverage rows, the
+      limitations row, and no-strict-mapping fixture omissions unchanged;
+    - preserve strict answer-oracle, expected-citation mapping, occurrence,
+      unsupported/contradictory, distortion, truncation, and citation-anchor
+      validation unchanged.

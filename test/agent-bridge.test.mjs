@@ -4494,26 +4494,32 @@ describe('llmwiki-agent-bridge', () => {
 
     assert.match(userMessage.content, /# Benchmark-only strict answer format/)
     assert.match(userMessage.content, /row-shaped skeleton only for this live benchmark run/i)
+    assert.match(userMessage.content, /every Expected claim row exactly once/)
+    assert.match(userMessage.content, /Expected claim rows are not optional/)
+    assert.match(userMessage.content, /must not be omitted, split, merged, or rephrased/)
+    assert.match(userMessage.content, /multi-hop Expected claim rows must stay intact/)
+    assert.match(userMessage.content, /all shown anchors on the same row/)
+    assert.match(userMessage.content, /anchors must remain on or near the same claim row/)
     assert.match(
       userMessage.content,
-      /^- Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation \[1\]\(#citation-1\) \[2\]\(#citation-2\)$/m,
+      /^- Expected claim row: Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation \[1\]\(#citation-1\) \[2\]\(#citation-2\)$/m,
     )
     assert.match(
       userMessage.content,
-      /^- Live Prompt Evaluation checks Exact Citation Anchor \[3\]\(#citation-3\)$/m,
+      /^- Expected claim row: Live Prompt Evaluation checks Exact Citation Anchor \[3\]\(#citation-3\)$/m,
     )
     assert.match(
       userMessage.content,
-      /^- Citation Fidelity Gate enforces Repeated Citation Gate \[4\]\(#citation-4\)$/m,
+      /^- Expected claim row: Citation Fidelity Gate enforces Repeated Citation Gate \[4\]\(#citation-4\)$/m,
     )
     assert.match(
       userMessage.content,
-      /^- Privacy Redaction Gate blocks Source Path Leak \[5\]\(#citation-5\)$/m,
+      /^- Expected claim row: Privacy Redaction Gate blocks Source Path Leak \[5\]\(#citation-5\)$/m,
     )
     assert.doesNotMatch(userMessage.content, /Required citation coverage row:/)
     assert.doesNotMatch(userMessage.content, /Oracle coverage row:/)
     assert(
-      userMessage.content.indexOf('- Privacy Redaction Gate blocks Source Path Leak [5](#citation-5)')
+      userMessage.content.indexOf('- Expected claim row: Privacy Redaction Gate blocks Source Path Leak [5](#citation-5)')
         < userMessage.content.indexOf('- Limitations:'),
     )
     assert.match(userMessage.content, /^- Limitations: .*factual limitations also need exact markdown citation anchors\.$/m)
@@ -4559,11 +4565,11 @@ describe('llmwiki-agent-bridge', () => {
     assert.match(userMessage.content, /# Benchmark-only strict answer format/)
     assert.match(
       userMessage.content,
-      /^- Runtime Prompt Decision requires Prompt Codec Implementation \[2\]\(#citation-2\)$/m,
+      /^- Expected claim row: Runtime Prompt Decision requires Prompt Codec Implementation \[2\]\(#citation-2\)$/m,
     )
     assert.match(
       userMessage.content,
-      /^- Prompt Codec Implementation measured by Prompt renderer benchmark \[3\]\(#citation-3\)$/m,
+      /^- Expected claim row: Prompt Codec Implementation measured by Prompt renderer benchmark \[3\]\(#citation-3\)$/m,
     )
     assert.match(
       userMessage.content,
@@ -4689,6 +4695,8 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(userMessage.content, /# Benchmark-only strict claim checklist/)
     assert.doesNotMatch(userMessage.content, /# Benchmark-only strict answer format/)
     assert.doesNotMatch(userMessage.content, /Expected claim phrase:/)
+    assert.doesNotMatch(userMessage.content, /Mandatory completeness checklist:/)
+    assert.doesNotMatch(userMessage.content, /Expected claim row:/)
     assert.doesNotMatch(userMessage.content, /Required citation coverage row:/)
     assert.doesNotMatch(userMessage.content, /Oracle coverage row:/)
   })
@@ -5099,6 +5107,9 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
     assert.equal(rendererReport.answerOracle.ok, false)
     assert(rendererReport.answerOracle.metrics.missingRequiredRelationCount > 0)
+    assert.equal(rendererReport.expectedCitationMappings.ok, false)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.missingClaimCount, 1)
+    assert(rendererReport.failureCodes.includes('expected_claim_missing'))
     assert(rendererReport.failureCodes.includes('oracle_omission'))
     assert.equal(runtime.requests.length, 1)
   })
@@ -6585,8 +6596,8 @@ function strictEvidenceFidelityAnswer({
 
 function linearChainRowAnswer({ includeValidation = true } = {}) {
   return [
-    'Runtime Prompt Decision requires Prompt Codec Implementation [2](#citation-2)',
-    'Prompt Codec Implementation measured by Prompt renderer benchmark [3](#citation-3)',
+    'Expected claim row: Runtime Prompt Decision requires Prompt Codec Implementation [2](#citation-2)',
+    'Expected claim row: Prompt Codec Implementation measured by Prompt renderer benchmark [3](#citation-3)',
     includeValidation
       ? 'Runtime Prompt Validation preserves the top-level Runtime Prompt Decision evidence [1](#citation-1)'
       : 'Runtime Prompt Decision keeps the top-level decision evidence anchored [1](#citation-1)',
@@ -6596,10 +6607,10 @@ function linearChainRowAnswer({ includeValidation = true } = {}) {
 
 function strictEvidenceFidelityRowAnswer() {
   return [
-    'Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation [1](#citation-1) [2](#citation-2)',
-    'Live Prompt Evaluation checks Exact Citation Anchor [3](#citation-3)',
-    'Citation Fidelity Gate enforces Repeated Citation Gate [4](#citation-4)',
-    'Privacy Redaction Gate blocks Source Path Leak [5](#citation-5)',
+    'Expected claim row: Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation [1](#citation-1) [2](#citation-2)',
+    'Expected claim row: Live Prompt Evaluation checks Exact Citation Anchor [3](#citation-3)',
+    'Expected claim row: Citation Fidelity Gate enforces Repeated Citation Gate [4](#citation-4)',
+    'Expected claim row: Privacy Redaction Gate blocks Source Path Leak [5](#citation-5)',
     'Limitations: Synthetic strict evidence-fidelity fixture paths and claims are portable and private-data-safe [1](#citation-1).',
   ].join('\n')
 }

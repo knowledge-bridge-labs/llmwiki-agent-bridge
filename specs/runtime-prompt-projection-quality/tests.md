@@ -184,10 +184,15 @@
   `# Benchmark-only strict answer format`.
 - `graph-strict-evidence-fidelity` strict answer-format skeleton includes
   exact claim rows ending with:
-  `Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation [1](#citation-1) [2](#citation-2)`,
-  `Live Prompt Evaluation checks Exact Citation Anchor [3](#citation-3)`,
-  `Citation Fidelity Gate enforces Repeated Citation Gate [4](#citation-4)`,
-  and `Privacy Redaction Gate blocks Source Path Leak [5](#citation-5)`.
+  `Expected claim row: Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation [1](#citation-1) [2](#citation-2)`,
+  `Expected claim row: Live Prompt Evaluation checks Exact Citation Anchor [3](#citation-3)`,
+  `Expected claim row: Citation Fidelity Gate enforces Repeated Citation Gate [4](#citation-4)`,
+  and `Expected claim row: Privacy Redaction Gate blocks Source Path Leak [5](#citation-5)`.
+- `graph-strict-evidence-fidelity` strict answer-format skeleton includes a
+  mandatory completeness checklist before expected-claim rows that says every
+  `Expected claim row` must appear exactly once, expected rows are not
+  optional, rows must not be omitted/split/merged/rephrased, multi-hop rows
+  must stay intact, and anchors must stay on or near the same claim row.
 - `graph-linear-chain` strict answer-format skeleton includes a required
   citation coverage row for otherwise-unforced `[1](#citation-1)` while not
   duplicating coverage rows for claim-forced `[2](#citation-2)` or
@@ -202,15 +207,19 @@
 - Row-shaped mock live answers for `graph-linear-chain` and
   `graph-strict-evidence-fidelity` pass strict oracle, expected-citation,
   occurrence, and citation-anchor gates with empty `failureCodes`; the
+  copied `Expected claim row:` labels still pass those validators, and the
   `graph-linear-chain` mock includes `Runtime Prompt Validation` only when the
   new oracle coverage row appears in the prompt.
 - A negative `graph-linear-chain` mock answer still fails with
   `oracle_omission` when required citation anchors and expected citation
   mappings are covered but the strict `Runtime Prompt Validation`/`validation`
   oracle term is omitted.
+- A negative `graph-strict-evidence-fidelity` multi-hop omission still fails
+  with `expected_claim_missing`; mandatory completeness language does not
+  weaken validators.
 - Existing negative tests still prove wrong nearby anchors fail as
   `expected_citation_mismatch` and omitted anchors fail as
-  `citation_anchor_missing`; Loop 15 and Loop 16 do not loosen validation.
+  `citation_anchor_missing`; Loops 15 through 18 do not loosen validation.
 
 ## Commands
 
@@ -231,6 +240,7 @@ npm test -- --test-name-pattern "offline.*size-only|runtime prompt rendering off
 npm test -- --test-name-pattern "strict claim checklist|claim-preserving|safe diagnostic|graph-strict-evidence-fidelity|runtime prompt rendering offline"
 npm test -- --test-name-pattern "oracle coverage|strict answer format|strict claim checklist|claim-preserving|safe diagnostic|graph-strict-evidence-fidelity|expected citation mapping|runtime prompt rendering offline"
 npm test -- --test-name-pattern "runtime prompt rendering offline|graph-strict-evidence-fidelity|strict evidence-fidelity"
+npm test -- --test-name-pattern "mandatory completeness|Expected claim row|strict answer format|strict claim checklist|expected citation mapping|graph-strict-evidence-fidelity|oracle coverage|runtime prompt rendering offline"
 npm test -- --test-name-pattern "Graphify graph fixture|exact citation anchors|answer oracle|unsupported|contradictory|oracle distortion|repeated live|finish reason|inferred live runtime truncation|citation stuffing|expected citation mapping|every-occurrence|occurrenceMode|occurrence coverage|smaller live renderer|size-saving live renderer|every renderer fails|report-only aggregate diagnostics"
 npm test -- --test-name-pattern "live safe profile|redaction scan"
 node --check scripts/validate-runtime-prompt-live-safe.mjs

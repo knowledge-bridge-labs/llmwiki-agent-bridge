@@ -142,6 +142,25 @@
 - [x] Run and document Loop 17 private-safe repeated compact JSON smoke through
       the wrapper: wrapper safety/parsing/timeout behavior passed and sensitive
       scans found zero matches, but live quality acceptance remained blocked.
+- [x] Add Loop 18 benchmark-only mandatory completeness instructions before
+      strict answer-format skeleton rows.
+- [x] Label Loop 18 strict expected-citation mapping skeleton rows as
+      `Expected claim row` rows.
+- [x] Add Loop 18 prompt-inspection coverage proving every
+      `Expected claim row` must appear exactly once, is not optional, must not
+      be omitted/split/merged/rephrased, and keeps multi-hop anchors on or near
+      the same row.
+- [x] Extend Loop 18 row-shaped mock answers so copied
+      `Expected claim row:` lines still pass strict oracle and expected
+      citation mapping gates.
+- [x] Keep Loop 18 no-strict-mapping fixtures free of mandatory completeness,
+      skeleton, supplemental coverage, and oracle coverage rows.
+- [x] Confirm Loop 18 omission coverage still fails with
+      `expected_claim_missing` without weakening validators.
 - [ ] Achieve repeated compact JSON live quality acceptance for the two strict
-      graph fixtures; Loop 17 still had one strict `expected_claim_missing`
-      failure and no recommendation-eligible renderer.
+      graph fixtures; Loop 18 cleared the strict expected-claim failure but
+      still had one `citation_anchor_invalid` failure and no
+      recommendation-eligible renderer.
+- [ ] Add private-safe diagnostics or prompt stabilization for invalid citation
+      anchors so repeated live reports can identify and eliminate malformed
+      anchors without exposing raw model output.

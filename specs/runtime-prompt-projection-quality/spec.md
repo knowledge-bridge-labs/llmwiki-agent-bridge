@@ -203,3 +203,16 @@ quality gates.
   paths, and prints only sanitized aggregate JSON. The wrapper exits nonzero
   when the child exits nonzero, times out, produces unparsable JSON, or any
   sensitive scan fails.
+- `REQ-034`: The benchmark-only strict answer-format skeleton includes a
+  mandatory completeness checklist before expected-claim skeleton rows and
+  labels every strict expected-citation mapping row as an
+  `Expected claim row`. The checklist states that the final answer must include
+  every `Expected claim row` exactly once; that expected-claim rows are not
+  optional and must not be omitted, split, merged, or rephrased; and that
+  multi-hop expected-claim rows must stay intact with all shown anchors on the
+  same row and anchors remaining on or near that claim row. This applies only
+  when effective strict expected citation mappings render a skeleton; fixtures
+  without effective strict mappings remain free of checklist and skeleton rows.
+  This remains benchmark-only/live-eval-only behavior and must not change or
+  loosen answer-oracle, expected-citation mapping, occurrence, distortion,
+  unsupported, contradictory, truncation, or citation-anchor validation.

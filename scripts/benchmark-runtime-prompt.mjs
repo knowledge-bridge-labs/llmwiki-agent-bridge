@@ -386,9 +386,14 @@ function renderStrictAnswerFormatSkeleton(fixture) {
 
   return [
     '# Benchmark-only strict answer format',
-    'Use this row-shaped skeleton only for this live benchmark run. Copy each claim row exactly and end it with the exact markdown citation anchor(s) shown. Include required citation coverage rows for top-level anchors not already present in claim rows, then oracle coverage rows for strict required terms, phrases, or relations not already present in claim rows. Add the limitations row after claim, citation coverage, and oracle coverage rows only; factual limitations also need citations.',
+    'Use this row-shaped skeleton only for this live benchmark run. Copy each Expected claim row exactly and end it with the exact markdown citation anchor(s) shown. Include required citation coverage rows for top-level anchors not already present in claim rows, then oracle coverage rows for strict required terms, phrases, or relations not already present in claim rows. Add the limitations row after claim, citation coverage, and oracle coverage rows only; factual limitations also need citations.',
     '',
-    ...rows.map((row) => `- ${row.text}`),
+    'Mandatory completeness checklist:',
+    '- Include every Expected claim row exactly once in the final answer.',
+    '- Expected claim rows are not optional and must not be omitted, split, merged, or rephrased.',
+    '- multi-hop Expected claim rows must stay intact with all shown anchors on the same row; anchors must remain on or near the same claim row.',
+    '',
+    ...rows.map((row) => `- Expected claim row: ${row.text}`),
     ...coverageRows,
     ...oracleCoverageRows,
     '- Limitations: state only evidence-supported limitations; factual limitations also need exact markdown citation anchors.',
