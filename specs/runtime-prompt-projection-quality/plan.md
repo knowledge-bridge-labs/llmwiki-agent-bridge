@@ -61,3 +61,9 @@
       renderer is eligible.
 14. Document compact fixture-authoring guidance so future live fixtures remain
     private-data-safe and promotion-relevant.
+15. Lock offline size-only semantics in regression coverage and docs:
+    - assert top-level `offlineComparisonBasis: "size-only"`;
+    - assert every fixture-level and totals-level offline comparison carries
+      `basis: "size-only"`;
+    - assert offline reports do not emit `recommendation` or
+      `recommendedRendererId` fields when `--live` is omitted.

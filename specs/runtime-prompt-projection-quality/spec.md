@@ -109,8 +109,12 @@ quality gates.
   and average required-item coverage. Aggregate reports split strict and
   report-only diagnostics, including `strictUnsupportedClaimHitCount`,
   `strictContradictoryClaimHitCount`, and `strictDistortionCount`.
-- `REQ-024`: Offline renderer comparisons are explicitly marked size-only and
-  must not be interpreted as recommendations or readiness decisions.
+- `REQ-024`: Offline renderer reports declare
+  `offlineComparisonBasis: "size-only"` at the top level, every fixture-level
+  and totals-level comparison includes `basis: "size-only"`, and offline mode
+  does not emit `recommendation` or `recommendedRendererId` fields. Offline
+  byte/char/estimated-token comparisons must not be interpreted as
+  recommendations or readiness decisions.
 - `REQ-025`: Live reports include a quality-first recommendation object that
   ranks renderers by size only after strict live `passRatePct` is 100,
   failure-code counts are empty, no truncation or inferred truncation is

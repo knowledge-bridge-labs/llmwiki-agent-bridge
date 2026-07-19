@@ -47,3 +47,5 @@
       from strict quality failures and verify they do not block eligibility.
 - [x] Document compact fixture-authoring notes for promotion-relevant, private
       data-safe live fixtures.
+- [x] Add explicit offline size-only regression assertions and docs so offline
+      byte/token savings cannot be mistaken for recommendations.

@@ -77,7 +77,13 @@ should remain optional evaluation input rather than a runtime dependency.
     counts participate in recommendation eligibility, while report-only counts
     remain visible for fixture calibration.
 - Mark offline byte/char/estimated-token comparisons as `size-only`; offline
-  size comparisons are never readiness recommendations.
+  size comparisons are never readiness recommendations:
+  - offline reports declare top-level
+    `offlineComparisonBasis: "size-only"`;
+  - every fixture-level and totals-level offline comparison declares
+    `basis: "size-only"`;
+  - offline mode may include a `live.enabled: false` skip note, but it does
+    not emit `recommendation` or `recommendedRendererId` fields.
 - Add a live `quality-first` recommendation object:
   - each renderer is eligible only when strict live pass rate is 100% and
     strict quality failures are zero;

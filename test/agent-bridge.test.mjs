@@ -3745,7 +3745,7 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(hermesUserMessage, /127\.0\.0\.1/)
   })
 
-  it('evaluates runtime prompt rendering offline with compact JSON, markdown summary, and TOON candidates', async () => {
+  it('evaluates runtime prompt rendering offline as size-only with compact JSON, markdown summary, and TOON candidates', async () => {
     const { stdout } = await execFileAsync(process.execPath, ['scripts/benchmark-runtime-prompt.mjs'], {
       cwd: packageRoot,
       maxBuffer: 1024 * 1024,
@@ -3756,14 +3756,28 @@ describe('llmwiki-agent-bridge', () => {
     const markdownComparison = report.totals.comparisons.markdownSummaryVsCompactRuntimeUserPrompt
     const toonComparison = report.totals.comparisons.toonVsCompactRuntimeUserPrompt
     const fixtureIds = report.fixtures.map((fixture) => fixture.id)
+    const forbiddenOfflineRecommendationPaths = []
+    const collectForbiddenRecommendationKeys = (value, path = '$') => {
+      if (!value || typeof value !== 'object') return
+      for (const [key, child] of Object.entries(value)) {
+        const nextPath = `${path}.${key}`
+        if (key === 'recommendation' || key === 'recommendedRendererId') {
+          forbiddenOfflineRecommendationPaths.push(nextPath)
+        }
+        collectForbiddenRecommendationKeys(child, nextPath)
+      }
+    }
+    collectForbiddenRecommendationKeys(report)
 
     assert.equal(report.schema, 'llmwiki-agent-bridge.runtime-prompt-evaluation.v1')
     assert.equal(report.mode, 'offline')
+    assert.equal(report.offlineComparisonBasis, 'size-only')
     assert.equal(report.rendererBaseline, 'pretty-json')
     assert.deepEqual(report.rendererCandidates, ['compact-json', 'markdown-summary', 'toon'])
     assert.deepEqual(report.renderers.map((renderer) => renderer.id), ['pretty-json', 'compact-json', 'markdown-summary', 'toon'])
     assert.match(report.note, /markdown-summary is a lossy prompt projection/)
     assert.equal(report.live.enabled, false)
+    assert.deepEqual(forbiddenOfflineRecommendationPaths, [])
     assert.equal(report.validation.ok, true)
     assert.equal(report.fixtures.length, 5)
     assert(fixtureIds.includes('graph-linear-chain'))
@@ -3775,6 +3789,17 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(markdownComparison.candidate, 'markdown-summary')
     assert.equal(toonComparison.baseline, 'compact-json')
     assert.equal(toonComparison.candidate, 'toon')
+
+    const comparisonGroups = [
+      ['totals', report.totals.comparisons],
+      ...report.fixtures.map((fixture) => [`fixture:${fixture.id}`, fixture.comparisons]),
+    ]
+    for (const [groupName, comparisons] of comparisonGroups) {
+      assert(Object.keys(comparisons).length > 0, `${groupName} should include offline comparisons`)
+      for (const [comparisonName, comparison] of Object.entries(comparisons)) {
+        assert.equal(comparison.basis, 'size-only', `${groupName}.${comparisonName}`)
+      }
+    }
   })
 
   it('adds an eval-only Graphify graph fixture to the runtime prompt benchmark', async (t) => {

@@ -69,6 +69,12 @@
   diagnostics.
 - Offline renderer comparisons remain byte/char/estimated-token measurements
   and are explicitly marked `basis: "size-only"`.
+- Offline renderer reports include top-level
+  `offlineComparisonBasis: "size-only"`.
+- Every fixture-level and totals-level offline comparison includes
+  `basis: "size-only"`.
+- Offline mode may report `live.enabled: false` as a skip note, but it emits no
+  `recommendation` or `recommendedRendererId` fields when `--live` is omitted.
 - Live recommendation ranking is quality-first: a smaller renderer with strict
   live quality failures is not recommended.
 - A renderer with strict live `passRatePct` of 100 and zero strict quality
@@ -84,6 +90,7 @@
 
 ```sh
 npm run bench:runtime-prompt
+npm test -- --test-name-pattern "offline.*size-only|runtime prompt rendering offline|quality-first|recommendation"
 npm test -- --test-name-pattern "Graphify graph fixture|exact citation anchors|answer oracle|unsupported|contradictory|oracle distortion|repeated live|finish reason|inferred live runtime truncation|citation stuffing|expected citation mapping|every-occurrence|occurrenceMode|occurrence coverage|smaller live renderer|size-saving live renderer|every renderer fails|report-only aggregate diagnostics"
 node --check scripts/benchmark-runtime-prompt.mjs
 node --check test/agent-bridge.test.mjs

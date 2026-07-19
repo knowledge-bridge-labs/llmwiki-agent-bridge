@@ -17,6 +17,7 @@ quality gates pass.
 | Runtime completion | Live responses report `finishReason`, `truncation`, and aggregate truncation counts | `finish_reason=length` and inferred max-token exhaustion fail strict runs |
 | Lossy renderer isolation | Lossy projections are labeled and cannot silently become the production contract | Must be explicit candidate/eval-only |
 | Reproducibility | Offline benchmark does not call provider/runtime/network | Required |
+| Offline comparison basis | Offline reports declare top-level and per-comparison size-only basis | `offlineComparisonBasis: "size-only"` and every fixture/totals comparison `basis: "size-only"`; no offline recommendation fields |
 | Answer oracle | Live outputs cover configured required terms/relations and avoid explicitly configured forbidden, unsupported, and contradictory patterns | Required when a fixture defines a strict oracle |
 | Expected citation mappings | Configured claims resolve to expected citation anchors within `windowChars`, with opt-in every-occurrence mode for repeated claims | Required when a strict fixture defines mappings |
 | Failure taxonomy | Live reports include `failureCodes` and aggregate `failureCodeCounts` | Required for failure attribution |
@@ -89,15 +90,20 @@ stayed cited." The aggregate `expectedCitationMappings` object includes
 `strictEveryOccurrenceFailureCount`, `strictTargetResolutionFailureCount`,
 `strictExpectedCitationMismatchCount`, and `strictProximityFailureCount`.
 
-Offline benchmark comparisons remain size-only. Each offline comparison keeps
-the existing byte/char/estimated-token savings fields and is marked with
-`basis: "size-only"`; offline size reports never imply renderer readiness. When
-`--live` is enabled, `live.recommendation` reports a quality-first ranking. A
-renderer is eligible only when strict live `passRatePct` is `100`, failure-code
-counts are empty, no truncation or inferred truncation was detected, strict
-unsupported/contradictory/distortion hits are zero, and all strict
-expected-citation occurrence, target-resolution, mismatch, and proximity gates
-are satisfied. Among eligible renderers, the recommendation uses
+Offline benchmark comparisons remain size-only. Offline reports declare
+`offlineComparisonBasis: "size-only"` at the top level, and each fixture-level
+and totals-level comparison keeps the existing byte/char/estimated-token
+savings fields while also declaring `basis: "size-only"`. Offline size reports
+never imply renderer readiness and must not emit `recommendation` or
+`recommendedRendererId` fields when `--live` is omitted. The offline
+`live.enabled: false` note is only a skip notice, not a winner selection.
+
+When `--live` is enabled, `live.recommendation` reports a quality-first
+ranking. A renderer is eligible only when strict live `passRatePct` is `100`,
+failure-code counts are empty, no truncation or inferred truncation was
+detected, strict unsupported/contradictory/distortion hits are zero, and all
+strict expected-citation occurrence, target-resolution, mismatch, and proximity
+gates are satisfied. Among eligible renderers, the recommendation uses
 `runtimeUserPrompt.estimatedTokens` as the size metric. If no renderer is
 eligible, the recommendation is blocked with renderer-specific reasons and
 `recommendedRendererId: null`.
@@ -301,3 +307,18 @@ These metrics can evolve as fixtures improve:
 - Retrospective: the report is now decision-ready for renderer comparison when
   live fixtures are strict and representative. Offline byte/token comparisons
   remain useful sizing inputs only, not readiness signals.
+
+### Loop 9: Explicit offline size-only basis
+
+- Research/analysis: the offline report already carried size-only comparison
+  fields, but the regression tests and docs needed to make clear that offline
+  byte/token comparisons are not recommendations.
+- TDD target: offline benchmark tests assert top-level
+  `offlineComparisonBasis: "size-only"`, every fixture-level and totals-level
+  comparison `basis: "size-only"`, and no `recommendation` or
+  `recommendedRendererId` fields when `--live` is omitted.
+- Quality gates added: explicit regression coverage for the offline report
+  boundary between size measurements and live quality-gated readiness.
+- Retrospective: no benchmark implementation change was needed; this loop
+  turned the existing size-only semantics into executable acceptance checks so
+  token savings cannot be mistaken for renderer promotion.
