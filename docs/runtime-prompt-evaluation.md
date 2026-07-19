@@ -21,6 +21,21 @@ quality gates pass.
 Fixtures may set an answer oracle to `report-only` while a new oracle is being
 calibrated. Production-quality fixture gates should remain strict.
 
+## Scored Loop Rubric
+
+Each development loop reports a scored rubric. Required gates are still
+fail-closed: any required gate scored `0` means the loop is not complete even
+if the weighted total is high.
+
+| Score | Meaning |
+| --- | --- |
+| 0 | Not implemented, not measured, or unsafe |
+| 1 | Implemented only as a sketch or manual check |
+| 2 | Automated but incomplete or easy to bypass |
+| 3 | Automated and covers the main happy/failure path |
+| 4 | Automated, documented, and regression-tested |
+| 5 | Automated, documented, regression-tested, and produces decision-ready metrics |
+
 ## Flexible Rubric
 
 These metrics can evolve as fixtures improve:
@@ -69,3 +84,17 @@ These metrics can evolve as fixtures improve:
 - Retrospective: this catches deterministic omissions and obvious distortions.
   It does not prove semantic support between each claim and citation; that
   remains future work.
+
+### Loop 3: Repeated live variance reporting
+
+- Research/analysis: a single live response can hide unstable prompt behavior.
+  Runtime prompt candidates need repeated-run pass rate and variance metrics
+  before size comparisons are decision-ready.
+- TDD target: repeated live mock responses with one strict failed run must fail
+  overall while reporting pass rate, per-run records, coverage range, latency,
+  and token averages.
+- Quality gates added: `--live-runs`, per-run failure labels, aggregate
+  pass-rate, coverage variance, latency/output ranges, and usage averages.
+- Retrospective: repeated live runs improve observability of instability, but
+  live provider variance still needs real model runs outside the offline CI
+  mock.

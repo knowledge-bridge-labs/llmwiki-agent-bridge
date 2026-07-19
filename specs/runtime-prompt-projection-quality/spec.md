@@ -39,3 +39,5 @@ quality gates.
   anchor or include invalid exact anchors.
 - `REQ-006`: Live smoke fails responses that violate a fixture's deterministic
   answer oracle.
+- `REQ-007`: Live evaluation can run each fixture/renderer multiple times and
+  reports pass rate plus variance-sensitive aggregate metrics.

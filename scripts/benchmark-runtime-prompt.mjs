@@ -11,6 +11,7 @@ const DEFAULT_LIVE_RENDERER_IDS = ['compact-json', 'markdown-summary', 'toon']
 const DEFAULT_LIVE_TIMEOUT_MS = 120_000
 const DEFAULT_LIVE_MAX_TOKENS = 384
 const DEFAULT_LIVE_TEMPERATURE = 0.2
+const DEFAULT_LIVE_RUNS = 1
 const DEFAULT_GRAPHIFY_QUERY = 'What graph evidence should the runtime cite from the Graphify fixture?'
 const LIVE_ENV = {
   baseUrl: 'LLMWIKI_AGENT_BRIDGE_BASE_URL',
@@ -95,6 +96,7 @@ function parseArgs(argv) {
     rendererIds: [],
     help: false,
     live: false,
+    liveRuns: DEFAULT_LIVE_RUNS,
     maxTokens: DEFAULT_LIVE_MAX_TOKENS,
     temperature: DEFAULT_LIVE_TEMPERATURE,
     timeoutMs: parsePositiveInteger(process.env[LIVE_ENV.timeoutMs], DEFAULT_LIVE_TIMEOUT_MS),
@@ -153,6 +155,13 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith('--timeout-ms=')) {
       args.timeoutMs = parsePositiveInteger(arg.slice('--timeout-ms='.length), null, '--timeout-ms')
+    } else if (arg === '--live-runs') {
+      const value = argv[index + 1]
+      if (!value) throw new Error('--live-runs requires a positive integer.')
+      args.liveRuns = parsePositiveInteger(value, null, '--live-runs')
+      index += 1
+    } else if (arg.startsWith('--live-runs=')) {
+      args.liveRuns = parsePositiveInteger(arg.slice('--live-runs='.length), null, '--live-runs')
     } else if (arg === '--max-tokens') {
       const value = argv[index + 1]
       if (!value) throw new Error('--max-tokens requires a positive integer.')
@@ -182,7 +191,7 @@ function parseArgs(argv) {
 
 function helpText() {
   return [
-    'Usage: node scripts/benchmark-runtime-prompt.mjs [--fixture single-source,multi-source] [--renderer compact-json,markdown-summary,toon] [--graphify-graph graphify-out/graph.json] [--graphify-query "..."] [--live] [--no-validate]',
+    'Usage: node scripts/benchmark-runtime-prompt.mjs [--fixture single-source,multi-source] [--renderer compact-json,markdown-summary,toon] [--graphify-graph graphify-out/graph.json] [--graphify-query "..."] [--live] [--live-runs N] [--no-validate]',
     '',
     'Builds local synthetic LLMWiki runtime evidence bundles and compares prompt',
     'renderers. Offline mode is the default and performs no provider, network, or',
@@ -205,6 +214,7 @@ function helpText() {
     `Legacy aliases are also accepted: ${LIVE_ENV.legacyBaseUrl}, ${LIVE_ENV.legacyModel}, ${LIVE_ENV.legacyApiKey}`,
     '',
     'Live options:',
+    '  --live-runs <n>      Repeat each live fixture/renderer run. Default: 1.',
     '  --timeout-ms <ms>      Request timeout. Default: 120000.',
     '  --max-tokens <n>       Chat completions max_tokens. Default: 384.',
     '  --temperature <0..2>   Chat completions temperature. Default: 0.2.',
@@ -815,8 +825,10 @@ async function evaluateLiveRuntime(fixtures, renderers, args) {
       timeoutMs: args.timeoutMs,
       maxTokens: args.maxTokens,
       temperature: args.temperature,
+      liveRuns: args.liveRuns,
       endpointRedacted: true,
     },
+    runCount: args.liveRuns,
   }
 
   if (!config.ok) {
@@ -901,6 +913,47 @@ function stringEnv(name) {
 async function evaluateLiveRenderer({ args, config, fixture, renderer }) {
   const renderedEvidenceBundle = renderer.renderEvidenceBundle(fixture.evidenceBundle)
   const runtimeUserPrompt = renderRuntimeUserPrompt(fixture.query, renderedEvidenceBundle)
+  const prompt = measureText(runtimeUserPrompt)
+  const runs = []
+
+  for (let runIndex = 1; runIndex <= args.liveRuns; runIndex += 1) {
+    runs.push(await evaluateLiveRendererRun({
+      args,
+      config,
+      fixture,
+      runtimeUserPrompt,
+      runIndex,
+    }))
+  }
+
+  const aggregate = summarizeLiveRendererRuns(runs)
+  const representativeRun = chooseRepresentativeLiveRun(runs)
+  const { runIndex: representativeRunIndex = null, ...representativeReport } = representativeRun
+
+  return {
+    ...representativeReport,
+    status: aggregate.status,
+    prompt,
+    latencyMs: aggregate.latencyMs.average,
+    outputTextLength: aggregate.outputTextLength.average,
+    averageUsage: aggregate.usage.average,
+    runCount: aggregate.runCount,
+    passCount: aggregate.passCount,
+    passRatePct: aggregate.passRatePct,
+    averageRequiredCitationAnchorCoveragePct: aggregate.averageRequiredCitationAnchorCoveragePct,
+    averageAnswerOracleRequiredTermCoveragePct: aggregate.averageAnswerOracleRequiredTermCoveragePct,
+    averageAnswerOracleRequiredRelationCoveragePct: aggregate.averageAnswerOracleRequiredRelationCoveragePct,
+    representativeRunIndex,
+    pass: aggregate.runCount > 0 && aggregate.passCount === aggregate.runCount,
+    invalidCitationAnchorCount: aggregate.invalidCitationAnchorCount,
+    allRequiredCitationAnchorsCovered: aggregate.runCount > 0
+      && aggregate.allRequiredCitationAnchorsCoveredCount === aggregate.runCount,
+    aggregate,
+    runs,
+  }
+}
+
+async function evaluateLiveRendererRun({ args, config, fixture, runtimeUserPrompt, runIndex }) {
   const started = performance.now()
   try {
     const response = await callChatCompletions({
@@ -914,10 +967,10 @@ async function evaluateLiveRenderer({ args, config, fixture, renderer }) {
 
     if (!response.ok) {
       return {
+        runIndex,
         status: response.status,
         httpStatus: response.httpStatus,
         latencyMs,
-        prompt: measureText(runtimeUserPrompt),
         outputTextLength: 0,
         citationAnchorsFound: [],
         requiredCitationAnchors: citationCoverage([], fixture.evidenceBundle.citationCount),
@@ -932,10 +985,10 @@ async function evaluateLiveRenderer({ args, config, fixture, renderer }) {
     const answerOracle = evaluateAnswerOracle(outputText, fixture.answerOracle)
 
     return {
+      runIndex,
       status: 'ok',
       httpStatus: response.httpStatus,
       latencyMs,
-      prompt: measureText(runtimeUserPrompt),
       outputTextLength: Array.from(outputText).length,
       citationAnchorsFound: citationAnchors.found,
       requiredCitationAnchors: citationAnchors.coverage,
@@ -950,10 +1003,10 @@ async function evaluateLiveRenderer({ args, config, fixture, renderer }) {
   } catch (error) {
     const latencyMs = Math.round(performance.now() - started)
     return {
+      runIndex,
       status: 'error',
       httpStatus: null,
       latencyMs,
-      prompt: measureText(runtimeUserPrompt),
       outputTextLength: 0,
       citationAnchorsFound: [],
       requiredCitationAnchors: citationCoverage([], fixture.evidenceBundle.citationCount),
@@ -962,6 +1015,100 @@ async function evaluateLiveRenderer({ args, config, fixture, renderer }) {
       error: redactForReport(error?.message || String(error), config),
     }
   }
+}
+
+function chooseRepresentativeLiveRun(runs) {
+  return runs.find((run) => !run.pass) || runs[0] || {}
+}
+
+function summarizeLiveRendererRuns(runs) {
+  const runCount = runs.length
+  const passCount = runs.filter((run) => run.pass).length
+  const okCount = runs.filter((run) => run.status === 'ok').length
+  const latencyMs = summarizeNumbers(runs.map((run) => run.latencyMs))
+  const outputTextLength = summarizeNumbers(runs.map((run) => run.outputTextLength))
+  const usage = summarizeLiveRunUsage(runs)
+  const citationCoveragePct = summarizeNumbers(
+    runs.map((run) => run.requiredCitationAnchors?.coveragePct),
+  )
+  const statusCounts = countBy(runs.map((run) => run.status || 'unknown'))
+  const invalidCitationAnchorCount = sumNumbers(runs.map((run) => run.invalidCitationAnchorCount))
+  const allRequiredCitationAnchorsCoveredCount = runs.filter((run) => run.allRequiredCitationAnchorsCovered).length
+
+  return {
+    runCount,
+    okCount,
+    passCount,
+    failCount: runCount - passCount,
+    passRatePct: percentage(passCount, runCount),
+    status: summarizeLiveRunStatus(statusCounts),
+    statusCounts,
+    errorCount: runCount - okCount,
+    latencyMs,
+    outputTextLength,
+    usage,
+    averageRequiredCitationAnchorCoveragePct: citationCoveragePct.average,
+    averageAnswerOracleRequiredTermCoveragePct: average(
+      runs.map((run) => run.answerOracle?.metrics?.requiredTermCoveragePct),
+    ),
+    averageAnswerOracleRequiredRelationCoveragePct: average(
+      runs.map((run) => run.answerOracle?.metrics?.requiredRelationCoveragePct),
+    ),
+    invalidCitationAnchorCount,
+    allRequiredCitationAnchorsCoveredCount,
+    variance: {
+      mixedPassStatus: passCount > 0 && passCount < runCount,
+      latencyRangeMs: numericRange(latencyMs),
+      outputTextLengthRange: numericRange(outputTextLength),
+      requiredCitationAnchorCoverageRangePct: numericRange(citationCoveragePct),
+    },
+  }
+}
+
+function summarizeLiveRunUsage(runs) {
+  const promptTokens = summarizeNumbers(runs.map((run) => run.usage?.promptTokens))
+  const completionTokens = summarizeNumbers(runs.map((run) => run.usage?.completionTokens))
+  const totalTokens = summarizeNumbers(runs.map((run) => run.usage?.totalTokens))
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    average: {
+      promptTokens: promptTokens.average,
+      completionTokens: completionTokens.average,
+      totalTokens: totalTokens.average,
+    },
+  }
+}
+
+function summarizeLiveRunStatus(statusCounts) {
+  const statuses = Object.keys(statusCounts)
+  if (!statuses.length) return 'not-run'
+  if (statuses.length === 1) return statuses[0]
+  if (statusCounts.ok) return 'mixed'
+  return 'failed'
+}
+
+function countBy(values) {
+  const counts = {}
+  for (const value of values) {
+    counts[value] = (counts[value] || 0) + 1
+  }
+  return counts
+}
+
+function sumNumbers(values) {
+  return values.reduce((total, value) => total + (Number.isFinite(value) ? value : 0), 0)
+}
+
+function percentage(count, total) {
+  if (!total) return null
+  return Number(((count / total) * 100).toFixed(2))
+}
+
+function numericRange(summary) {
+  if (!Number.isFinite(summary?.min) || !Number.isFinite(summary?.max)) return null
+  return Number((summary.max - summary.min).toFixed(2))
 }
 
 function liveRuntimeMessages(runtimeUserPrompt) {
@@ -1244,29 +1391,37 @@ function validateLiveFixtureReports(fixtureReports) {
   const failures = []
   for (const fixture of fixtureReports) {
     for (const [rendererId, result] of Object.entries(fixture.renderers)) {
-      if (!result.pass) {
-        const reasons = []
-        if (result.status !== 'ok') reasons.push(`runtime status: ${result.status}`)
-        if (result.invalidCitationAnchorCount > 0) {
-          reasons.push(`invalid exact citation anchors: ${result.invalidCitationAnchorCount}`)
-        }
-        if (result.requiredCitationAnchors.missing.length) {
-          reasons.push(`required citation anchors missing: ${result.requiredCitationAnchors.missing.join(', ')}`)
-        }
-        if (result.answerOracle?.enabled && !result.answerOracle.ok) {
-          reasons.push(`answer oracle failed: ${result.answerOracle.failures.join('; ')}`)
-        }
+      const runs = Array.isArray(result.runs) && result.runs.length ? result.runs : [{ ...result, runIndex: 1 }]
+      for (const run of runs) {
+        if (run.pass) continue
+        const reasons = liveRunFailureReasons(run)
+        const runLabel = result.runCount > 1 ? ` run ${run.runIndex}/${result.runCount}` : ''
         failures.push(
-          `${fixture.id}/${rendererId}: live response must complete, cover every required exact [n](#citation-n) anchor, include no invalid exact anchors, and satisfy answer oracle checks (${reasons.join('; ') || 'unknown'})`,
+          `${fixture.id}/${rendererId}${runLabel}: live response must complete, cover every required exact [n](#citation-n) anchor, include no invalid exact anchors, and satisfy answer oracle checks (${reasons.join('; ') || 'unknown'})`,
         )
       }
     }
   }
   return {
     ok: failures.length === 0,
-    checks: ['every live renderer response completes, covers every required exact [n](#citation-n) anchor, includes no invalid exact anchors, and satisfies answer oracle checks when configured'],
+    checks: ['every strict live renderer run completes, covers every required exact [n](#citation-n) anchor, includes no invalid exact anchors, and satisfies answer oracle checks when configured'],
     failures,
   }
+}
+
+function liveRunFailureReasons(result) {
+  const reasons = []
+  if (result.status !== 'ok') reasons.push(`runtime status: ${result.status}`)
+  if (result.invalidCitationAnchorCount > 0) {
+    reasons.push(`invalid exact citation anchors: ${result.invalidCitationAnchorCount}`)
+  }
+  if (result.requiredCitationAnchors?.missing?.length) {
+    reasons.push(`required citation anchors missing: ${result.requiredCitationAnchors.missing.join(', ')}`)
+  }
+  if (result.answerOracle?.enabled && !result.answerOracle.ok) {
+    reasons.push(`answer oracle failed: ${result.answerOracle.failures.join('; ')}`)
+  }
+  return reasons
 }
 
 function summarizeLiveFixtureReports(fixtureReports, renderers) {
@@ -1278,25 +1433,43 @@ function summarizeLiveFixtureReports(fixtureReports, renderers) {
 
   for (const renderer of renderers) {
     const results = fixtureReports.map((fixture) => fixture.renderers[renderer.id]).filter(Boolean)
-    totals.requestCount += results.length
-    const latencies = results.map((result) => result.latencyMs).filter((value) => Number.isFinite(value))
-    const outputLengths = results.map((result) => result.outputTextLength).filter((value) => Number.isFinite(value))
+    const runs = results.flatMap((result) => (
+      Array.isArray(result.runs) && result.runs.length ? result.runs : [result]
+    ))
+    totals.requestCount += runs.length
+    const latencyMs = summarizeNumbers(runs.map((run) => run.latencyMs))
+    const outputTextLength = summarizeNumbers(runs.map((run) => run.outputTextLength))
+    const usage = summarizeLiveRunUsage(runs)
+    const passCount = runs.filter((run) => run.pass).length
+    const okCount = runs.filter((run) => run.status === 'ok').length
+    const citationCoveragePct = summarizeNumbers(
+      runs.map((run) => run.requiredCitationAnchors?.coveragePct),
+    )
     totals.renderers[renderer.id] = {
-      requestCount: results.length,
-      okCount: results.filter((result) => result.status === 'ok').length,
-      passCount: results.filter((result) => result.pass).length,
-      errorCount: results.filter((result) => result.status !== 'ok').length,
-      latencyMs: summarizeNumbers(latencies),
-      outputTextLength: summarizeNumbers(outputLengths),
-      averageRequiredCitationAnchorCoveragePct: average(
-        results.map((result) => result.requiredCitationAnchors.coveragePct),
-      ),
+      fixtureCount: results.length,
+      requestCount: runs.length,
+      runCount: runs.length,
+      okCount,
+      passCount,
+      failCount: runs.length - passCount,
+      passRatePct: percentage(passCount, runs.length),
+      errorCount: runs.length - okCount,
+      latencyMs,
+      outputTextLength,
+      usage,
+      averageRequiredCitationAnchorCoveragePct: citationCoveragePct.average,
       averageAnswerOracleRequiredTermCoveragePct: average(
-        results.map((result) => result.answerOracle?.metrics?.requiredTermCoveragePct),
+        runs.map((run) => run.answerOracle?.metrics?.requiredTermCoveragePct),
       ),
       averageAnswerOracleRequiredRelationCoveragePct: average(
-        results.map((result) => result.answerOracle?.metrics?.requiredRelationCoveragePct),
+        runs.map((run) => run.answerOracle?.metrics?.requiredRelationCoveragePct),
       ),
+      variance: {
+        mixedPassStatus: passCount > 0 && passCount < runs.length,
+        latencyRangeMs: numericRange(latencyMs),
+        outputTextLengthRange: numericRange(outputTextLength),
+        requiredCitationAnchorCoverageRangePct: numericRange(citationCoveragePct),
+      },
     }
   }
 
@@ -1304,11 +1477,12 @@ function summarizeLiveFixtureReports(fixtureReports, renderers) {
 }
 
 function summarizeNumbers(values) {
-  if (!values.length) return { min: null, max: null, average: null }
+  const numericValues = values.filter((value) => Number.isFinite(value))
+  if (!numericValues.length) return { min: null, max: null, average: null }
   return {
-    min: Math.min(...values),
-    max: Math.max(...values),
-    average: average(values),
+    min: Math.min(...numericValues),
+    max: Math.max(...numericValues),
+    average: average(numericValues),
   }
 }
 

@@ -28,6 +28,8 @@ should remain optional evaluation input rather than a runtime dependency.
     `[n](#citation-n)` anchors.
   - live runtime smoke must satisfy deterministic answer oracles when fixtures
     define required terms, required relations, or forbidden terms.
+  - repeated live evaluation must report per-run outcomes and aggregate
+    pass-rate/variance metrics.
 - Keep Graphify support eval-only by reading a pre-generated `graph.json`.
 - Do not install, import, execute, or depend on Graphify from the Node package.
 - Keep lossy renderers, including markdown summary projections, explicit and
@@ -45,12 +47,15 @@ should remain optional evaluation input rather than a runtime dependency.
 - A renderer can fail live smoke even when it wins token-size comparisons.
 - Deterministic answer oracles are conservative: they catch known omissions and
   obvious distortions but do not replace semantic claim/citation judging.
+- Repeated live runs make unstable renderers visible, but they increase live
+  provider cost linearly with fixture, renderer, and run counts.
 
 ## Follow-ups
 
 - Expand answer-level oracle fixtures for required facts, required relations,
   forbidden claims, and expected citation mappings.
-- Add repeated live eval runs and per-fixture variance reporting.
+- Run repeated live evals against real local/runtime models and record
+  renderer-specific variance before changing defaults.
 - Consider model-specific tokenizer counts when tokenizer access is available.
 
 ## Links

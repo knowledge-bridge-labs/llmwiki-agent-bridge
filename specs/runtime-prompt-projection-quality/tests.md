@@ -10,12 +10,14 @@
   required-anchor coverage.
 - Live mock validation rejects responses that cover citations but omit required
   oracle relations.
+- Live mock validation reports repeated-run pass rate and fails when any strict
+  run violates citation or oracle gates.
 
 ## Commands
 
 ```sh
 npm run bench:runtime-prompt
-npm test -- --test-name-pattern "Graphify graph fixture|exact citation anchors|answer oracle"
+npm test -- --test-name-pattern "Graphify graph fixture|exact citation anchors|answer oracle|repeated live"
 npm run check
 git diff --check
 ```

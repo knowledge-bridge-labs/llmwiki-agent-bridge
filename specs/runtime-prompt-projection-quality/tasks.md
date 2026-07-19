@@ -5,4 +5,5 @@
 - [x] Add evidence quality metrics for citation and path safety.
 - [x] Add test coverage for Graphify-like fixture loading.
 - [x] Add oracle answer-quality fixtures for omission/distortion.
-- [ ] Add repeated live eval variance reporting.
+- [x] Add repeated live eval variance reporting.
+- [x] Report loop completion with scored rubrics.

@@ -4008,6 +4008,179 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(runtime.requests.length, 2)
   })
 
+  it('reports repeated live runtime pass variance and fails on any strict failed run', async (t) => {
+    let callCount = 0
+    const runtime = await startFixtureServer(async ({ response }) => {
+      callCount += 1
+      const passingRun = callCount % 2 === 1
+      writeJson(response, 200, {
+        choices: [
+          {
+            message: {
+              content: passingRun
+                ? 'Runtime Prompt Decision requires Prompt Codec Implementation, and Prompt Codec Implementation measured by Prompt renderer benchmark before Runtime Prompt Validation [1](#citation-1) [2](#citation-2) [3](#citation-3).'
+                : 'Runtime Prompt Decision is mentioned without the required relation or exact citation anchors.',
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: passingRun ? 10 : 6,
+          total_tokens: passingRun ? 30 : 26,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--live-runs',
+        '2',
+        '--fixture',
+        'graph-linear-chain',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '64',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /graph-linear-chain\/compact-json run 2\/2: live response must complete/)
+
+    const report = JSON.parse(error.stdout)
+    const liveRenderer = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+
+    assert.equal(report.live.status, 'failed')
+    assert.equal(report.live.validation.ok, false)
+    assert.equal(report.live.runCount, 2)
+    assert.equal(report.live.runtime.liveRuns, 2)
+    assert.equal(report.live.totals.requestCount, 2)
+    assert.equal(liveRenderer.runCount, 2)
+    assert.equal(liveRenderer.passCount, 1)
+    assert.equal(liveRenderer.passRatePct, 50)
+    assert.equal(liveRenderer.pass, false)
+    assert.equal(liveRenderer.representativeRunIndex, 2)
+    assert.deepEqual(liveRenderer.runs.map((run) => run.pass), [true, false])
+    assert.equal(liveRenderer.runs[1].requiredCitationAnchors.coveragePct, 0)
+    assert.equal(liveRenderer.allRequiredCitationAnchorsCovered, false)
+    assert.equal(liveRenderer.aggregate.runCount, 2)
+    assert.equal(liveRenderer.aggregate.passCount, 1)
+    assert.equal(liveRenderer.aggregate.passRatePct, 50)
+    assert.equal(liveRenderer.aggregate.averageRequiredCitationAnchorCoveragePct, 50)
+    assert.equal(Number.isFinite(liveRenderer.aggregate.averageAnswerOracleRequiredTermCoveragePct), true)
+    assert.equal(liveRenderer.aggregate.averageAnswerOracleRequiredRelationCoveragePct, 50)
+    assert.equal(liveRenderer.aggregate.variance.mixedPassStatus, true)
+    assert.equal(liveRenderer.aggregate.variance.requiredCitationAnchorCoverageRangePct, 100)
+    assert(liveRenderer.aggregate.latencyMs.min <= liveRenderer.aggregate.latencyMs.max)
+    assert.equal(rendererTotals.runCount, 2)
+    assert.equal(rendererTotals.passRatePct, 50)
+    assert.equal(rendererTotals.variance.mixedPassStatus, true)
+    assert.equal(runtime.requests.length, 2)
+  })
+
+  it('reports repeated live runtime prompt benchmark variance and fails any strict run', async (t) => {
+    let requestCount = 0
+    const runtime = await startFixtureServer(async ({ response }) => {
+      requestCount += 1
+      const isFailingRun = requestCount === 2
+      writeJson(response, 200, {
+        choices: [
+          {
+            message: {
+              content: isFailingRun
+                ? 'Repeated live run dropped one required citation [1](#citation-1).'
+                : 'Repeated live run covered both required citations [1](#citation-1) [2](#citation-2).',
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 12,
+          completion_tokens: isFailingRun ? 5 : 7,
+          total_tokens: isFailingRun ? 17 : 19,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--live-runs',
+        '3',
+        '--fixture',
+        'single-source',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '32',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /single-source\/compact-json run 2\/3/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+
+    assert.equal(report.live.runtime.liveRuns, 3)
+    assert.equal(report.live.runCount, 3)
+    assert.equal(report.live.totals.requestCount, 3)
+    assert.equal(rendererReport.runCount, 3)
+    assert.equal(rendererReport.passCount, 2)
+    assert.equal(rendererReport.passRatePct, 66.67)
+    assert.equal(rendererReport.pass, false)
+    assert.equal(rendererReport.representativeRunIndex, 2)
+    assert.equal(rendererReport.runs.length, 3)
+    assert.equal(rendererReport.aggregate.variance.mixedPassStatus, true)
+    assert.equal(rendererReport.aggregate.variance.requiredCitationAnchorCoverageRangePct, 50)
+    assert.equal(rendererReport.averageRequiredCitationAnchorCoveragePct, 83.33)
+    assert.deepEqual(rendererReport.averageUsage, {
+      promptTokens: 12,
+      completionTokens: 6.33,
+      totalTokens: 18.33,
+    })
+    assert.equal(rendererTotals.requestCount, 3)
+    assert.equal(rendererTotals.passRatePct, 66.67)
+    assert.equal(rendererTotals.variance.mixedPassStatus, true)
+    assert.equal(runtime.requests.length, 3)
+  })
+
   it('dry packs the npm tarball with expected files', async () => {
     const npm = npmPackCommand()
     const { stdout } = await execFileAsync(npm.file, npm.args, {
