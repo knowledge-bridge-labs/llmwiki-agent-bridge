@@ -7,3 +7,6 @@
 - [x] Add oracle answer-quality fixtures for omission/distortion.
 - [x] Add repeated live eval variance reporting.
 - [x] Report loop completion with scored rubrics.
+- [x] Run private-data-safe real runtime calibration smoke.
+- [ ] Add failure taxonomy and finish-reason/truncation capture.
+- [ ] Add expected citation mapping and claim-citation proximity checks.

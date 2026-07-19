@@ -98,3 +98,27 @@ These metrics can evolve as fixtures improve:
 - Retrospective: repeated live runs improve observability of instability, but
   live provider variance still needs real model runs outside the offline CI
   mock.
+
+### Loop 4: Real runtime calibration smoke
+
+- Research/analysis: ran the `graph-linear-chain` fixture against a configured
+  private OpenAI-compatible runtime with `--live-runs 2` for compact JSON,
+  markdown summary, and TOON. No endpoint, model name, key, or raw response text
+  is recorded here.
+- TDD target: no new code target; this loop used the Loop 3 repeated-run
+  harness to calibrate the rubric against a real runtime.
+- Result: all 6 strict runs failed. Compact JSON reported 0% pass rate, 83.34%
+  average citation coverage, 66.67% average oracle term coverage, and 0%
+  average oracle relation coverage. Markdown summary reported 0% pass rate,
+  100% average citation coverage, 33.33% average oracle term coverage, and 50%
+  average oracle relation coverage. TOON reported 0% pass rate, 100% average
+  citation coverage, 50% average oracle term coverage, and 75% average oracle
+  relation coverage.
+- Subagent rubric review: treat this as a failed renderer-readiness loop with
+  useful observability, not as a failed experiment. The current metrics still
+  conflate renderer, prompt contract, model behavior, output length, and oracle
+  brittleness.
+- Retrospective: do not promote any renderer based on current live results.
+  The next loop should add failure taxonomy, finish-reason/truncation capture,
+  fixture-specific expected citation mappings, and stronger claim-to-citation
+  checks before ranking renderers.

@@ -49,6 +49,9 @@ should remain optional evaluation input rather than a runtime dependency.
   obvious distortions but do not replace semantic claim/citation judging.
 - Repeated live runs make unstable renderers visible, but they increase live
   provider cost linearly with fixture, renderer, and run counts.
+- The first real-runtime calibration smoke failed all strict runs, so current
+  renderer readiness is blocked by answer-quality and evaluation-attribution
+  gaps rather than by token-size comparison.
 
 ## Follow-ups
 
@@ -56,6 +59,8 @@ should remain optional evaluation input rather than a runtime dependency.
   forbidden claims, and expected citation mappings.
 - Run repeated live evals against real local/runtime models and record
   renderer-specific variance before changing defaults.
+- Add failure taxonomy, finish-reason/truncation capture, and claim-citation
+  proximity checks before treating live pass rates as renderer rankings.
 - Consider model-specific tokenizer counts when tokenizer access is available.
 
 ## Links
