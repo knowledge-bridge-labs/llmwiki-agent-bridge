@@ -2512,6 +2512,10 @@ async function callHermesChatCompletions({ query, sourceResults, sourceFailures,
   return extractHermesAnswer(payload) || 'The chat completions endpoint returned no answer text.'
 }
 
+function renderEvidenceBundleForPrompt(evidenceBundle) {
+  return JSON.stringify(evidenceBundle)
+}
+
 function hermesMessages({ query, sourceResults, sourceFailures, citations, graph }) {
   const sourceCorpusSummaries = sourceResults.map(({ source, result }) => sourceCorpusSummary(source, result))
   const mergedCorpusSummary = mergeCorpusSummaries(sourceCorpusSummaries)
@@ -2575,7 +2579,7 @@ function hermesMessages({ query, sourceResults, sourceFailures, citations, graph
         query,
         '',
         '# LLMWiki evidence bundle',
-        JSON.stringify(evidenceBundle, null, 2),
+        renderEvidenceBundleForPrompt(evidenceBundle),
       ].join('\n'),
     },
   ]

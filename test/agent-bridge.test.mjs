@@ -2709,6 +2709,7 @@ describe('llmwiki-agent-bridge', () => {
     const a2a = await response.json()
     const artifact = a2a.artifacts[0].parts[0].data
     const hermesUserMessage = hermes.lastBody.messages.find((message) => message.role === 'user').content
+    const renderedEvidenceBundle = extractHermesEvidenceBundleForPrompt(hermesUserMessage)
     const evidenceBundle = parseHermesEvidenceBundle(hermesUserMessage)
     const mcpArtifactBundle = artifact.sourceBundles.find((bundle) => bundle.connectionId === 'mcp-wiki')
     const mcpRuntimeSource = evidenceBundle.sources.find((source) => source.id === 'mcp-wiki')
@@ -2728,6 +2729,9 @@ describe('llmwiki-agent-bridge', () => {
     assert.match(hermesUserMessage, /MCP evidence/)
     assert.match(hermesUserMessage, /A2A evidence/)
     assert.match(hermesUserMessage, /Release Runbook/)
+    assert.equal(renderedEvidenceBundle, JSON.stringify(evidenceBundle))
+    assert.equal(renderedEvidenceBundle.includes('\n'), false)
+    assert.doesNotMatch(renderedEvidenceBundle, /\{\n\s+"/)
     assert.deepEqual(mcpArtifactBundle, {
       connectionId: 'mcp-wiki',
       sourceId: 'mcp-bundle-source',
@@ -3422,10 +3426,11 @@ describe('llmwiki-agent-bridge', () => {
     assert.match(hermesSystemMessage, /1-based index of the matching item in the evidence bundle citations array/)
     assert.match(hermesSystemMessage, /do not use citationDigest order or sourceRefs for numbering/)
 
-    const digestIndex = hermesUserMessage.indexOf('"citationDigest"')
-    const sourcesIndex = hermesUserMessage.indexOf('"sources"')
-    const firstRelevantIndex = hermesUserMessage.indexOf('"id": "adr-wiki:adr-0042"')
-    const firstSourceOrderIndex = hermesUserMessage.indexOf('"id": "adr-wiki:release-notes"')
+    const renderedEvidenceBundle = extractHermesEvidenceBundleForPrompt(hermesUserMessage)
+    const digestIndex = renderedEvidenceBundle.indexOf('"citationDigest"')
+    const sourcesIndex = renderedEvidenceBundle.indexOf('"sources"')
+    const firstRelevantIndex = renderedEvidenceBundle.indexOf('"id":"adr-wiki:adr-0042"')
+    const firstSourceOrderIndex = renderedEvidenceBundle.indexOf('"id":"adr-wiki:release-notes"')
     assert(digestIndex >= 0)
     assert(digestIndex < sourcesIndex)
     assert(firstRelevantIndex >= 0)
@@ -3686,6 +3691,7 @@ describe('llmwiki-agent-bridge', () => {
     const artifact = a2a.artifacts[0].parts[0].data
     const failedStep = artifact.steps.find((step) => step.connectionId === 'bad')
     const hermesUserMessage = hermes.lastBody.messages.find((message) => message.role === 'user').content
+    const evidenceBundle = parseHermesEvidenceBundle(hermesUserMessage)
 
     assert.equal(response.status, 200)
     assert.equal(typeof a2a.requestId, 'string')
@@ -3713,12 +3719,123 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(JSON.stringify(failedStep), /backend exposed detail/)
     assert.doesNotMatch(JSON.stringify(failedStep), /127\.0\.0\.1/)
     assert.match(hermesUserMessage, /"sourceFailures"/)
-    assert.match(hermesUserMessage, /"error": "Source query failed\."/)
-    assert.match(hermesUserMessage, /"message": "Bad Wiki could not be queried by the bridge\."/)
+    assert.deepEqual(evidenceBundle.sourceFailures.map((failure) => ({
+      id: failure.id,
+      error: failure.error,
+      message: failure.message,
+    })), [
+      {
+        id: 'bad',
+        error: 'Source query failed.',
+        message: 'Bad Wiki could not be queried by the bridge.',
+      },
+    ])
     assert.doesNotMatch(hermesUserMessage, /"diagnostic"/)
     assert.doesNotMatch(hermesUserMessage, /"httpStatus"/)
     assert.doesNotMatch(hermesUserMessage, /backend exposed detail/)
     assert.doesNotMatch(hermesUserMessage, /127\.0\.0\.1/)
+  })
+
+  it('evaluates runtime prompt rendering offline with compact JSON, markdown summary, and TOON candidates', async () => {
+    const { stdout } = await execFileAsync(process.execPath, ['scripts/benchmark-runtime-prompt.mjs'], {
+      cwd: packageRoot,
+      maxBuffer: 1024 * 1024,
+    })
+    const report = JSON.parse(stdout)
+    const evidenceComparison = report.totals.comparisons.compactVsPrettyEvidenceJson
+    const promptComparison = report.totals.comparisons.compactVsPrettyRuntimeUserPrompt
+    const markdownComparison = report.totals.comparisons.markdownSummaryVsCompactRuntimeUserPrompt
+    const toonComparison = report.totals.comparisons.toonVsCompactRuntimeUserPrompt
+    const fixtureIds = report.fixtures.map((fixture) => fixture.id)
+
+    assert.equal(report.schema, 'llmwiki-agent-bridge.runtime-prompt-evaluation.v1')
+    assert.equal(report.mode, 'offline')
+    assert.equal(report.rendererBaseline, 'pretty-json')
+    assert.deepEqual(report.rendererCandidates, ['compact-json', 'markdown-summary', 'toon'])
+    assert.deepEqual(report.renderers.map((renderer) => renderer.id), ['pretty-json', 'compact-json', 'markdown-summary', 'toon'])
+    assert.match(report.note, /markdown-summary is a lossy prompt projection/)
+    assert.equal(report.live.enabled, false)
+    assert.equal(report.validation.ok, true)
+    assert.equal(report.fixtures.length, 5)
+    assert(fixtureIds.includes('graph-linear-chain'))
+    assert(fixtureIds.includes('graph-dense-crossrefs'))
+    assert(fixtureIds.includes('graph-mixed-nested-metadata'))
+    assert(evidenceComparison.utf8BytesSaved > 0)
+    assert(promptComparison.utf8BytesSaved > 0)
+    assert.equal(markdownComparison.baseline, 'compact-json')
+    assert.equal(markdownComparison.candidate, 'markdown-summary')
+    assert.equal(toonComparison.baseline, 'compact-json')
+    assert.equal(toonComparison.candidate, 'toon')
+  })
+
+  it('rejects live runtime prompt benchmark responses without exact citation anchors', async (t) => {
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      const userPrompt = body.messages.find((message) => message.role === 'user')?.content || ''
+      const isMarkdownSummary = userPrompt.includes('## Citation digest')
+      writeJson(response, 200, {
+        choices: [
+          {
+            message: {
+              content: isMarkdownSummary
+                ? 'Markdown summary output cites the first source exactly [1](#citation-1).'
+                : 'Compact JSON output uses a bare citation [1].',
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 10,
+          completion_tokens: 5,
+          total_tokens: 15,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'single-source',
+        '--renderer',
+        'compact-json,markdown-summary',
+        '--max-tokens',
+        '32',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /single-source\/compact-json: live response must complete/)
+
+    const report = JSON.parse(error.stdout)
+    const liveFixture = report.live.fixtures[0]
+
+    assert.equal(report.mode, 'offline+live')
+    assert.equal(report.live.validation.ok, false)
+    assert.equal(report.live.status, 'failed')
+    assert.equal(liveFixture.renderers['compact-json'].pass, false)
+    assert.deepEqual(liveFixture.renderers['compact-json'].citationAnchorsFound, [])
+    assert.equal(liveFixture.renderers['markdown-summary'].pass, true)
+    assert.deepEqual(
+      liveFixture.renderers['markdown-summary'].citationAnchorsFound.map((anchor) => anchor.anchor),
+      ['[1](#citation-1)'],
+    )
+    assert.equal(runtime.requests.length, 2)
   })
 
   it('dry packs the npm tarball with expected files', async () => {
@@ -3736,6 +3853,7 @@ describe('llmwiki-agent-bridge', () => {
     assert(files.has('bin/llmwiki-agent-bridge.mjs'))
     assert(files.has('docs/openapi.json'))
     assert(files.has('scripts/export-openapi.mjs'))
+    assert(files.has('scripts/benchmark-runtime-prompt.mjs'))
     assert(files.has('README.md'))
     assert(files.has('LICENSE'))
     assert(files.has('integrations/README.md'))
@@ -3828,11 +3946,15 @@ function parseJsonFetchBody(value) {
   return value ? JSON.parse(String(value)) : {}
 }
 
-function parseHermesEvidenceBundle(content) {
+function extractHermesEvidenceBundleForPrompt(content) {
   const marker = '# LLMWiki evidence bundle\n'
   const markerIndex = content.indexOf(marker)
   assert(markerIndex >= 0)
-  return JSON.parse(content.slice(markerIndex + marker.length))
+  return content.slice(markerIndex + marker.length)
+}
+
+function parseHermesEvidenceBundle(content) {
+  return JSON.parse(extractHermesEvidenceBundleForPrompt(content))
 }
 
 async function callBridgeMcp(bridge, id, method, params = undefined) {

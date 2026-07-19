@@ -1,0 +1,1569 @@
+#!/usr/bin/env node
+
+import { performance } from 'node:perf_hooks'
+import { decode as decodeToon, encode as encodeToon } from '@toon-format/toon'
+
+const TOKEN_ESTIMATE_DESCRIPTION = 'rough estimate only: ceil(utf8Bytes / 4); not a model tokenizer'
+const DEFAULT_OFFLINE_RENDERER_IDS = ['pretty-json', 'compact-json', 'markdown-summary', 'toon']
+const DEFAULT_LIVE_RENDERER_IDS = ['compact-json', 'markdown-summary', 'toon']
+const DEFAULT_LIVE_TIMEOUT_MS = 120_000
+const DEFAULT_LIVE_MAX_TOKENS = 384
+const DEFAULT_LIVE_TEMPERATURE = 0.2
+const LIVE_ENV = {
+  baseUrl: 'LLMWIKI_AGENT_BRIDGE_BASE_URL',
+  model: 'LLMWIKI_AGENT_BRIDGE_MODEL',
+  apiKey: 'LLMWIKI_AGENT_BRIDGE_API_KEY',
+  timeoutMs: 'LLMWIKI_AGENT_BRIDGE_EVAL_TIMEOUT_MS',
+  legacyBaseUrl: 'HERMES_BASE_URL',
+  legacyModel: 'HERMES_MODEL',
+  legacyApiKey: 'HERMES_API_KEY',
+}
+
+const RENDERERS = [
+  {
+    id: 'pretty-json',
+    label: 'Pretty JSON',
+    mediaType: 'application/json',
+    renderEvidenceBundle: (evidenceBundle) => JSON.stringify(evidenceBundle, null, 2),
+  },
+  {
+    id: 'compact-json',
+    label: 'Compact JSON',
+    mediaType: 'application/json',
+    renderEvidenceBundle: (evidenceBundle) => JSON.stringify(evidenceBundle),
+  },
+  {
+    id: 'markdown-summary',
+    label: 'Markdown summary projection',
+    mediaType: 'text/markdown',
+    renderEvidenceBundle: renderEvidenceBundleAsMarkdown,
+  },
+  {
+    id: 'toon',
+    label: 'TOON',
+    mediaType: 'text/toon',
+    renderEvidenceBundle: renderEvidenceBundleAsToon,
+    validateRenderedEvidenceBundle: validateToonRoundTrip,
+  },
+  // Future renderer slots, for example ONTO-style row digests, can be added here without changing
+  // the fixture builder or evaluation report shape.
+]
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2))
+  if (args.help) {
+    process.stdout.write(helpText())
+    return
+  }
+
+  const fixtures = selectFixtures(buildEvidenceBundleFixtures(), args.fixtureIds)
+  const offlineRenderers = selectRenderers(args.rendererIds.length ? args.rendererIds : DEFAULT_OFFLINE_RENDERER_IDS)
+  const report = buildBenchmarkReport(fixtures, offlineRenderers, args)
+
+  if (args.live) {
+    const liveRendererIds = args.rendererIds.length ? args.rendererIds : DEFAULT_LIVE_RENDERER_IDS
+    const liveRenderers = selectRenderers(liveRendererIds)
+    report.live = await evaluateLiveRuntime(fixtures, liveRenderers, args)
+    report.validation = mergeValidation(report.validation, report.live.validation)
+  } else {
+    report.live = {
+      enabled: false,
+      note: 'Live runtime evaluation skipped. Pass --live and configure LLMWIKI_AGENT_BRIDGE_BASE_URL plus LLMWIKI_AGENT_BRIDGE_MODEL to call an OpenAI-compatible runtime.',
+    }
+  }
+
+  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
+
+  if (args.validate && !report.validation.ok) {
+    for (const failure of report.validation.failures) {
+      process.stderr.write(`${failure}\n`)
+    }
+    process.exitCode = 1
+  }
+}
+
+function parseArgs(argv) {
+  const args = {
+    fixtureIds: [],
+    rendererIds: [],
+    help: false,
+    live: false,
+    maxTokens: DEFAULT_LIVE_MAX_TOKENS,
+    temperature: DEFAULT_LIVE_TEMPERATURE,
+    timeoutMs: parsePositiveInteger(process.env[LIVE_ENV.timeoutMs], DEFAULT_LIVE_TIMEOUT_MS),
+    validate: true,
+  }
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+    if (arg === '--help' || arg === '-h') {
+      args.help = true
+    } else if (arg === '--live') {
+      args.live = true
+    } else if (arg === '--no-validate') {
+      args.validate = false
+    } else if (arg === '--fixture') {
+      const value = argv[index + 1]
+      if (!value) throw new Error('--fixture requires a fixture id or comma-separated fixture ids.')
+      args.fixtureIds.push(...value.split(',').map((item) => item.trim()).filter(Boolean))
+      index += 1
+    } else if (arg.startsWith('--fixture=')) {
+      args.fixtureIds.push(...arg.slice('--fixture='.length).split(',').map((item) => item.trim()).filter(Boolean))
+    } else if (arg === '--renderer') {
+      const value = argv[index + 1]
+      if (!value) throw new Error('--renderer requires a renderer id or comma-separated renderer ids.')
+      args.rendererIds.push(...value.split(',').map((item) => item.trim()).filter(Boolean))
+      index += 1
+    } else if (arg.startsWith('--renderer=')) {
+      args.rendererIds.push(...arg.slice('--renderer='.length).split(',').map((item) => item.trim()).filter(Boolean))
+    } else if (arg === '--timeout-ms') {
+      const value = argv[index + 1]
+      if (!value) throw new Error('--timeout-ms requires a positive integer.')
+      args.timeoutMs = parsePositiveInteger(value, null, '--timeout-ms')
+      index += 1
+    } else if (arg.startsWith('--timeout-ms=')) {
+      args.timeoutMs = parsePositiveInteger(arg.slice('--timeout-ms='.length), null, '--timeout-ms')
+    } else if (arg === '--max-tokens') {
+      const value = argv[index + 1]
+      if (!value) throw new Error('--max-tokens requires a positive integer.')
+      args.maxTokens = parsePositiveInteger(value, null, '--max-tokens')
+      index += 1
+    } else if (arg.startsWith('--max-tokens=')) {
+      args.maxTokens = parsePositiveInteger(arg.slice('--max-tokens='.length), null, '--max-tokens')
+    } else if (arg === '--temperature') {
+      const value = argv[index + 1]
+      if (!value) throw new Error('--temperature requires a number between 0 and 2.')
+      args.temperature = parseTemperature(value)
+      index += 1
+    } else if (arg.startsWith('--temperature=')) {
+      args.temperature = parseTemperature(arg.slice('--temperature='.length))
+    } else {
+      throw new Error(`Unknown option: ${arg}`)
+    }
+  }
+
+  return args
+}
+
+function helpText() {
+  return [
+    'Usage: node scripts/benchmark-runtime-prompt.mjs [--fixture single-source,multi-source] [--renderer compact-json,markdown-summary,toon] [--live] [--no-validate]',
+    '',
+    'Builds local synthetic LLMWiki runtime evidence bundles and compares prompt',
+    'renderers. Offline mode is the default and performs no provider, network, or',
+    'runtime calls. Live mode calls an OpenAI-compatible /chat/completions endpoint',
+    'only when --live is passed and the required environment variables are set.',
+    '',
+    'Renderers:',
+    `  ${RENDERERS.map((renderer) => renderer.id).join(', ')}`,
+    '',
+    'Live environment variables:',
+    `  ${LIVE_ENV.baseUrl}=https://runtime.example/v1`,
+    `  ${LIVE_ENV.model}=model-name`,
+    `  ${LIVE_ENV.apiKey}=optional-api-key`,
+    `  ${LIVE_ENV.timeoutMs}=optional-timeout-ms`,
+    '',
+    `Legacy aliases are also accepted: ${LIVE_ENV.legacyBaseUrl}, ${LIVE_ENV.legacyModel}, ${LIVE_ENV.legacyApiKey}`,
+    '',
+    'Live options:',
+    '  --timeout-ms <ms>      Request timeout. Default: 120000.',
+    '  --max-tokens <n>       Chat completions max_tokens. Default: 384.',
+    '  --temperature <0..2>   Chat completions temperature. Default: 0.2.',
+    '',
+  ].join('\n')
+}
+
+function selectRenderers(rendererIds) {
+  const rendererById = new Map(RENDERERS.map((renderer) => [renderer.id, renderer]))
+  return rendererIds.map((rendererId) => {
+    const renderer = rendererById.get(rendererId)
+    if (!renderer) {
+      throw new Error(`Unknown renderer "${rendererId}". Available renderers: ${RENDERERS.map(({ id }) => id).join(', ')}`)
+    }
+    return renderer
+  })
+}
+
+function selectFixtures(fixtures, fixtureIds) {
+  if (!fixtureIds.length) return fixtures
+
+  const fixtureById = new Map(fixtures.map((fixture) => [fixture.id, fixture]))
+  const selected = fixtureIds.map((fixtureId) => {
+    const fixture = fixtureById.get(fixtureId)
+    if (!fixture) {
+      throw new Error(`Unknown fixture "${fixtureId}". Available fixtures: ${fixtures.map(({ id }) => id).join(', ')}`)
+    }
+    return fixture
+  })
+  return selected
+}
+
+function buildBenchmarkReport(fixtures, renderers, args) {
+  const fixtureReports = fixtures.map((fixture) => benchmarkFixture(fixture, renderers))
+  const totals = sumFixtureReports(fixtureReports, renderers)
+  const validation = validateFixtureReports(fixtureReports)
+
+  return {
+    schema: 'llmwiki-agent-bridge.runtime-prompt-evaluation.v1',
+    mode: args.live ? 'offline+live' : 'offline',
+    rendererBaseline: 'pretty-json',
+    rendererCandidates: ['compact-json', 'markdown-summary', 'toon'],
+    rendererDebug: ['pretty-json'],
+    renderers: renderers.map(({ id, label, mediaType }) => ({ id, label, mediaType })),
+    tokenEstimate: TOKEN_ESTIMATE_DESCRIPTION,
+    note: 'Synthetic local fixtures only. Offline measurements never use provider credentials, network, or runtime calls. markdown-summary is a lossy prompt projection; compare it separately from lossless JSON/TOON codecs.',
+    fixtures: fixtureReports,
+    totals,
+    validation,
+  }
+}
+
+function benchmarkFixture(fixture, renderers) {
+  const rendererReports = Object.fromEntries(renderers.map((renderer) => {
+    const baseReport = {
+      label: renderer.label,
+      mediaType: renderer.mediaType,
+    }
+
+    let evidenceJson
+    try {
+      evidenceJson = renderer.renderEvidenceBundle(fixture.evidenceBundle)
+    } catch (error) {
+      return [
+        renderer.id,
+        {
+          ...baseReport,
+          validation: {
+            ok: false,
+            failures: [`render failed: ${redactForReport(error?.message || String(error))}`],
+          },
+        },
+      ]
+    }
+
+    const runtimeUserPrompt = renderRuntimeUserPrompt(fixture.query, evidenceJson)
+    const rendererValidation = renderer.validateRenderedEvidenceBundle
+      ? renderer.validateRenderedEvidenceBundle(fixture.evidenceBundle, evidenceJson)
+      : { ok: true, failures: [] }
+
+    return [
+      renderer.id,
+      {
+        ...baseReport,
+        evidenceJson: measureText(evidenceJson),
+        runtimeUserPrompt: measureText(runtimeUserPrompt),
+        validation: rendererValidation,
+      },
+    ]
+  }))
+
+  return {
+    id: fixture.id,
+    description: fixture.description,
+    sourceCount: fixture.evidenceBundle.sources.length,
+    citationCount: fixture.evidenceBundle.citations.length,
+    sourceFailureCount: fixture.evidenceBundle.sourceFailures.length,
+    sourceSummaryCount: Array.isArray(fixture.evidenceBundle.sourceSummaries)
+      ? fixture.evidenceBundle.sourceSummaries.length
+      : 0,
+    graphEdgeCount: Array.isArray(fixture.evidenceBundle.graphEdges)
+      ? fixture.evidenceBundle.graphEdges.length
+      : 0,
+    graphNeighborhoodCount: Array.isArray(fixture.evidenceBundle.graphNeighborhood)
+      ? fixture.evidenceBundle.graphNeighborhood.length
+      : 0,
+    mergedGraphSummary: fixture.evidenceBundle.mergedGraphSummary,
+    mergedCorpusSummary: {
+      sourceCount: fixture.evidenceBundle.mergedCorpusSummary.sourceCount,
+      pageCount: fixture.evidenceBundle.mergedCorpusSummary.pageCount,
+      approvedPageCount: fixture.evidenceBundle.mergedCorpusSummary.approvedPageCount,
+    },
+    renderers: rendererReports,
+    comparisons: buildComparisons(rendererReports),
+  }
+}
+
+function renderRuntimeUserPrompt(query, renderedEvidenceBundle) {
+  return [
+    '# User question',
+    query,
+    '',
+    '# LLMWiki evidence bundle',
+    renderedEvidenceBundle,
+  ].join('\n')
+}
+
+function measureText(text) {
+  const utf8Bytes = Buffer.byteLength(text, 'utf8')
+  return {
+    utf8Bytes,
+    chars: Array.from(text).length,
+    estimatedTokens: Math.ceil(utf8Bytes / 4),
+  }
+}
+
+function buildComparisons(rendererReports) {
+  const comparisons = {}
+  addComparison(comparisons, rendererReports, 'pretty-json', 'compact-json', 'compactVsPrettyEvidenceJson', 'evidenceJson')
+  addComparison(comparisons, rendererReports, 'pretty-json', 'compact-json', 'compactVsPrettyRuntimeUserPrompt', 'runtimeUserPrompt')
+  addComparison(comparisons, rendererReports, 'compact-json', 'markdown-summary', 'markdownSummaryVsCompactEvidence', 'evidenceJson')
+  addComparison(comparisons, rendererReports, 'compact-json', 'markdown-summary', 'markdownSummaryVsCompactRuntimeUserPrompt', 'runtimeUserPrompt')
+  addComparison(comparisons, rendererReports, 'compact-json', 'toon', 'toonVsCompactEvidence', 'evidenceJson')
+  addComparison(comparisons, rendererReports, 'compact-json', 'toon', 'toonVsCompactRuntimeUserPrompt', 'runtimeUserPrompt')
+  addComparison(comparisons, rendererReports, 'markdown-summary', 'toon', 'toonVsMarkdownSummaryEvidence', 'evidenceJson')
+  addComparison(comparisons, rendererReports, 'markdown-summary', 'toon', 'toonVsMarkdownSummaryRuntimeUserPrompt', 'runtimeUserPrompt')
+  return comparisons
+}
+
+function addComparison(comparisons, rendererReports, baselineId, candidateId, name, section) {
+  if (!rendererReports[baselineId]?.[section] || !rendererReports[candidateId]?.[section]) return
+  comparisons[name] = compareMeasurements(
+    rendererReports[baselineId][section],
+    rendererReports[candidateId][section],
+    baselineId,
+    candidateId,
+  )
+}
+
+function compareMeasurements(baseline, candidate, baselineId = 'pretty-json', candidateId = 'compact-json') {
+  const utf8BytesSaved = baseline.utf8Bytes - candidate.utf8Bytes
+  const charsSaved = baseline.chars - candidate.chars
+  const estimatedTokensSaved = baseline.estimatedTokens - candidate.estimatedTokens
+
+  return {
+    baseline: baselineId,
+    candidate: candidateId,
+    utf8BytesSaved,
+    charsSaved,
+    estimatedTokensSaved,
+    utf8BytesReductionPct: percentSaved(utf8BytesSaved, baseline.utf8Bytes),
+    charsReductionPct: percentSaved(charsSaved, baseline.chars),
+    estimatedTokensReductionPct: percentSaved(estimatedTokensSaved, baseline.estimatedTokens),
+  }
+}
+
+function percentSaved(saved, baseline) {
+  if (!baseline) return 0
+  return Number(((saved / baseline) * 100).toFixed(2))
+}
+
+function sumFixtureReports(fixtureReports, renderers) {
+  const totals = {
+    fixtureCount: fixtureReports.length,
+    renderers: {},
+  }
+
+  for (const renderer of renderers) {
+    const rendererFixtureReports = fixtureReports.map((fixture) => fixture.renderers[renderer.id]).filter(Boolean)
+    const evidenceMeasurements = rendererFixtureReports.map((fixture) => fixture.evidenceJson).filter(Boolean)
+    const promptMeasurements = rendererFixtureReports.map((fixture) => fixture.runtimeUserPrompt).filter(Boolean)
+    totals.renderers[renderer.id] = {
+      fixtureCount: rendererFixtureReports.length,
+      measuredFixtureCount: Math.min(evidenceMeasurements.length, promptMeasurements.length),
+      failedFixtureCount: rendererFixtureReports.filter((fixture) => fixture.validation && !fixture.validation.ok).length,
+      evidenceJson: evidenceMeasurements.length === fixtureReports.length ? sumMeasurements(evidenceMeasurements) : null,
+      runtimeUserPrompt: promptMeasurements.length === fixtureReports.length ? sumMeasurements(promptMeasurements) : null,
+    }
+  }
+
+  totals.comparisons = buildComparisons(totals.renderers)
+
+  return totals
+}
+
+function sumMeasurements(measurements) {
+  return measurements.reduce((total, measurement) => ({
+    utf8Bytes: total.utf8Bytes + measurement.utf8Bytes,
+    chars: total.chars + measurement.chars,
+    estimatedTokens: total.estimatedTokens + measurement.estimatedTokens,
+  }), {
+    utf8Bytes: 0,
+    chars: 0,
+    estimatedTokens: 0,
+  })
+}
+
+function validateFixtureReports(fixtureReports) {
+  const failures = []
+
+  for (const fixture of fixtureReports) {
+    if (fixture.renderers['pretty-json'] && fixture.renderers['compact-json']) {
+      assertCandidateSmaller(failures, fixture, 'compact-json', 'pretty-json', 'evidenceJson')
+      assertCandidateSmaller(failures, fixture, 'compact-json', 'pretty-json', 'runtimeUserPrompt')
+    }
+    if (fixture.renderers['markdown-summary']) {
+      assertRendererNonEmpty(failures, fixture, 'markdown-summary', 'evidenceJson')
+      assertRendererNonEmpty(failures, fixture, 'markdown-summary', 'runtimeUserPrompt')
+    }
+    if (fixture.renderers.toon) {
+      assertRendererNonEmpty(failures, fixture, 'toon', 'evidenceJson')
+      assertRendererNonEmpty(failures, fixture, 'toon', 'runtimeUserPrompt')
+      if (!fixture.renderers.toon.validation.ok) {
+        failures.push(...fixture.renderers.toon.validation.failures.map((failure) => `${fixture.id}: toon ${failure}`))
+      }
+    }
+  }
+
+  return {
+    ok: failures.length === 0,
+    checks: [
+      'compact-json evidenceJson/runtimeUserPrompt utf8Bytes are smaller than pretty-json when both renderers are selected',
+      'markdown-summary evidenceJson/runtimeUserPrompt outputs are non-empty when markdown-summary is selected',
+      'toon evidenceJson/runtimeUserPrompt outputs are non-empty and losslessly decode when toon is selected',
+    ],
+    failures,
+  }
+}
+
+function assertCandidateSmaller(failures, fixture, candidateId, baselineId, section) {
+  if (!fixture.renderers[baselineId]?.[section] || !fixture.renderers[candidateId]?.[section]) {
+    failures.push(`${fixture.id}: ${candidateId} and ${baselineId} ${section} measurements must both exist`)
+    return
+  }
+  const baselineBytes = fixture.renderers[baselineId][section].utf8Bytes
+  const candidateBytes = fixture.renderers[candidateId][section].utf8Bytes
+  if (candidateBytes >= baselineBytes) {
+    failures.push(
+      `${fixture.id}: ${candidateId} ${section} must be smaller than ${baselineId} (${candidateBytes} >= ${baselineBytes})`,
+    )
+  }
+}
+
+function assertRendererNonEmpty(failures, fixture, rendererId, section) {
+  if (!fixture.renderers[rendererId]?.[section]) {
+    failures.push(`${fixture.id}: ${rendererId} ${section} measurement must exist`)
+    return
+  }
+  if (fixture.renderers[rendererId][section].utf8Bytes <= 0) {
+    failures.push(`${fixture.id}: ${rendererId} ${section} must not be empty`)
+  }
+}
+
+function parsePositiveInteger(value, fallback, label = 'value') {
+  if (value === undefined || value === null || value === '') return fallback
+  const number = Number(value)
+  if (!Number.isInteger(number) || number <= 0) {
+    throw new Error(`${label} must be a positive integer.`)
+  }
+  return number
+}
+
+function parseTemperature(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number) || number < 0 || number > 2) {
+    throw new Error('--temperature must be a number between 0 and 2.')
+  }
+  return number
+}
+
+function renderEvidenceBundleAsMarkdown(evidenceBundle) {
+  return [
+    `schema: ${evidenceBundle.schema}`,
+    '',
+    '## Runtime contract',
+    `- citations: ${evidenceBundle.runtimeContract.citations}`,
+    `- graph: ${evidenceBundle.runtimeContract.graph}`,
+    '',
+    '## Citation digest',
+    markdownTable(
+      ['idx', 'id', 'title', 'path', 'snippet'],
+      evidenceBundle.citationDigest.map((citation) => [
+        citationAnchor(citationIndex(evidenceBundle.citations, citation.id)),
+        citation.id,
+        citation.title,
+        citation.path || '',
+        citation.snippet || '',
+      ]),
+    ),
+    '',
+    '## Citations',
+    markdownTable(
+      ['idx', 'id', 'sourceId', 'title', 'path', 'snippet'],
+      evidenceBundle.citations.map((citation, index) => [
+        citationAnchor(index + 1),
+        citation.id,
+        citation.sourceId || '',
+        citation.title || '',
+        citation.path || '',
+        citation.snippet || '',
+      ]),
+    ),
+    '',
+    '## Sources',
+    markdownTable(
+      ['id', 'name', 'protocol', 'citationIndexes', 'citationCount', 'limitations', 'graph'],
+      evidenceBundle.sources.map((source) => [
+        source.id,
+        source.name,
+        source.protocol,
+        source.citationIndexes.map(citationAnchor).join(' '),
+        source.citationCount,
+        source.limitations.join('; '),
+        `${source.graph.nodeCount} nodes / ${source.graph.edgeCount} edges`,
+      ]),
+    ),
+    '',
+    ...(Array.isArray(evidenceBundle.sourceSummaries) && evidenceBundle.sourceSummaries.length
+      ? [
+        '## Source summaries',
+        markdownTable(
+          ['id', 'protocol', 'pageCount', 'approvedPageCount', 'citationCount', 'graphNodes', 'graphEdges', 'note'],
+          evidenceBundle.sourceSummaries.map((source) => [
+            source.id,
+            source.protocol,
+            source.pageCount,
+            source.approvedPageCount,
+            source.citationCount,
+            source.graphNodeCount,
+            source.graphEdgeCount,
+            source.note || '',
+          ]),
+        ),
+        '',
+      ]
+      : []),
+    '## Source failures',
+    evidenceBundle.sourceFailures.length
+      ? markdownTable(
+        ['id', 'name', 'protocol', 'error', 'message', 'remediation'],
+        evidenceBundle.sourceFailures.map((failure) => [
+          failure.id,
+          failure.name,
+          failure.protocol,
+          failure.error,
+          failure.message || '',
+          failure.remediation || '',
+        ]),
+      )
+      : '- none',
+    '',
+    ...(Array.isArray(evidenceBundle.graphEdges) && evidenceBundle.graphEdges.length
+      ? [
+        '## Graph edges',
+        markdownTable(
+          ['from', 'relation', 'to', 'citationIdx', 'sourceId', 'weight'],
+          evidenceBundle.graphEdges.map((edge) => [
+            edge.from,
+            edge.relation,
+            edge.to,
+            edge.citationIndex ?? edge.citationIdx ?? '',
+            edge.sourceId ?? '',
+            edge.weight ?? '',
+          ]),
+        ),
+        '',
+      ]
+      : []),
+    ...(Array.isArray(evidenceBundle.graphNodes) && evidenceBundle.graphNodes.length
+      ? [
+        '## Graph nodes',
+        markdownTable(
+          ['id', 'label', 'kind', 'sourceId', 'citationIdx'],
+          evidenceBundle.graphNodes.map((node) => [
+            node.id,
+            node.label,
+            node.kind,
+            node.sourceId ?? '',
+            node.citationIdx ?? '',
+          ]),
+        ),
+        '',
+      ]
+      : []),
+    ...(Array.isArray(evidenceBundle.graphNeighborhood) && evidenceBundle.graphNeighborhood.length
+      ? [
+        '## Graph neighborhood',
+        markdownTable(
+          ['focus', 'neighbor', 'direction', 'relation', 'hops', 'citationIdx', 'sourceId', 'metadata'],
+          evidenceBundle.graphNeighborhood.map((neighbor) => [
+            neighbor.focus,
+            neighbor.neighbor,
+            neighbor.direction,
+            neighbor.relation,
+            neighbor.hops,
+            neighbor.citationIndex ?? neighbor.citationIdx ?? '',
+            neighbor.sourceId ?? '',
+            neighbor.metadata || '',
+          ]),
+        ),
+        '',
+      ]
+      : []),
+    '## Merged graph summary',
+    `- nodes: ${evidenceBundle.mergedGraphSummary.nodeCount}`,
+    `- edges: ${evidenceBundle.mergedGraphSummary.edgeCount}`,
+    `- corpus pages: ${evidenceBundle.mergedGraphSummary.corpusPageCount}`,
+    `- approved corpus pages: ${evidenceBundle.mergedGraphSummary.corpusApprovedPageCount}`,
+    '',
+    '## Merged corpus summary',
+    `- sources: ${evidenceBundle.mergedCorpusSummary.sourceCount}`,
+    `- pages: ${evidenceBundle.mergedCorpusSummary.pageCount}`,
+    `- approved pages: ${evidenceBundle.mergedCorpusSummary.approvedPageCount}`,
+    '',
+    `citationCount: ${evidenceBundle.citationCount}`,
+  ].join('\n')
+}
+
+function renderEvidenceBundleAsToon(evidenceBundle) {
+  return encodeToon(evidenceBundle)
+}
+
+function validateToonRoundTrip(evidenceBundle, renderedEvidenceBundle) {
+  try {
+    const decoded = decodeToon(renderedEvidenceBundle)
+    const originalJson = JSON.stringify(evidenceBundle)
+    const decodedJson = JSON.stringify(decoded)
+    if (decodedJson !== originalJson) {
+      return {
+        ok: false,
+        failures: ['round-trip JSON mismatch'],
+      }
+    }
+    return { ok: true, failures: [] }
+  } catch (error) {
+    return {
+      ok: false,
+      failures: [`decode failed: ${redactForReport(error?.message || String(error))}`],
+    }
+  }
+}
+
+function citationIndex(citations, citationId) {
+  const index = citations.findIndex((citation) => citation.id === citationId)
+  return index >= 0 ? index + 1 : ''
+}
+
+function citationAnchor(index) {
+  return index ? `[${index}](#citation-${index})` : ''
+}
+
+function markdownTable(headers, rows) {
+  return [
+    `| ${headers.join(' | ')} |`,
+    `| ${headers.map(() => '---').join(' | ')} |`,
+    ...rows.map((row) => `| ${row.map(markdownCell).join(' | ')} |`),
+  ].join('\n')
+}
+
+function markdownCell(value) {
+  const text = value && typeof value === 'object' ? JSON.stringify(value) : String(value ?? '')
+  return text
+    .replace(/\r?\n/g, ' ')
+    .replace(/\|/g, '\\|')
+    .trim()
+}
+
+async function evaluateLiveRuntime(fixtures, renderers, args) {
+  const config = liveRuntimeConfig(args)
+  const baseReport = {
+    enabled: true,
+    configured: config.ok,
+    renderers: renderers.map(({ id, label, mediaType }) => ({ id, label, mediaType })),
+    runtime: {
+      baseUrlConfigured: Boolean(config.baseUrl),
+      modelConfigured: Boolean(config.model),
+      apiKeyConfigured: Boolean(config.apiKey),
+      timeoutMs: args.timeoutMs,
+      maxTokens: args.maxTokens,
+      temperature: args.temperature,
+      endpointRedacted: true,
+    },
+  }
+
+  if (!config.ok) {
+    const failures = config.missing.map((name) => `live: missing required environment variable ${name}`)
+    return {
+      ...baseReport,
+      status: 'not-configured',
+      fixtures: [],
+      totals: {
+        fixtureCount: fixtures.length,
+        requestCount: 0,
+      },
+      validation: {
+        ok: false,
+        checks: ['live runtime requires explicit --live plus configured base URL and model'],
+        failures,
+      },
+    }
+  }
+
+  const fixtureReports = []
+  for (const fixture of fixtures) {
+    const rendererReports = {}
+    for (const renderer of renderers) {
+      rendererReports[renderer.id] = await evaluateLiveRenderer({
+        args,
+        config,
+        fixture,
+        renderer,
+      })
+    }
+    fixtureReports.push({
+      id: fixture.id,
+      citationCount: fixture.evidenceBundle.citationCount,
+      renderers: rendererReports,
+    })
+  }
+
+  const validation = validateLiveFixtureReports(fixtureReports)
+  return {
+    ...baseReport,
+    status: validation.ok ? 'ok' : 'failed',
+    fixtures: fixtureReports,
+    totals: summarizeLiveFixtureReports(fixtureReports, renderers),
+    validation,
+  }
+}
+
+function liveRuntimeConfig(args) {
+  const baseUrl = stringEnv(LIVE_ENV.baseUrl) || stringEnv(LIVE_ENV.legacyBaseUrl)
+  const model = stringEnv(LIVE_ENV.model) || stringEnv(LIVE_ENV.legacyModel)
+  const apiKey = process.env[LIVE_ENV.apiKey] || process.env[LIVE_ENV.legacyApiKey] || ''
+  const missing = []
+  if (!baseUrl) missing.push(`${LIVE_ENV.baseUrl} or ${LIVE_ENV.legacyBaseUrl}`)
+  if (!model) missing.push(`${LIVE_ENV.model} or ${LIVE_ENV.legacyModel}`)
+
+  if (missing.length) return { ok: false, missing }
+
+  try {
+    return {
+      ok: true,
+      missing,
+      baseUrl,
+      model,
+      apiKey,
+      timeoutMs: args.timeoutMs,
+      chatCompletionsUrl: chatCompletionsUrl(baseUrl),
+    }
+  } catch {
+    return {
+      ok: false,
+      missing: [`${LIVE_ENV.baseUrl} must be an absolute URL`],
+    }
+  }
+}
+
+function stringEnv(name) {
+  const value = process.env[name]
+  return typeof value === 'string' && value.trim() ? value.trim() : ''
+}
+
+async function evaluateLiveRenderer({ args, config, fixture, renderer }) {
+  const renderedEvidenceBundle = renderer.renderEvidenceBundle(fixture.evidenceBundle)
+  const runtimeUserPrompt = renderRuntimeUserPrompt(fixture.query, renderedEvidenceBundle)
+  const started = performance.now()
+  try {
+    const response = await callChatCompletions({
+      config,
+      messages: liveRuntimeMessages(runtimeUserPrompt),
+      maxTokens: args.maxTokens,
+      temperature: args.temperature,
+      timeoutMs: args.timeoutMs,
+    })
+    const latencyMs = Math.round(performance.now() - started)
+
+    if (!response.ok) {
+      return {
+        status: response.status,
+        httpStatus: response.httpStatus,
+        latencyMs,
+        prompt: measureText(runtimeUserPrompt),
+        outputTextLength: 0,
+        citationAnchorsFound: [],
+        requiredCitationAnchors: citationCoverage([], fixture.evidenceBundle.citationCount),
+        pass: false,
+        allRequiredCitationAnchorsCovered: false,
+        error: response.error,
+      }
+    }
+
+    const outputText = extractChatCompletionText(response.payload)
+    const citationAnchors = analyzeCitationAnchors(outputText, fixture.evidenceBundle.citationCount)
+
+    return {
+      status: 'ok',
+      httpStatus: response.httpStatus,
+      latencyMs,
+      prompt: measureText(runtimeUserPrompt),
+      outputTextLength: Array.from(outputText).length,
+      citationAnchorsFound: citationAnchors.found,
+      requiredCitationAnchors: citationAnchors.coverage,
+      pass: citationAnchors.coverage.coveredCount > 0 && citationAnchors.invalidCount === 0,
+      invalidCitationAnchorCount: citationAnchors.invalidCount,
+      allRequiredCitationAnchorsCovered: citationAnchors.coverage.coveredCount === citationAnchors.coverage.requiredCount,
+      usage: summarizeUsage(response.payload?.usage),
+    }
+  } catch (error) {
+    const latencyMs = Math.round(performance.now() - started)
+    return {
+      status: 'error',
+      httpStatus: null,
+      latencyMs,
+      prompt: measureText(runtimeUserPrompt),
+      outputTextLength: 0,
+      citationAnchorsFound: [],
+      requiredCitationAnchors: citationCoverage([], fixture.evidenceBundle.citationCount),
+      pass: false,
+      allRequiredCitationAnchorsCovered: false,
+      error: redactForReport(error?.message || String(error), config),
+    }
+  }
+}
+
+function liveRuntimeMessages(runtimeUserPrompt) {
+  return [
+    {
+      role: 'system',
+      content: [
+        'You are evaluating LLMWiki evidence prompt formats.',
+        'Answer using only the provided evidence.',
+        'Every factual claim that relies on evidence must include markdown citation anchors near the claim, formatted exactly as [n](#citation-n).',
+        'Use n as the 1-based index of the matching evidence citation.',
+        'If evidence is insufficient, state the limitation and cite the closest available evidence.',
+      ].join(' '),
+    },
+    {
+      role: 'user',
+      content: runtimeUserPrompt,
+    },
+  ]
+}
+
+async function callChatCompletions({ config, messages, maxTokens, temperature, timeoutMs }) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(config.chatCompletionsUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model: config.model,
+        messages,
+        temperature,
+        max_tokens: maxTokens,
+        stream: false,
+      }),
+      signal: controller.signal,
+    })
+    const text = await response.text()
+    let payload = null
+    try {
+      payload = text ? JSON.parse(text) : null
+    } catch {
+      payload = null
+    }
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: 'http-error',
+        httpStatus: response.status,
+        error: `runtime HTTP ${response.status}: ${redactForReport(extractRuntimeError(payload) || text || response.statusText, config)}`,
+      }
+    }
+    return { ok: true, status: 'ok', httpStatus: response.status, payload }
+  } catch (error) {
+    return {
+      ok: false,
+      status: error?.name === 'AbortError' ? 'timeout' : 'error',
+      httpStatus: null,
+      error: redactForReport(error?.message || String(error), config),
+    }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+function chatCompletionsUrl(baseUrl) {
+  const url = new URL(baseUrl)
+  const normalizedPath = url.pathname.replace(/\/+$/, '')
+  if (!normalizedPath.endsWith('/chat/completions')) {
+    url.pathname = `${normalizedPath}/chat/completions`
+  }
+  url.hash = ''
+  return url.toString()
+}
+
+function extractRuntimeError(payload) {
+  if (!payload || typeof payload !== 'object') return ''
+  if (typeof payload.error === 'string') return payload.error
+  if (payload.error && typeof payload.error.message === 'string') return payload.error.message
+  if (typeof payload.message === 'string') return payload.message
+  return ''
+}
+
+function extractChatCompletionText(payload) {
+  const choice = Array.isArray(payload?.choices) ? payload.choices[0] : null
+  const content = choice?.message?.content ?? choice?.text
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content.map((part) => {
+      if (typeof part === 'string') return part
+      if (typeof part?.text === 'string') return part.text
+      return ''
+    }).join('')
+  }
+  return ''
+}
+
+function analyzeCitationAnchors(text, citationCount) {
+  const found = []
+  const validIndexes = new Set()
+  let invalidCount = 0
+  const anchorPattern = /\[(\d+)\]\(#citation-(\d+)\)/g
+  let match
+  while ((match = anchorPattern.exec(text)) !== null) {
+    if (match.index > 0 && text[match.index - 1] === '!') continue
+    const citationIndex = Number(match[1])
+    const linkedIndex = Number(match[2])
+    const valid = Number.isInteger(citationIndex)
+      && citationIndex === linkedIndex
+      && citationIndex >= 1
+      && citationIndex <= citationCount
+    const anchor = `[${match[1]}](#citation-${match[2]})`
+    found.push({ anchor, index: citationIndex, valid })
+    if (valid) validIndexes.add(citationIndex)
+    else invalidCount += 1
+  }
+  return {
+    found,
+    invalidCount,
+    coverage: citationCoverage([...validIndexes], citationCount),
+  }
+}
+
+function citationCoverage(coveredIndexes, citationCount) {
+  const covered = new Set(coveredIndexes)
+  const required = Array.from({ length: citationCount }, (_, index) => index + 1)
+  const missing = required.filter((index) => !covered.has(index))
+  const coveredCount = required.length - missing.length
+  return {
+    requiredCount: required.length,
+    coveredCount,
+    coveragePct: required.length ? Number(((coveredCount / required.length) * 100).toFixed(2)) : 100,
+    required,
+    missing,
+  }
+}
+
+function summarizeUsage(usage) {
+  if (!usage || typeof usage !== 'object') return undefined
+  return {
+    promptTokens: numberOrUndefined(usage.prompt_tokens),
+    completionTokens: numberOrUndefined(usage.completion_tokens),
+    totalTokens: numberOrUndefined(usage.total_tokens),
+  }
+}
+
+function numberOrUndefined(value) {
+  return Number.isFinite(value) ? value : undefined
+}
+
+function validateLiveFixtureReports(fixtureReports) {
+  const failures = []
+  for (const fixture of fixtureReports) {
+    for (const [rendererId, result] of Object.entries(fixture.renderers)) {
+      if (!result.pass) {
+        const reason = result.invalidCitationAnchorCount > 0
+          ? `invalid exact citation anchors: ${result.invalidCitationAnchorCount}`
+          : 'no valid exact citation anchor'
+        failures.push(
+          `${fixture.id}/${rendererId}: live response must complete, include at least one exact [n](#citation-n) anchor, and include no invalid exact anchors (${reason})`,
+        )
+      }
+    }
+  }
+  return {
+    ok: failures.length === 0,
+    checks: ['every live renderer response completes, includes at least one exact [n](#citation-n) anchor, and includes no invalid exact anchors'],
+    failures,
+  }
+}
+
+function summarizeLiveFixtureReports(fixtureReports, renderers) {
+  const totals = {
+    fixtureCount: fixtureReports.length,
+    requestCount: 0,
+    renderers: {},
+  }
+
+  for (const renderer of renderers) {
+    const results = fixtureReports.map((fixture) => fixture.renderers[renderer.id]).filter(Boolean)
+    totals.requestCount += results.length
+    const latencies = results.map((result) => result.latencyMs).filter((value) => Number.isFinite(value))
+    const outputLengths = results.map((result) => result.outputTextLength).filter((value) => Number.isFinite(value))
+    totals.renderers[renderer.id] = {
+      requestCount: results.length,
+      okCount: results.filter((result) => result.status === 'ok').length,
+      passCount: results.filter((result) => result.pass).length,
+      errorCount: results.filter((result) => result.status !== 'ok').length,
+      latencyMs: summarizeNumbers(latencies),
+      outputTextLength: summarizeNumbers(outputLengths),
+      averageRequiredCitationAnchorCoveragePct: average(
+        results.map((result) => result.requiredCitationAnchors.coveragePct),
+      ),
+    }
+  }
+
+  return totals
+}
+
+function summarizeNumbers(values) {
+  if (!values.length) return { min: null, max: null, average: null }
+  return {
+    min: Math.min(...values),
+    max: Math.max(...values),
+    average: average(values),
+  }
+}
+
+function average(values) {
+  const numericValues = values.filter((value) => Number.isFinite(value))
+  if (!numericValues.length) return null
+  return Number((numericValues.reduce((total, value) => total + value, 0) / numericValues.length).toFixed(2))
+}
+
+function redactForReport(value, config = {}) {
+  let text = String(value || '')
+  for (const secret of [config.apiKey, config.baseUrl, config.chatCompletionsUrl].filter(Boolean)) {
+    text = text.split(secret).join('[redacted]')
+  }
+  if (config.baseUrl) {
+    try {
+      text = text.split(new URL(config.baseUrl).origin).join('[redacted-origin]')
+    } catch {
+      // Validation handles invalid URLs.
+    }
+  }
+  text = text
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/\b(?:sk|sk-proj|sk-ant|hf)[_-][A-Za-z0-9._~+/=-]+/gi, '[redacted-key]')
+    .replace(/api[_-]?key=[^&\s]+/gi, 'api_key=[redacted]')
+    .replace(/https?:\/\/[^\s)"'<>]+/g, '[redacted-url]')
+  return text.length > 500 ? `${text.slice(0, 500)}…` : text
+}
+
+function mergeValidation(offlineValidation, liveValidation) {
+  const failures = [
+    ...(offlineValidation?.failures || []),
+    ...(liveValidation?.failures || []),
+  ]
+  return {
+    ok: failures.length === 0,
+    checks: [
+      ...(offlineValidation?.checks || []),
+      ...(liveValidation?.checks || []),
+    ],
+    failures,
+  }
+}
+
+function buildEvidenceBundleFixtures() {
+  return [
+    {
+      id: 'single-source',
+      description: 'One successful synthetic llmwiki-http source with citations, graph summary, corpus summary, and an explicit empty sourceFailures array.',
+      query: 'What release-readiness evidence should the runtime cite?',
+      evidenceBundle: {
+        schema: 'llmwiki-agent-bridge.answer-evidence.v1',
+        runtimeContract: {
+          citations: 'Use the top-level citations array as the only citation anchor source.',
+          graph: 'Graph and source bundle details are returned in the bridge artifact and source tools, not in this answer prompt.',
+        },
+        citationDigest: [
+          {
+            id: 'release-wiki:release-readiness',
+            title: 'Release Readiness',
+            path: 'docs/release-readiness.md',
+            snippet: 'Release readiness depends on local checks, citation anchors, graph summaries, and explicit source limitations.',
+            sourceRefs: [{ sourceId: 'release-wiki', pageId: 'release-readiness' }],
+          },
+          {
+            id: 'release-wiki:runtime-profiles',
+            title: 'Runtime Profiles',
+            path: 'docs/runtime-profiles.md',
+            snippet: 'Runtime profiles share the same evidence contract and differ only in local runtime configuration.',
+            sourceRefs: [{ sourceId: 'release-wiki', pageId: 'runtime-profiles' }],
+          },
+        ],
+        citations: [
+          {
+            id: 'release-wiki:release-readiness',
+            sourceId: 'release-wiki',
+            pageId: 'release-readiness',
+            title: 'Release Readiness',
+            path: 'docs/release-readiness.md',
+            score: 0.94,
+            snippet: 'Release readiness depends on local checks, citation anchors, graph summaries, and explicit source limitations.',
+            sourceRefs: [{ sourceId: 'release-wiki', pageId: 'release-readiness' }],
+          },
+          {
+            id: 'release-wiki:runtime-profiles',
+            sourceId: 'release-wiki',
+            pageId: 'runtime-profiles',
+            title: 'Runtime Profiles',
+            path: 'docs/runtime-profiles.md',
+            score: 0.88,
+            snippet: 'Runtime profiles share the same evidence contract and differ only in local runtime configuration.',
+            sourceRefs: [{ sourceId: 'release-wiki', pageId: 'runtime-profiles' }],
+          },
+        ],
+        sources: [
+          {
+            id: 'release-wiki',
+            name: 'Synthetic Release Wiki',
+            protocol: 'llmwiki-http',
+            description: 'Synthetic source used only for local prompt rendering benchmarks.',
+            wikiTitle: 'Synthetic Release Wiki',
+            adapter: 'markdown',
+            implementation: 'synthetic-fixture',
+            pageCount: 42,
+            approvedPageCount: 40,
+            orientation: [
+              {
+                title: 'Release Readiness',
+                path: 'docs/release-readiness.md',
+                summary: 'Checks must pass before release, and runtime answers should cite the relevant evidence.',
+              },
+              {
+                title: 'Runtime Profiles',
+                path: 'docs/runtime-profiles.md',
+                summary: 'Profiles configure local runtime identity while preserving the bridge evidence shape.',
+              },
+            ],
+            citationIndexes: [1, 2],
+            citationCount: 2,
+            limitations: ['Synthetic benchmark fixture; no live Knowledge Source was queried.'],
+            graph: {
+              nodeCount: 5,
+              edgeCount: 4,
+            },
+          },
+        ],
+        sourceFailures: [],
+        mergedGraphSummary: {
+          nodeCount: 5,
+          edgeCount: 4,
+          corpusPageCount: 42,
+          corpusApprovedPageCount: 40,
+        },
+        mergedCorpusSummary: {
+          sourceCount: 1,
+          pageCount: 42,
+          approvedPageCount: 40,
+          sources: [
+            {
+              id: 'release-wiki',
+              name: 'Synthetic Release Wiki',
+              protocol: 'llmwiki-http',
+              description: 'Synthetic source used only for local prompt rendering benchmarks.',
+              wikiTitle: 'Synthetic Release Wiki',
+              adapter: 'markdown',
+              implementation: 'synthetic-fixture',
+              pageCount: 42,
+              approvedPageCount: 40,
+            },
+          ],
+        },
+        citationCount: 2,
+      },
+    },
+    {
+      id: 'multi-source',
+      description: 'Two successful synthetic sources plus one redacted source failure, with citation refs, source summaries, and merged graph/corpus summaries.',
+      query: 'How do client paths and runtime profiles affect bridge release risk?',
+      evidenceBundle: {
+        schema: 'llmwiki-agent-bridge.answer-evidence.v1',
+        runtimeContract: {
+          citations: 'Use the top-level citations array as the only citation anchor source.',
+          graph: 'Graph and source bundle details are returned in the bridge artifact and source tools, not in this answer prompt.',
+        },
+        citationDigest: [
+          {
+            id: 'client-wiki:bridge-path',
+            title: 'Bridge Client Path',
+            path: 'docs/client-paths.md',
+            snippet: 'Use the bridge path when a client wants source fan-out, evidence bundling, runtime synthesis, and one normalized artifact.',
+            sourceRefs: [{ sourceId: 'client-wiki', pageId: 'bridge-path' }],
+          },
+          {
+            id: 'runtime-wiki:generic-profile',
+            title: 'Generic Runtime Profile',
+            path: 'docs/runtime-profiles.md',
+            snippet: 'The generic profile fits local OpenAI-compatible runtimes that do not need runtime-specific naming.',
+            sourceRefs: [{ sourceId: 'runtime-wiki', pageId: 'generic-profile' }],
+          },
+          {
+            id: 'runtime-wiki:evidence-only',
+            title: 'Evidence-only Mode',
+            path: 'docs/runtime-profiles.md',
+            snippet: 'Evidence-only mode gathers citations, graph context, trace steps, and source bundle metadata without calling a runtime.',
+            sourceRefs: [{ sourceId: 'runtime-wiki', pageId: 'evidence-only' }],
+          },
+        ],
+        citations: [
+          {
+            id: 'client-wiki:bridge-path',
+            sourceId: 'client-wiki',
+            pageId: 'bridge-path',
+            title: 'Bridge Client Path',
+            path: 'docs/client-paths.md',
+            score: 0.96,
+            snippet: 'Use the bridge path when a client wants source fan-out, evidence bundling, runtime synthesis, and one normalized artifact.',
+            sourceRefs: [{ sourceId: 'client-wiki', pageId: 'bridge-path' }],
+          },
+          {
+            id: 'client-wiki:direct-path',
+            sourceId: 'client-wiki',
+            pageId: 'direct-path',
+            title: 'Direct Client Path',
+            path: 'docs/client-paths.md',
+            score: 0.79,
+            snippet: 'Use the direct path when the client can safely call the Knowledge Source and manage its own prompting.',
+            sourceRefs: [{ sourceId: 'client-wiki', pageId: 'direct-path' }],
+          },
+          {
+            id: 'runtime-wiki:generic-profile',
+            sourceId: 'runtime-wiki',
+            pageId: 'generic-profile',
+            title: 'Generic Runtime Profile',
+            path: 'docs/runtime-profiles.md',
+            score: 0.91,
+            snippet: 'The generic profile fits local OpenAI-compatible runtimes that do not need runtime-specific naming.',
+            sourceRefs: [{ sourceId: 'runtime-wiki', pageId: 'generic-profile' }],
+          },
+          {
+            id: 'runtime-wiki:evidence-only',
+            sourceId: 'runtime-wiki',
+            pageId: 'evidence-only',
+            title: 'Evidence-only Mode',
+            path: 'docs/runtime-profiles.md',
+            score: 0.86,
+            snippet: 'Evidence-only mode gathers citations, graph context, trace steps, and source bundle metadata without calling a runtime.',
+            sourceRefs: [{ sourceId: 'runtime-wiki', pageId: 'evidence-only' }],
+          },
+        ],
+        sources: [
+          {
+            id: 'client-wiki',
+            name: 'Synthetic Client Path Wiki',
+            protocol: 'llmwiki-http',
+            description: 'Synthetic client-path source for comparing runtime prompt evidence renderers.',
+            wikiTitle: 'Synthetic Client Path Wiki',
+            adapter: 'markdown',
+            implementation: 'synthetic-fixture',
+            pageCount: 64,
+            approvedPageCount: 62,
+            orientation: [
+              {
+                title: 'Bridge Client Path',
+                path: 'docs/client-paths.md',
+                summary: 'Bridge clients delegate fan-out, evidence bundling, runtime synthesis, citations, graph data, and trace shaping.',
+              },
+              {
+                title: 'Direct Client Path',
+                path: 'docs/client-paths.md',
+                summary: 'Direct clients call a Knowledge Source directly and own prompt construction and synthesis policy.',
+              },
+            ],
+            citationIndexes: [1, 2],
+            citationCount: 2,
+            limitations: ['Synthetic source summary; contract fields are representative but not fetched.'],
+            graph: {
+              nodeCount: 4,
+              edgeCount: 3,
+            },
+          },
+          {
+            id: 'runtime-wiki',
+            name: 'Synthetic Runtime Profile Wiki',
+            protocol: 'mcp',
+            description: 'Synthetic runtime-profile source for local renderer baseline checks.',
+            wikiTitle: 'Synthetic Runtime Profile Wiki',
+            adapter: 'markdown',
+            implementation: 'synthetic-fixture',
+            pageCount: 37,
+            approvedPageCount: 35,
+            orientation: [
+              {
+                title: 'Generic Runtime Profile',
+                path: 'docs/runtime-profiles.md',
+                summary: 'The generic profile works with local OpenAI-compatible chat completions endpoints.',
+              },
+              {
+                title: 'Evidence-only Mode',
+                path: 'docs/runtime-profiles.md',
+                summary: 'Evidence-only mode is useful for smoke tests that must not call a provider runtime.',
+              },
+            ],
+            citationIndexes: [3, 4],
+            citationCount: 2,
+            limitations: ['Runtime behavior is not exercised by this benchmark.'],
+            graph: {
+              nodeCount: 6,
+              edgeCount: 5,
+            },
+          },
+        ],
+        sourceFailures: [
+          {
+            id: 'archive-wiki',
+            name: 'Synthetic Archive Wiki',
+            protocol: 'a2a',
+            error: 'Source query failed.',
+            message: 'Synthetic Archive Wiki could not be queried by the bridge.',
+            remediation: 'Confirm the local source is selected and ready before real runtime synthesis.',
+          },
+        ],
+        mergedGraphSummary: {
+          nodeCount: 10,
+          edgeCount: 8,
+          corpusPageCount: 101,
+          corpusApprovedPageCount: 97,
+        },
+        mergedCorpusSummary: {
+          sourceCount: 2,
+          pageCount: 101,
+          approvedPageCount: 97,
+          sources: [
+            {
+              id: 'client-wiki',
+              name: 'Synthetic Client Path Wiki',
+              protocol: 'llmwiki-http',
+              description: 'Synthetic client-path source for comparing runtime prompt evidence renderers.',
+              wikiTitle: 'Synthetic Client Path Wiki',
+              adapter: 'markdown',
+              implementation: 'synthetic-fixture',
+              pageCount: 64,
+              approvedPageCount: 62,
+            },
+            {
+              id: 'runtime-wiki',
+              name: 'Synthetic Runtime Profile Wiki',
+              protocol: 'mcp',
+              description: 'Synthetic runtime-profile source for local renderer baseline checks.',
+              wikiTitle: 'Synthetic Runtime Profile Wiki',
+              adapter: 'markdown',
+              implementation: 'synthetic-fixture',
+              pageCount: 37,
+              approvedPageCount: 35,
+            },
+          ],
+        },
+        citationCount: 4,
+      },
+    },
+    graphFixture({
+      id: 'graph-linear-chain',
+      description: 'Graph-shaped evidence with a linear decision chain from problem to implementation to validation.',
+      query: 'Which implementation and validation steps follow from the compact runtime prompt decision?',
+      sourceId: 'graph-linear',
+      sourceName: 'Synthetic Linear Graph Wiki',
+      citationPrefix: 'linear',
+      citations: [
+        ['decision', 'Runtime Prompt Decision', 'docs/decisions/runtime-prompt.md', 'The bridge should keep canonical JSON but render runtime prompt evidence through an explicit prompt codec.'],
+        ['implementation', 'Prompt Codec Implementation', 'specs/runtime-prompt-codec/plan.md', 'Implementation starts with compact JSON and a renderer seam before adding TOON or markdown projections.'],
+        ['validation', 'Runtime Prompt Validation', 'specs/runtime-prompt-codec/tests.md', 'Validation requires citation anchors, source ids, graph summaries, and renderer size metrics to remain stable.'],
+      ],
+      graphNodes: [
+        ['problem', 'Runtime prompt token overhead', 'problem', 1],
+        ['decision', 'Use renderer seam', 'decision', 1],
+        ['implementation', 'Compact JSON renderer', 'implementation', 2],
+        ['benchmark', 'Prompt renderer benchmark', 'validation', 3],
+        ['rollout', 'Codec default rollout', 'rollout', 3],
+      ],
+      graphEdges: [
+        ['problem', 'motivates', 'decision', 1, 0.95],
+        ['decision', 'requires', 'implementation', 2, 0.91],
+        ['implementation', 'measured_by', 'benchmark', 3, 0.89],
+        ['benchmark', 'gates', 'rollout', 3, 0.88],
+      ],
+      limitations: ['Synthetic linear CKG fixture; validates graph row rendering only.'],
+    }),
+    graphFixture({
+      id: 'graph-dense-crossrefs',
+      description: 'Dense CKG-style cross-reference fixture with repeated edge rows across decisions, specs, tests, and docs.',
+      query: 'Which specs and tests should be cited when deciding whether TOON can replace compact JSON?',
+      sourceId: 'graph-dense',
+      sourceName: 'Synthetic Dense Graph Wiki',
+      citationPrefix: 'dense',
+      citations: [
+        ['toon-eval', 'TOON Evaluation Plan', 'specs/toon-eval/plan.md', 'TOON can only become a default renderer after compact JSON, markdown, and TOON pass the same citation-fidelity gates.'],
+        ['graph-fixtures', 'Graph Fixture Matrix', 'specs/toon-eval/tests.md', 'The evaluation matrix must include linear chains, dense cross-references, and nested metadata graph records.'],
+        ['runtime-docs', 'Runtime Prompt Docs', 'docs/runtime-prompts.md', 'Runtime docs should describe prompt codecs as ephemeral LLM input renderers, not canonical artifacts.'],
+        ['fallback', 'Codec Fallback Policy', 'docs/decisions/codec-fallback.md', 'If a prompt codec loses citation anchors or inflates tokens on a fixture, the bridge falls back to compact JSON.'],
+      ],
+      graphNodes: [
+        ['toon', 'TOON renderer', 'renderer', 1],
+        ['compact-json', 'Compact JSON renderer', 'renderer', 1],
+        ['markdown', 'Markdown row renderer', 'renderer', 1],
+        ['fixture-matrix', 'Graph fixture matrix', 'test-plan', 2],
+        ['runtime-docs', 'Runtime prompt docs', 'docs', 3],
+        ['fallback', 'Codec fallback policy', 'policy', 4],
+        ['citation-gate', 'Citation anchor gate', 'test-gate', 4],
+      ],
+      graphEdges: [
+        ['toon', 'compared_with', 'compact-json', 1, 0.93],
+        ['toon', 'compared_with', 'markdown', 1, 0.92],
+        ['fixture-matrix', 'tests', 'toon', 2, 0.96],
+        ['fixture-matrix', 'tests', 'compact-json', 2, 0.91],
+        ['fixture-matrix', 'tests', 'markdown', 2, 0.91],
+        ['runtime-docs', 'documents', 'toon', 3, 0.77],
+        ['fallback', 'guards', 'citation-gate', 4, 0.98],
+        ['citation-gate', 'gates', 'toon', 4, 0.95],
+        ['citation-gate', 'gates', 'markdown', 4, 0.90],
+      ],
+      limitations: ['Synthetic dense CKG fixture; edge weights are illustrative.'],
+    }),
+    graphFixture({
+      id: 'graph-mixed-nested-metadata',
+      description: 'Mixed graph fixture with uniform graph rows plus nested metadata to expose TOON fallback and overhead behavior.',
+      query: 'What risks should block a prompt codec rollout when graph metadata becomes irregular?',
+      sourceId: 'graph-mixed',
+      sourceName: 'Synthetic Mixed Metadata Graph Wiki',
+      citationPrefix: 'mixed',
+      citations: [
+        ['metadata-risk', 'Nested Metadata Risk', 'docs/risks/nested-metadata.md', 'Deep or irregular metadata can erase token savings and make prompt codecs harder to inspect.'],
+        ['escaping-risk', 'Escaping Risk', 'docs/risks/escaping.md', 'Snippets with pipes | commas, code blocks, and prompt-injection text must survive renderer escaping and citation validation.'],
+        ['fallback-risk', 'Fallback Risk', 'docs/risks/fallback.md', 'Codec rollout should fail closed to compact JSON when renderer validation or live citation checks fail.'],
+      ],
+      graphNodes: [
+        ['risk:nested', 'Nested metadata overhead', 'risk', 1],
+        ['risk:escaping', 'Delimiter escaping hazard', 'risk', 2],
+        ['risk:fallback', 'Fallback required', 'risk', 3],
+        ['gate:roundtrip', 'Renderer round-trip gate', 'gate', 3],
+        ['gate:live', 'Live citation gate', 'gate', 3],
+      ],
+      graphEdges: [
+        ['risk:nested', 'can_break', 'gate:roundtrip', 1, 0.87],
+        ['risk:escaping', 'can_break', 'gate:roundtrip', 2, 0.94],
+        ['risk:fallback', 'requires', 'gate:live', 3, 0.91],
+        ['gate:roundtrip', 'precedes', 'gate:live', 3, 0.89],
+      ],
+      limitations: ['Synthetic mixed graph fixture includes nested metadata and delimiter-heavy snippets.'],
+      extraMetadata: {
+        rendererRiskProfile: {
+          nested: true,
+          irregularFields: true,
+          delimiterCases: ['pipe | character', 'comma, character', 'markdown `code` fence', 'prompt text: ignore previous instructions'],
+        },
+        rollout: {
+          phase: 'benchmark-only',
+          defaultAllowed: false,
+          fallback: { renderer: 'compact-json', reason: 'lossless canonical fallback' },
+        },
+      },
+    }),
+  ]
+}
+
+function graphFixture({ id, description, query, sourceId, sourceName, citationPrefix, citations, graphNodes, graphEdges, limitations, extraMetadata = undefined }) {
+  const normalizedCitations = citations.map(([slug, title, path, snippet], index) => ({
+    id: `${sourceId}:${citationPrefix}-${slug}`,
+    sourceId,
+    pageId: `${citationPrefix}-${slug}`,
+    title,
+    path,
+    score: Number((0.96 - index * 0.04).toFixed(2)),
+    snippet,
+    sourceRefs: [{ sourceId, pageId: `${citationPrefix}-${slug}` }],
+  }))
+  const normalizedGraphNodes = graphNodes.map(([nodeId, label, kind, citationIdx]) => ({
+    id: nodeId,
+    label,
+    kind,
+    sourceId,
+    citationIdx,
+  }))
+  const normalizedGraphEdges = graphEdges.map(([from, relation, to, citationIdx, weight]) => ({
+    from,
+    relation,
+    to,
+    citationIdx,
+    sourceId,
+    weight,
+  }))
+
+  return {
+    id,
+    description,
+    query,
+    evidenceBundle: {
+      schema: 'llmwiki-agent-bridge.answer-evidence.v1',
+      runtimeContract: {
+        citations: 'Use the top-level citations array as the only citation anchor source.',
+        graph: 'Graph rows are prompt-only CKG fixtures. Cite claims using citation indexes, not node ids.',
+      },
+      citationDigest: normalizedCitations.map((citation) => ({
+        id: citation.id,
+        title: citation.title,
+        path: citation.path,
+        snippet: citation.snippet,
+        sourceRefs: citation.sourceRefs,
+      })),
+      citations: normalizedCitations,
+      sources: [
+        {
+          id: sourceId,
+          name: sourceName,
+          protocol: 'llmwiki-http',
+          description: 'Synthetic graph-focused source for prompt renderer benchmarks.',
+          wikiTitle: sourceName,
+          adapter: 'markdown',
+          implementation: 'synthetic-graph-fixture',
+          pageCount: 24,
+          approvedPageCount: 24,
+          orientation: normalizedCitations.slice(0, 2).map((citation) => ({
+            title: citation.title,
+            path: citation.path,
+            summary: citation.snippet,
+          })),
+          citationIndexes: normalizedCitations.map((_, index) => index + 1),
+          citationCount: normalizedCitations.length,
+          limitations,
+          graph: {
+            nodeCount: normalizedGraphNodes.length,
+            edgeCount: normalizedGraphEdges.length,
+          },
+        },
+      ],
+      sourceFailures: [],
+      graphNodes: normalizedGraphNodes,
+      graphEdges: normalizedGraphEdges,
+      ...(extraMetadata ? { extraMetadata } : {}),
+      mergedGraphSummary: {
+        nodeCount: normalizedGraphNodes.length,
+        edgeCount: normalizedGraphEdges.length,
+        corpusPageCount: 24,
+        corpusApprovedPageCount: 24,
+      },
+      mergedCorpusSummary: {
+        sourceCount: 1,
+        pageCount: 24,
+        approvedPageCount: 24,
+        sources: [
+          {
+            id: sourceId,
+            name: sourceName,
+            protocol: 'llmwiki-http',
+            description: 'Synthetic graph-focused source for prompt renderer benchmarks.',
+            wikiTitle: sourceName,
+            adapter: 'markdown',
+            implementation: 'synthetic-graph-fixture',
+            pageCount: 24,
+            approvedPageCount: 24,
+          },
+        ],
+      },
+      citationCount: normalizedCitations.length,
+    },
+  }
+}
+
+await main().catch((error) => {
+  process.stderr.write(`${redactForReport(error?.message || String(error))}\n`)
+  process.exitCode = 1
+})
