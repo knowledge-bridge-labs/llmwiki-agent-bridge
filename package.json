@@ -34,6 +34,7 @@
     "bin/llmwiki-agent-bridge.mjs",
     "src/index.mjs",
     "docs",
+    "specs",
     "scripts/export-openapi.mjs",
     "scripts/benchmark-runtime-prompt.mjs",
     "examples",

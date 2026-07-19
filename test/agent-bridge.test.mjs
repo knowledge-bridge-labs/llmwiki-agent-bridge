@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer, request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -3768,6 +3768,109 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(toonComparison.candidate, 'toon')
   })
 
+  it('adds an eval-only Graphify graph fixture to the runtime prompt benchmark', async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), 'llmwiki-agent-bridge-graphify-'))
+    t.after(() => rm(dir, { recursive: true, force: true }))
+    const graphPath = join(dir, 'graph.json')
+    await writeFile(graphPath, JSON.stringify({
+      nodes: [
+        {
+          id: 'graphify-overview',
+          label: 'Graphify Optional Fixture',
+          file_type: 'doc',
+          source_file: 'docs/runtime-prompt-evaluation.md',
+          source_location: 'heading:graphify',
+        },
+        {
+          id: 'primary-metric',
+          label: 'Omission Distortion Metric',
+          source_file: 'docs/runtime-prompt-evaluation.md',
+          source_location: 'heading:metrics',
+        },
+        {
+          label: 'Missing Field Defaults',
+          source_file: join(dir, 'absolute-source.md'),
+          source_location: 'line:99',
+        },
+      ],
+      edges: [
+        {
+          source: 'graphify-overview',
+          target: 'primary-metric',
+          relation: 'defines',
+          context: 'Primary evaluation checks omission and distortion before token saving.',
+          confidence: 0.91,
+          weight: 0.83,
+          source_file: 'docs/runtime-prompt-evaluation.md',
+          source_location: 'line:12',
+        },
+        {
+          source: 'primary-metric',
+          target: 'markdown-summary',
+          context: 'Markdown summary is lossy and must be evaluated separately.',
+          confidence: 'INFERRED',
+          confidence_score: 0.65,
+          source_file: 'docs/runtime-prompt-renderers.md',
+        },
+      ],
+    }), 'utf8')
+
+    const { stdout } = await execFileAsync(process.execPath, [
+      'scripts/benchmark-runtime-prompt.mjs',
+      '--graphify-graph',
+      graphPath,
+      '--graphify-query',
+      'Which Graphify graph evidence should the runtime cite?',
+    ], {
+      cwd: packageRoot,
+      maxBuffer: 1024 * 1024,
+    })
+    const report = JSON.parse(stdout)
+    const graphifyFixture = report.fixtures.find((fixture) => fixture.id === 'graphify-graph')
+
+    assert.equal(report.validation.ok, true)
+    assert.equal(report.totals.fixtureCount, 6)
+    assert(graphifyFixture)
+    assert.equal(graphifyFixture.sourceCount, 1)
+    assert.equal(graphifyFixture.sourceSummaryCount, 1)
+    assert.equal(graphifyFixture.graphNodeCount, 3)
+    assert.equal(graphifyFixture.graphEdgeCount, 2)
+    assert.equal(graphifyFixture.mergedGraphSummary.nodeCount, 3)
+    assert.equal(graphifyFixture.mergedGraphSummary.edgeCount, 2)
+    assert.equal(graphifyFixture.citationCount, 5)
+    assert.equal(graphifyFixture.quality.ok, true)
+    assert.equal(graphifyFixture.quality.metrics.graphNodeCitationCoveragePct, 100)
+    assert.equal(graphifyFixture.quality.metrics.graphEdgeCitationCoveragePct, 100)
+    assert.equal(graphifyFixture.quality.metrics.nonPortableSourcePathCount, 0)
+    assert.deepEqual(Object.keys(graphifyFixture.renderers), ['pretty-json', 'compact-json', 'markdown-summary', 'toon'])
+    for (const renderer of Object.values(graphifyFixture.renderers)) {
+      assert.equal(renderer.validation.ok, true)
+      assert(renderer.evidenceJson.utf8Bytes > 0)
+      assert(renderer.runtimeUserPrompt.utf8Bytes > renderer.evidenceJson.utf8Bytes)
+    }
+    assert.doesNotMatch(JSON.stringify(report), new RegExp(escapeRegExp(dir)))
+  })
+
+  it('rejects Graphify query configuration without a Graphify graph fixture', async () => {
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--graphify-query',
+        'This query has no graph input.',
+      ], {
+        cwd: packageRoot,
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /--graphify-query requires --graphify-graph/)
+  })
+
   it('rejects live runtime prompt benchmark responses without exact citation anchors', async (t) => {
     const runtime = await startFixtureServer(async ({ body, response }) => {
       const userPrompt = body.messages.find((message) => message.role === 'user')?.content || ''
@@ -3777,7 +3880,7 @@ describe('llmwiki-agent-bridge', () => {
           {
             message: {
               content: isMarkdownSummary
-                ? 'Markdown summary output cites the first source exactly [1](#citation-1).'
+                ? 'Markdown summary output cites both required sources exactly [1](#citation-1) [2](#citation-2).'
                 : 'Compact JSON output uses a bare citation [1].',
             },
           },
@@ -3833,7 +3936,7 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(liveFixture.renderers['markdown-summary'].pass, true)
     assert.deepEqual(
       liveFixture.renderers['markdown-summary'].citationAnchorsFound.map((anchor) => anchor.anchor),
-      ['[1](#citation-1)'],
+      ['[1](#citation-1)', '[2](#citation-2)'],
     )
     assert.equal(runtime.requests.length, 2)
   })
@@ -3874,6 +3977,10 @@ function npmPackCommand() {
   return process.platform === 'win32'
     ? { file: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', 'npm.cmd', ...args] }
     : { file: 'npm', args }
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function knowledgeSource(id, name, protocol, url) {

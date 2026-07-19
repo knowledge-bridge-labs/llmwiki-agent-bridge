@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { readFile } from 'node:fs/promises'
+import { basename } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { decode as decodeToon, encode as encodeToon } from '@toon-format/toon'
 
@@ -9,6 +11,7 @@ const DEFAULT_LIVE_RENDERER_IDS = ['compact-json', 'markdown-summary', 'toon']
 const DEFAULT_LIVE_TIMEOUT_MS = 120_000
 const DEFAULT_LIVE_MAX_TOKENS = 384
 const DEFAULT_LIVE_TEMPERATURE = 0.2
+const DEFAULT_GRAPHIFY_QUERY = 'What graph evidence should the runtime cite from the Graphify fixture?'
 const LIVE_ENV = {
   baseUrl: 'LLMWIKI_AGENT_BRIDGE_BASE_URL',
   model: 'LLMWIKI_AGENT_BRIDGE_MODEL',
@@ -56,7 +59,11 @@ async function main() {
     return
   }
 
-  const fixtures = selectFixtures(buildEvidenceBundleFixtures(), args.fixtureIds)
+  const fixtureCandidates = buildEvidenceBundleFixtures()
+  if (args.graphifyGraphPath) {
+    fixtureCandidates.push(await buildGraphifyFixtureFromFile(args.graphifyGraphPath, args.graphifyQuery))
+  }
+  const fixtures = selectFixtures(fixtureCandidates, args.fixtureIds)
   const offlineRenderers = selectRenderers(args.rendererIds.length ? args.rendererIds : DEFAULT_OFFLINE_RENDERER_IDS)
   const report = buildBenchmarkReport(fixtures, offlineRenderers, args)
 
@@ -92,6 +99,9 @@ function parseArgs(argv) {
     temperature: DEFAULT_LIVE_TEMPERATURE,
     timeoutMs: parsePositiveInteger(process.env[LIVE_ENV.timeoutMs], DEFAULT_LIVE_TIMEOUT_MS),
     validate: true,
+    graphifyGraphPath: '',
+    graphifyQuery: DEFAULT_GRAPHIFY_QUERY,
+    graphifyQueryProvided: false,
   }
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -116,6 +126,26 @@ function parseArgs(argv) {
       index += 1
     } else if (arg.startsWith('--renderer=')) {
       args.rendererIds.push(...arg.slice('--renderer='.length).split(',').map((item) => item.trim()).filter(Boolean))
+    } else if (arg === '--graphify-graph') {
+      const value = argv[index + 1]
+      if (!value || value.startsWith('--')) throw new Error('--graphify-graph requires a path to graphify-out/graph.json.')
+      args.graphifyGraphPath = value
+      index += 1
+    } else if (arg.startsWith('--graphify-graph=')) {
+      const value = arg.slice('--graphify-graph='.length)
+      if (!value) throw new Error('--graphify-graph requires a path to graphify-out/graph.json.')
+      args.graphifyGraphPath = value
+    } else if (arg === '--graphify-query') {
+      const value = argv[index + 1]
+      if (!value || value.startsWith('--')) throw new Error('--graphify-query requires a query string.')
+      args.graphifyQuery = value
+      args.graphifyQueryProvided = true
+      index += 1
+    } else if (arg.startsWith('--graphify-query=')) {
+      const value = arg.slice('--graphify-query='.length)
+      if (!value) throw new Error('--graphify-query requires a query string.')
+      args.graphifyQuery = value
+      args.graphifyQueryProvided = true
     } else if (arg === '--timeout-ms') {
       const value = argv[index + 1]
       if (!value) throw new Error('--timeout-ms requires a positive integer.')
@@ -142,12 +172,17 @@ function parseArgs(argv) {
     }
   }
 
+  if (args.graphifyQueryProvided && !args.graphifyGraphPath) {
+    throw new Error('--graphify-query requires --graphify-graph.')
+  }
+  delete args.graphifyQueryProvided
+
   return args
 }
 
 function helpText() {
   return [
-    'Usage: node scripts/benchmark-runtime-prompt.mjs [--fixture single-source,multi-source] [--renderer compact-json,markdown-summary,toon] [--live] [--no-validate]',
+    'Usage: node scripts/benchmark-runtime-prompt.mjs [--fixture single-source,multi-source] [--renderer compact-json,markdown-summary,toon] [--graphify-graph graphify-out/graph.json] [--graphify-query "..."] [--live] [--no-validate]',
     '',
     'Builds local synthetic LLMWiki runtime evidence bundles and compares prompt',
     'renderers. Offline mode is the default and performs no provider, network, or',
@@ -156,6 +191,10 @@ function helpText() {
     '',
     'Renderers:',
     `  ${RENDERERS.map((renderer) => renderer.id).join(', ')}`,
+    '',
+    'Graphify options:',
+    '  --graphify-graph <path>  Add one eval-only fixture from a pre-generated Graphify-like graph.json. This benchmark does not install, import, or call Graphify.',
+    `  --graphify-query <query> Query used for the Graphify fixture. Default: ${DEFAULT_GRAPHIFY_QUERY}`,
     '',
     'Live environment variables:',
     `  ${LIVE_ENV.baseUrl}=https://runtime.example/v1`,
@@ -256,6 +295,7 @@ function benchmarkFixture(fixture, renderers) {
       },
     ]
   }))
+  const quality = evaluateEvidenceBundleQuality(fixture.evidenceBundle)
 
   return {
     id: fixture.id,
@@ -265,6 +305,9 @@ function benchmarkFixture(fixture, renderers) {
     sourceFailureCount: fixture.evidenceBundle.sourceFailures.length,
     sourceSummaryCount: Array.isArray(fixture.evidenceBundle.sourceSummaries)
       ? fixture.evidenceBundle.sourceSummaries.length
+      : 0,
+    graphNodeCount: Array.isArray(fixture.evidenceBundle.graphNodes)
+      ? fixture.evidenceBundle.graphNodes.length
       : 0,
     graphEdgeCount: Array.isArray(fixture.evidenceBundle.graphEdges)
       ? fixture.evidenceBundle.graphEdges.length
@@ -278,6 +321,7 @@ function benchmarkFixture(fixture, renderers) {
       pageCount: fixture.evidenceBundle.mergedCorpusSummary.pageCount,
       approvedPageCount: fixture.evidenceBundle.mergedCorpusSummary.approvedPageCount,
     },
+    quality,
     renderers: rendererReports,
     comparisons: buildComparisons(rendererReports),
   }
@@ -387,6 +431,9 @@ function validateFixtureReports(fixtureReports) {
   const failures = []
 
   for (const fixture of fixtureReports) {
+    if (fixture.quality && !fixture.quality.ok) {
+      failures.push(...fixture.quality.failures.map((failure) => `${fixture.id}: ${failure}`))
+    }
     if (fixture.renderers['pretty-json'] && fixture.renderers['compact-json']) {
       assertCandidateSmaller(failures, fixture, 'compact-json', 'pretty-json', 'evidenceJson')
       assertCandidateSmaller(failures, fixture, 'compact-json', 'pretty-json', 'runtimeUserPrompt')
@@ -407,12 +454,112 @@ function validateFixtureReports(fixtureReports) {
   return {
     ok: failures.length === 0,
     checks: [
+      'evidence quality gates preserve citation/source mappings before renderer size comparisons',
       'compact-json evidenceJson/runtimeUserPrompt utf8Bytes are smaller than pretty-json when both renderers are selected',
       'markdown-summary evidenceJson/runtimeUserPrompt outputs are non-empty when markdown-summary is selected',
       'toon evidenceJson/runtimeUserPrompt outputs are non-empty and losslessly decode when toon is selected',
     ],
     failures,
   }
+}
+
+function evaluateEvidenceBundleQuality(evidenceBundle) {
+  const citations = Array.isArray(evidenceBundle?.citations) ? evidenceBundle.citations : []
+  const citationDigest = Array.isArray(evidenceBundle?.citationDigest) ? evidenceBundle.citationDigest : []
+  const graphNodes = Array.isArray(evidenceBundle?.graphNodes) ? evidenceBundle.graphNodes : []
+  const graphEdges = Array.isArray(evidenceBundle?.graphEdges) ? evidenceBundle.graphEdges : []
+  const citationIds = new Set(citations.map((citation) => citation.id).filter(Boolean))
+  const failures = []
+  const missingDigestCitationIds = citationDigest
+    .map((citation) => citation.id)
+    .filter((id) => id && !citationIds.has(id))
+
+  if (missingDigestCitationIds.length) {
+    failures.push(`citationDigest ids must exist in citations: ${missingDigestCitationIds.slice(0, 5).join(', ')}`)
+  }
+
+  const graphNodeCitationCoverage = citationReferenceCoverage(graphNodes, citations.length)
+  const graphEdgeCitationCoverage = citationReferenceCoverage(graphEdges, citations.length)
+  if (graphNodeCitationCoverage.missingCount) {
+    failures.push(`graphNodes must have valid citation indexes (${graphNodeCitationCoverage.missingCount} missing or invalid)`)
+  }
+  if (graphEdgeCitationCoverage.missingCount) {
+    failures.push(`graphEdges must have valid citation indexes (${graphEdgeCitationCoverage.missingCount} missing or invalid)`)
+  }
+
+  const nonPortableSourcePaths = evidenceSourcePaths(evidenceBundle).filter((sourcePath) => !isPortableSourcePath(sourcePath))
+  if (nonPortableSourcePaths.length) {
+    failures.push(`evidence source paths must be portable (${nonPortableSourcePaths.length} non-portable path-like values)`)
+  }
+
+  return {
+    ok: failures.length === 0,
+    rubric: {
+      primaryGoal: 'minimize omission and distortion before token savings',
+      requiredGates: [
+        'citationDigest entries map to top-level citations',
+        'graph nodes and edges carry valid citation indexes when graph evidence is present',
+        'source paths in benchmark evidence are portable and must not expose local roots',
+        'lossy renderers remain explicit candidates, not default production contracts',
+      ],
+    },
+    metrics: {
+      citationCount: citations.length,
+      citationDigestCount: citationDigest.length,
+      missingDigestCitationIdCount: missingDigestCitationIds.length,
+      graphNodeCount: graphNodes.length,
+      graphEdgeCount: graphEdges.length,
+      graphNodeCitationCoveragePct: graphNodeCitationCoverage.coveragePct,
+      graphEdgeCitationCoveragePct: graphEdgeCitationCoverage.coveragePct,
+      nonPortableSourcePathCount: nonPortableSourcePaths.length,
+    },
+    failures,
+  }
+}
+
+function citationReferenceCoverage(items, citationCount) {
+  if (!items.length) return { totalCount: 0, coveredCount: 0, missingCount: 0, coveragePct: 100 }
+  let coveredCount = 0
+  for (const item of items) {
+    const citationIndex = Number(item?.citationIndex ?? item?.citationIdx)
+    if (Number.isInteger(citationIndex) && citationIndex >= 1 && citationIndex <= citationCount) {
+      coveredCount += 1
+    }
+  }
+  const missingCount = items.length - coveredCount
+  return {
+    totalCount: items.length,
+    coveredCount,
+    missingCount,
+    coveragePct: Number(((coveredCount / items.length) * 100).toFixed(2)),
+  }
+}
+
+function evidenceSourcePaths(evidenceBundle) {
+  const values = []
+  for (const citation of Array.isArray(evidenceBundle?.citations) ? evidenceBundle.citations : []) {
+    values.push(citation.path, citation.sourceFile)
+  }
+  for (const citation of Array.isArray(evidenceBundle?.citationDigest) ? evidenceBundle.citationDigest : []) {
+    values.push(citation.path, citation.sourceFile)
+  }
+  for (const node of Array.isArray(evidenceBundle?.graphNodes) ? evidenceBundle.graphNodes : []) {
+    values.push(node.sourceFile, node.path)
+  }
+  for (const edge of Array.isArray(evidenceBundle?.graphEdges) ? evidenceBundle.graphEdges : []) {
+    values.push(edge.sourceFile, edge.path)
+  }
+  return values.filter((value) => typeof value === 'string' && value.trim())
+}
+
+function isPortableSourcePath(value) {
+  const text = value.replace(/\\/g, '/').trim()
+  if (!text) return true
+  if (/^[a-zA-Z]:\//.test(text)) return false
+  if (text.startsWith('/') || text.startsWith('//') || text.startsWith('~')) return false
+  if (text.split('/').includes('..')) return false
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return false
+  return true
 }
 
 function assertCandidateSmaller(failures, fixture, candidateId, baselineId, section) {
@@ -541,7 +688,7 @@ function renderEvidenceBundleAsMarkdown(evidenceBundle) {
       ? [
         '## Graph edges',
         markdownTable(
-          ['from', 'relation', 'to', 'citationIdx', 'sourceId', 'weight'],
+          ['from', 'relation', 'to', 'citationIdx', 'sourceId', 'weight', 'confidence', 'context'],
           evidenceBundle.graphEdges.map((edge) => [
             edge.from,
             edge.relation,
@@ -549,6 +696,8 @@ function renderEvidenceBundleAsMarkdown(evidenceBundle) {
             edge.citationIndex ?? edge.citationIdx ?? '',
             edge.sourceId ?? '',
             edge.weight ?? '',
+            edge.confidence ?? edge.confidenceScore ?? '',
+            edge.context ?? '',
           ]),
         ),
         '',
@@ -789,7 +938,7 @@ async function evaluateLiveRenderer({ args, config, fixture, renderer }) {
       outputTextLength: Array.from(outputText).length,
       citationAnchorsFound: citationAnchors.found,
       requiredCitationAnchors: citationAnchors.coverage,
-      pass: citationAnchors.coverage.coveredCount > 0 && citationAnchors.invalidCount === 0,
+      pass: citationAnchors.coverage.coveredCount === citationAnchors.coverage.requiredCount && citationAnchors.invalidCount === 0,
       invalidCitationAnchorCount: citationAnchors.invalidCount,
       allRequiredCitationAnchorsCovered: citationAnchors.coverage.coveredCount === citationAnchors.coverage.requiredCount,
       usage: summarizeUsage(response.payload?.usage),
@@ -969,16 +1118,16 @@ function validateLiveFixtureReports(fixtureReports) {
       if (!result.pass) {
         const reason = result.invalidCitationAnchorCount > 0
           ? `invalid exact citation anchors: ${result.invalidCitationAnchorCount}`
-          : 'no valid exact citation anchor'
+          : `required citation anchors missing: ${result.requiredCitationAnchors.missing.join(', ') || 'unknown'}`
         failures.push(
-          `${fixture.id}/${rendererId}: live response must complete, include at least one exact [n](#citation-n) anchor, and include no invalid exact anchors (${reason})`,
+          `${fixture.id}/${rendererId}: live response must complete, cover every required exact [n](#citation-n) anchor, and include no invalid exact anchors (${reason})`,
         )
       }
     }
   }
   return {
     ok: failures.length === 0,
-    checks: ['every live renderer response completes, includes at least one exact [n](#citation-n) anchor, and includes no invalid exact anchors'],
+    checks: ['every live renderer response completes, covers every required exact [n](#citation-n) anchor, and includes no invalid exact anchors'],
     failures,
   }
 }
@@ -1059,6 +1208,334 @@ function mergeValidation(offlineValidation, liveValidation) {
     ],
     failures,
   }
+}
+
+async function buildGraphifyFixtureFromFile(graphPath, query) {
+  let text
+  try {
+    text = await readFile(graphPath, 'utf8')
+  } catch (error) {
+    const reason = error?.code || 'read failed'
+    throw new Error(`--graphify-graph could not be read (${basename(graphPath) || 'graph.json'}): ${reason}`)
+  }
+
+  let graph
+  try {
+    graph = JSON.parse(text)
+  } catch {
+    throw new Error('--graphify-graph must point to a JSON file with a top-level { nodes, edges } object.')
+  }
+
+  if (!graph || typeof graph !== 'object' || Array.isArray(graph)) {
+    throw new Error('--graphify-graph must contain a top-level object.')
+  }
+
+  return buildGraphifyFixture(graph, query, graphPath)
+}
+
+function buildGraphifyFixture(graph, query, graphPath) {
+  const sourceId = 'graphify-graph'
+  const citationIndexer = createGraphifyCitationIndexer(sourceId)
+  const rawNodes = Array.isArray(graph.nodes) ? graph.nodes : []
+  const rawEdges = Array.isArray(graph.edges) ? graph.edges : []
+  const graphNodes = rawNodes.map((node, index) => normalizeGraphifyNode({
+    node,
+    index,
+    sourceId,
+    citationIndexer,
+  }))
+  const graphEdges = rawEdges.map((edge, index) => normalizeGraphifyEdge({
+    edge,
+    index,
+    sourceId,
+    citationIndexer,
+  }))
+  const citations = citationIndexer.citations
+  const pageCount = new Set(citations.map((citation) => citation.path)).size
+  const sourceName = 'Graphify Graph Fixture'
+  const sourceDescription = 'Eval-only fixture generated from an existing Graphify-like graph.json. The benchmark does not install, import, or call Graphify.'
+  const limitations = [
+    'Graphify is optional and eval-only here; this fixture is loaded from a pre-generated graph.json file.',
+    'markdown-summary is a lossy projection; use citation/graph omission and distortion as the primary evaluation metric, not token saving.',
+    'This benchmark fixture does not change the runtime public API or OpenAPI contract.',
+  ]
+  const sourceDescriptor = {
+    id: sourceId,
+    name: sourceName,
+    protocol: 'graphify-json',
+    description: sourceDescription,
+    wikiTitle: sourceName,
+    adapter: 'graphify-json',
+    implementation: 'precomputed-graphify-graph',
+    pageCount,
+    approvedPageCount: pageCount,
+    orientation: citations.slice(0, 5).map((citation) => ({
+      title: citation.title,
+      path: citation.path,
+      summary: citation.snippet,
+    })),
+    citationIndexes: citations.map((_, index) => index + 1),
+    citationCount: citations.length,
+    limitations,
+    graph: {
+      nodeCount: graphNodes.length,
+      edgeCount: graphEdges.length,
+    },
+  }
+
+  return {
+    id: sourceId,
+    description: `Optional eval-only Graphify/CKG-like fixture built from pre-generated ${basename(graphPath) || 'graph.json'}.`,
+    query,
+    evidenceBundle: {
+      schema: 'llmwiki-agent-bridge.answer-evidence.v1',
+      runtimeContract: {
+        citations: 'Use the top-level citations array as the only citation anchor source.',
+        graph: 'Graphify graph rows are optional eval-only prompt benchmark fixtures. Cite claims using citation indexes, not node ids.',
+      },
+      citationDigest: citations.map((citation) => ({
+        id: citation.id,
+        title: citation.title,
+        path: citation.path,
+        sourceLocation: citation.sourceLocation,
+        snippet: citation.snippet,
+        sourceRefs: citation.sourceRefs,
+      })),
+      citations,
+      sources: [sourceDescriptor],
+      sourceSummaries: [
+        {
+          id: sourceId,
+          protocol: sourceDescriptor.protocol,
+          pageCount,
+          approvedPageCount: pageCount,
+          citationCount: citations.length,
+          graphNodeCount: graphNodes.length,
+          graphEdgeCount: graphEdges.length,
+          note: 'Eval-only Graphify graph fixture; inspect omission/distortion before token savings.',
+        },
+      ],
+      sourceFailures: [],
+      graphNodes,
+      graphEdges,
+      mergedGraphSummary: {
+        nodeCount: graphNodes.length,
+        edgeCount: graphEdges.length,
+        corpusPageCount: pageCount,
+        corpusApprovedPageCount: pageCount,
+      },
+      mergedCorpusSummary: {
+        sourceCount: 1,
+        pageCount,
+        approvedPageCount: pageCount,
+        sources: [
+          {
+            id: sourceDescriptor.id,
+            name: sourceDescriptor.name,
+            protocol: sourceDescriptor.protocol,
+            description: sourceDescriptor.description,
+            wikiTitle: sourceDescriptor.wikiTitle,
+            adapter: sourceDescriptor.adapter,
+            implementation: sourceDescriptor.implementation,
+            pageCount,
+            approvedPageCount: pageCount,
+          },
+        ],
+      },
+      citationCount: citations.length,
+    },
+  }
+}
+
+function normalizeGraphifyNode({ node, index, sourceId, citationIndexer }) {
+  const rawNode = objectOrEmpty(node)
+  const id = graphifyString(rawNode.id) || `node-${index + 1}`
+  const label = graphifyString(rawNode.label) || id
+  const kind = graphifyString(rawNode.file_type) || 'graph-node'
+  const fallbackSourceFile = `graphify/generated-node-${index + 1}`
+  const fallbackSourceLocation = `node:${id}`
+  const rawSourceFile = graphifyString(rawNode.source_file)
+  const rawSourceLocation = graphifyString(rawNode.source_location)
+  const sourceFile = safeGraphifySourcePath(rawSourceFile, fallbackSourceFile)
+  const sourceLocation = graphifyString(rawSourceLocation) || fallbackSourceLocation
+  const citationIdx = citationIndexer.citationIndexFor({
+    rawSourceFile: rawSourceFile || fallbackSourceFile,
+    rawSourceLocation: rawSourceLocation || fallbackSourceLocation,
+    sourceFile,
+    sourceLocation,
+    title: label,
+    score: 0.84,
+    snippet: `${label} (${kind}) appears as a Graphify graph node from ${sourceFile} at ${sourceLocation}.`,
+  })
+
+  return {
+    id,
+    label,
+    kind,
+    fileType: kind,
+    sourceId,
+    sourceFile,
+    sourceLocation,
+    citationIdx,
+  }
+}
+
+function normalizeGraphifyEdge({ edge, index, sourceId, citationIndexer }) {
+  const rawEdge = objectOrEmpty(edge)
+  const from = graphifyString(rawEdge.source) || graphifyString(rawEdge.from) || `edge-${index + 1}:source`
+  const to = graphifyString(rawEdge.target) || graphifyString(rawEdge.to) || `edge-${index + 1}:target`
+  const relation = graphifyString(rawEdge.relation) || 'related_to'
+  const fallbackSourceFile = `graphify/generated-edge-${index + 1}`
+  const fallbackSourceLocation = `edge:${from}:${relation}:${to}`
+  const rawSourceFile = graphifyString(rawEdge.source_file)
+  const rawSourceLocation = graphifyString(rawEdge.source_location)
+  const sourceFile = safeGraphifySourcePath(rawSourceFile, fallbackSourceFile)
+  const sourceLocation = graphifyString(rawSourceLocation) || fallbackSourceLocation
+  const context = graphifyString(rawEdge.context) || `${from} ${relation} ${to}.`
+  const confidenceLabel = graphifyString(rawEdge.confidence) || 'EXTRACTED'
+  const confidenceScore = graphifyConfidenceScore(rawEdge)
+  const weight = graphifyNumber(rawEdge.weight, confidenceScore)
+  const citationIdx = citationIndexer.citationIndexFor({
+    rawSourceFile: rawSourceFile || fallbackSourceFile,
+    rawSourceLocation: rawSourceLocation || fallbackSourceLocation,
+    sourceFile,
+    sourceLocation,
+    title: `${from} ${relation} ${to}`,
+    score: graphifyScore(confidenceScore),
+    snippet: context,
+  })
+
+  return {
+    from,
+    relation,
+    to,
+    context,
+    confidence: confidenceLabel,
+    confidenceScore,
+    sourceId,
+    sourceFile,
+    sourceLocation,
+    citationIdx,
+    weight,
+  }
+}
+
+function createGraphifyCitationIndexer(sourceId) {
+  const citations = []
+  const citationIndexByKey = new Map()
+  return {
+    citations,
+    citationIndexFor({ rawSourceFile, rawSourceLocation, sourceFile, sourceLocation, title, score, snippet }) {
+      const citationKey = `${rawSourceFile}\u0000${rawSourceLocation}`
+      const existingIndex = citationIndexByKey.get(citationKey)
+      if (existingIndex) return existingIndex
+
+      const pageId = `graphify-${safeSlug(sourceFile, 'source')}-${stableHash(citationKey)}`
+      const citation = {
+        id: `${sourceId}:${pageId}`,
+        sourceId,
+        pageId,
+        title: title || sourceFile,
+        path: sourceFile,
+        sourceLocation,
+        score: graphifyScore(score),
+        snippet: snippet || `${sourceFile} at ${sourceLocation}`,
+        sourceRefs: [{ sourceId, pageId }],
+      }
+      citations.push(citation)
+      citationIndexByKey.set(citationKey, citations.length)
+      return citations.length
+    },
+  }
+}
+
+function objectOrEmpty(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+}
+
+function graphifyString(value) {
+  if (value === undefined || value === null) return ''
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return ''
+  }
+}
+
+function graphifyNumber(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback
+  const number = Number(value)
+  return Number.isFinite(number) ? number : fallback
+}
+
+function graphifyScore(value) {
+  const number = graphifyNumber(value, 0.8)
+  return Number(Math.max(0, Math.min(1, number)).toFixed(4))
+}
+
+function graphifyConfidenceScore(edge) {
+  const rawEdge = objectOrEmpty(edge)
+  const directScore = graphifyNumber(rawEdge.confidence_score, null)
+  if (directScore !== null) return graphifyScore(directScore)
+  const numericConfidence = graphifyNumber(rawEdge.confidence, null)
+  if (numericConfidence !== null) return graphifyScore(numericConfidence)
+  const confidenceLabel = graphifyString(rawEdge.confidence).toUpperCase()
+  if (confidenceLabel === 'EXTRACTED') return 1
+  if (confidenceLabel === 'INFERRED') return 0.75
+  if (confidenceLabel === 'AMBIGUOUS') return 0.2
+  return 0.8
+}
+
+function safeGraphifySourcePath(rawSourceFile, fallbackPath) {
+  const text = graphifyString(rawSourceFile)
+  if (!text) return fallbackPath
+
+  const normalized = text.replace(/\\/g, '/').trim()
+  if (!normalized) return fallbackPath
+
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(normalized)) {
+    try {
+      const url = new URL(normalized)
+      return `graphify/${basename(url.pathname) || 'source'}`
+    } catch {
+      return 'graphify/source'
+    }
+  }
+
+  const parts = normalized.split('/').filter((part) => part && part !== '.')
+  if (!parts.length) return fallbackPath
+  if (looksAbsoluteOrParentPath(normalized, parts)) {
+    return `graphify/${basename(normalized) || 'source'}`
+  }
+  return parts.join('/')
+}
+
+function looksAbsoluteOrParentPath(normalizedPath, parts) {
+  return /^[a-zA-Z]:\//.test(normalizedPath)
+    || normalizedPath.startsWith('/')
+    || normalizedPath.startsWith('//')
+    || normalizedPath.startsWith('~')
+    || parts.includes('..')
+}
+
+function safeSlug(value, fallback) {
+  const slug = String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 72)
+  return slug || fallback
+}
+
+function stableHash(value) {
+  let hash = 2166136261
+  for (const char of String(value)) {
+    hash ^= char.codePointAt(0)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
 }
 
 function buildEvidenceBundleFixtures() {

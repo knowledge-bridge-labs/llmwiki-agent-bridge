@@ -1,6 +1,9 @@
 # Third-Party Notices
 
-`llmwiki-agent-bridge` currently has no runtime npm dependencies.
+`llmwiki-agent-bridge` currently uses these runtime npm dependencies:
+
+- `@a2a-js/sdk` for A2A agent-card compatibility checks and client utilities.
+- `@toon-format/toon` for eval-only TOON prompt renderer benchmarks.
 
 The package runs on Node.js and uses Node.js built-in modules such as `node:http`, `node:crypto`, `node:test`, and Web Platform APIs available in supported Node.js versions.
 
