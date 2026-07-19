@@ -24,6 +24,27 @@ quality gates pass.
 Fixtures may set an answer oracle to `report-only` while a new oracle is being
 calibrated. Production-quality fixture gates should remain strict.
 
+Expected citation mappings are calibrated independently from the rest of the
+answer oracle. Fixtures may set `answerOracle.expectedCitationMappingsGate` to
+`report-only`, or set an individual mapping `gate: "report-only"`, to keep
+diagnostics in the report without making `run.pass` false or emitting live
+`failureCodes`/`failureBuckets`. Fixture-level report-only dominates: an
+individual mapping cannot opt back into strict mode with `gate: "strict"` or
+`reportOnly: false`. Per-mapping gates may only downgrade a strict fixture to
+report-only. If omitted, expected citation mappings are strict even when the
+broader answer oracle is report-only.
+
+Each mapping supports `require: "any" | "all"` over
+`expectedCitationIds`/`citationIndexes`; the default is `any` to preserve the
+Loop 5 behavior where one matching target satisfied a multi-target mapping.
+`all` requires every resolved unique citation index in the same claim window.
+Unknown `expectedCitationIds` and out-of-range citation indexes are reported as
+target-resolution failures with `expected_citation_target_unresolved`, not as
+wrong-nearby-citation mismatches. The current Loop 6 repeated-claim behavior
+checks every occurrence and passes a mapping if any occurrence satisfies the
+target condition; stricter "every occurrence must satisfy" semantics remain a
+future hardening option.
+
 ## Scored Loop Rubric
 
 Each development loop reports a scored rubric. Required gates are still
@@ -146,3 +167,23 @@ These metrics can evolve as fixtures improve:
 - Retrospective: this remains a deterministic local gate, not an LLM judge.
   It improves attribution for renderer comparisons without recording private
   endpoint, model, key, or raw live response details in repository docs.
+
+### Loop 6: Expected citation mapping semantics
+
+- Research/analysis: Loop 5 mappings were useful but too coarse. Multi-target
+  mappings needed explicit `any`/`all` semantics, citation-id resolution needed
+  report-visible unresolved target details, and repeated claims could fail
+  incorrectly when the first occurrence was uncited.
+- TDD target: deterministic local tests cover missing expected claims, unknown
+  citation ids/out-of-range indexes, report-only mappings that do not affect
+  strict pass/failure codes, fixture-level report-only dominance over strict
+  per-mapping overrides, `any`/`all` pass and failure behavior, and repeated
+  claim occurrences where a later occurrence is correctly cited.
+- Quality gates added: independent expected-citation-mapping gate selection,
+  per-mapping `require`, unresolved target metrics/details, distinct
+  `expected_citation_target_unresolved` failure code, and all-occurrence
+  scanning with current pass-if-any-occurrence semantics.
+- Retrospective: Loop 6 keeps the minimal pass-if-any repeated-claim behavior
+  requested for this implementation. A future stricter mode can require every
+  occurrence to satisfy the mapping once fixtures are calibrated for repeated
+  introductory/restated claims.

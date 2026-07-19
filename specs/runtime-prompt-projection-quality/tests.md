@@ -22,6 +22,20 @@
   configured claim windows.
 - Expected citation mappings can use `expectedCitationIds` and resolve them to
   current citation indexes for exact-anchor checks.
+- Expected citation mappings default to `require: "any"` and support
+  `require: "all"` for multi-target mappings.
+- Incomplete `require: "all"` mappings fail strict validation, while complete
+  `all` and compatible `any` mappings pass.
+- Unknown `expectedCitationIds` and invalid citation indexes are reported as
+  unresolved target details with `expected_citation_target_unresolved`.
+- Per-mapping report-only failures remain visible in
+  `expectedCitationMappings` but do not make strict runs fail or emit live
+  failure buckets/codes.
+- Fixture-level report-only expected citation mapping gates dominate
+  per-mapping `gate: "strict"` or `reportOnly: false` settings and do not emit
+  strict failure buckets/codes.
+- Repeated claim phrases are all evaluated, and current Loop 6 behavior passes
+  when any occurrence satisfies the expected citation target condition.
 - Live renderer and totals reports include
   `averageExpectedCitationMappingCoveragePct`.
 
@@ -29,7 +43,7 @@
 
 ```sh
 npm run bench:runtime-prompt
-npm test -- --test-name-pattern "Graphify graph fixture|exact citation anchors|answer oracle|repeated live|finish reason|inferred live runtime truncation|citation stuffing"
+npm test -- --test-name-pattern "Graphify graph fixture|exact citation anchors|answer oracle|repeated live|finish reason|inferred live runtime truncation|citation stuffing|expected citation mapping"
 node --check scripts/benchmark-runtime-prompt.mjs
 node --check test/agent-bridge.test.mjs
 npm run check

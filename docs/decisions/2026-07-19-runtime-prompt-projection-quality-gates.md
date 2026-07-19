@@ -37,8 +37,17 @@ should remain optional evaluation input rather than a runtime dependency.
   - live runtime smoke must classify failed runs with stable `failureCodes`
     while retaining human-readable failure buckets for continuity.
   - strict fixtures may define `answerOracle.expectedCitationMappings` with a
-    claim, `windowChars`, and either `expectedCitationIds` or `citationIndex`;
-    configured claims must cite the expected anchor close to the claim.
+    claim, `windowChars`, `require: "any" | "all"`, and either
+    `expectedCitationIds` or `citationIndex`; configured claims must cite the
+    expected anchor close to the claim.
+  - expected citation mapping gates are independent from the broader answer
+    oracle gate: `answerOracle.expectedCitationMappingsGate` or per-mapping
+    `gate: "report-only"` records diagnostics without affecting strict live
+    pass/failure-code classification, and fixture-level report-only cannot be
+    upgraded by per-mapping `gate: "strict"` or `reportOnly: false`.
+  - unresolved citation-id/index targets use the distinct
+    `expected_citation_target_unresolved` failure code instead of
+    `expected_citation_mismatch`.
 - Keep Graphify support eval-only by reading a pre-generated `graph.json`.
 - Do not install, import, execute, or depend on Graphify from the Node package.
 - Keep lossy renderers, including markdown summary projections, explicit and
@@ -64,6 +73,12 @@ should remain optional evaluation input rather than a runtime dependency.
 - Citation-ID-based expected mappings let fixture authors avoid hard-coding
   fragile citation positions while preserving exact anchor checks in rendered
   answers.
+- Multi-target mappings default to `require: "any"` for Loop 5 compatibility;
+  `require: "all"` is opt-in when every target must appear in the same claim
+  window.
+- Repeated claim handling currently scans every occurrence and passes if any
+  occurrence satisfies the mapping. This avoids first-occurrence false
+  failures, but it is intentionally weaker than a future every-occurrence gate.
 - The first real-runtime calibration smoke failed all strict runs, so current
   renderer readiness is blocked by answer-quality and evaluation-attribution
   gaps rather than by token-size comparison.
@@ -76,6 +91,9 @@ should remain optional evaluation input rather than a runtime dependency.
   renderer-specific variance before changing defaults.
 - Calibrate claim-citation window sizes with private-data-safe live smokes
   before treating live pass rates as renderer rankings.
+- Consider an opt-in every-occurrence expected citation mapping mode after
+  fixture authors distinguish introductory repeated claims from repeated
+  supported claims.
 - Consider model-specific tokenizer counts when tokenizer access is available.
 
 ## Links

@@ -10,6 +10,11 @@ import { promisify } from 'node:util'
 
 import { DefaultAgentCardResolver } from '@a2a-js/sdk/client'
 
+import {
+  classifyLiveRunFailureBuckets,
+  classifyLiveRunFailureCodes,
+  evaluateExpectedCitationMappings,
+} from '../scripts/benchmark-runtime-prompt.mjs'
 import { agentBridgeOpenApi, startAgentBridge, startHermesA2aBridge } from '../src/index.mjs'
 
 const execFileAsync = promisify(execFile)
@@ -4494,6 +4499,214 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(rendererTotals.failureCodeCounts.expected_citation_mismatch, 1)
   })
 
+  it('reports missing expected claims for expected citation mappings', () => {
+    const report = evaluateExpectedCitationMappings(
+      'An unrelated answer still cites a valid source [1](#citation-1).',
+      [
+        {
+          claim: 'Mapped claim that is absent',
+          expectedCitationIds: ['fixture:alpha'],
+          windowChars: 40,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+    )
+
+    assert.equal(report.ok, false)
+    assert.equal(report.metrics.expectedMappingCount, 1)
+    assert.equal(report.metrics.missingClaimCount, 1)
+    assert.equal(report.metrics.strictMissingClaimCount, 1)
+    assert.match(report.failures[0], /expected claim missing/)
+    assert.equal(report.mappingResults[0].occurrenceCount, 0)
+  })
+
+  it('exposes unknown expectedCitationId and invalid citation index details', () => {
+    const report = evaluateExpectedCitationMappings(
+      'Known mapped claim [1](#citation-1).',
+      [
+        {
+          claim: 'Known mapped claim',
+          expectedCitationIds: ['fixture:missing'],
+          citationIndexes: [99],
+          windowChars: 40,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+    )
+
+    assert.equal(report.ok, false)
+    assert.equal(report.metrics.expectedCitationMismatchCount, 0)
+    assert.equal(report.metrics.targetResolutionFailureCount, 1)
+    assert.equal(report.metrics.strictTargetResolutionFailureCount, 1)
+    assert.equal(report.metrics.unresolvedExpectedCitationIdCount, 1)
+    assert.equal(report.metrics.invalidExpectedCitationIndexCount, 1)
+    assert.deepEqual(report.targetResolutionFailures[0].unresolvedCitationIds, ['fixture:missing'])
+    assert.deepEqual(report.targetResolutionFailures[0].invalidCitationIndexes, ['99'])
+    assert.equal(report.mappingResults[0].failureCode, 'expected_citation_target_unresolved')
+    assert.deepEqual(classifyLiveRunFailureBuckets({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), ['expected-citation-target-unresolved'])
+    assert.deepEqual(classifyLiveRunFailureCodes({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), ['expected_citation_target_unresolved'])
+    assert.match(report.failures[0], /unknown citation id fixture:missing/)
+    assert.match(report.failures[0], /invalid citation index 99/)
+  })
+
+  it('keeps report-only expected citation mappings from failing strict pass', () => {
+    const report = evaluateExpectedCitationMappings(
+      'Report-only mapped claim appears without a nearby citation anchor.',
+      [
+        {
+          claim: 'Report-only mapped claim',
+          expectedCitationIds: ['fixture:alpha'],
+          gate: 'report-only',
+          windowChars: 30,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+      'strict',
+    )
+
+    assert.equal(report.gate, 'strict')
+    assert.equal(report.ok, true)
+    assert.deepEqual(report.failures, [])
+    assert.equal(report.metrics.strictFailureCount, 0)
+    assert.equal(report.metrics.reportOnlyFailureCount, 1)
+    assert.equal(report.metrics.proximityFailureCount, 1)
+    assert.equal(report.metrics.strictProximityFailureCount, 0)
+    assert.deepEqual(classifyLiveRunFailureBuckets({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), [])
+    assert.deepEqual(classifyLiveRunFailureCodes({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), [])
+    assert.match(report.reportOnlyFailures[0], /not within 30 chars/)
+    assert.equal(report.mappingResults[0].gate, 'report-only')
+  })
+
+  it('keeps fixture-level report-only expected citation mappings report-only despite strict mapping overrides', () => {
+    const report = evaluateExpectedCitationMappings(
+      [
+        'Fixture report-only mapped claim appears without a nearby citation anchor.',
+        'Second fixture report-only mapped claim also appears without nearby support.',
+      ].join(' '),
+      [
+        {
+          claim: 'Fixture report-only mapped claim',
+          expectedCitationIds: ['fixture:alpha'],
+          gate: 'strict',
+          windowChars: 30,
+        },
+        {
+          claim: 'Second fixture report-only mapped claim',
+          citationIndex: 2,
+          reportOnly: false,
+          windowChars: 30,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+      'report-only',
+    )
+
+    assert.equal(report.gate, 'report-only')
+    assert.equal(report.ok, true)
+    assert.deepEqual(report.failures, [])
+    assert.equal(report.metrics.strictMappingCount, 0)
+    assert.equal(report.metrics.reportOnlyMappingCount, 2)
+    assert.equal(report.metrics.strictFailureCount, 0)
+    assert.equal(report.metrics.reportOnlyFailureCount, 2)
+    assert.equal(report.metrics.proximityFailureCount, 2)
+    assert.equal(report.metrics.strictProximityFailureCount, 0)
+    assert.deepEqual(report.mappingResults.map((mapping) => mapping.gate), ['report-only', 'report-only'])
+    assert.deepEqual(classifyLiveRunFailureBuckets({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), [])
+    assert.deepEqual(classifyLiveRunFailureCodes({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), [])
+  })
+
+  it('supports any and all require semantics for expected citation mappings', () => {
+    const partialReport = evaluateExpectedCitationMappings(
+      'Combined mapped claim [1](#citation-1).',
+      [
+        {
+          claim: 'Combined mapped claim',
+          expectedCitationIds: ['fixture:alpha', 'fixture:beta'],
+          require: 'any',
+          windowChars: 30,
+        },
+        {
+          claim: 'Combined mapped claim',
+          expectedCitationIds: ['fixture:alpha', 'fixture:beta'],
+          require: 'all',
+          windowChars: 30,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+    )
+
+    assert.equal(partialReport.ok, false)
+    assert.equal(partialReport.metrics.satisfiedMappingCount, 1)
+    assert.equal(partialReport.metrics.expectedCitationMismatchCount, 1)
+    assert.equal(partialReport.mappingResults[0].require, 'any')
+    assert.equal(partialReport.mappingResults[0].satisfied, true)
+    assert.deepEqual(partialReport.mappingResults[0].satisfiedOccurrence.matchedCitationIndexes, [1])
+    assert.equal(partialReport.mappingResults[1].require, 'all')
+    assert.equal(partialReport.mappingResults[1].satisfied, false)
+    assert.deepEqual(partialReport.mappingResults[1].occurrences[0].missingCitationIndexes, [2])
+    assert.match(partialReport.failures[0], /require=all/)
+
+    const allReport = evaluateExpectedCitationMappings(
+      'Combined mapped claim [1](#citation-1) [2](#citation-2).',
+      [
+        {
+          claim: 'Combined mapped claim',
+          expectedCitationIds: ['fixture:alpha', 'fixture:beta'],
+          require: 'all',
+          windowChars: 30,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+    )
+
+    assert.equal(allReport.ok, true)
+    assert.equal(allReport.metrics.satisfiedMappingCount, 1)
+    assert.deepEqual(allReport.mappingResults[0].satisfiedOccurrence.matchedCitationIndexes, [1, 2])
+  })
+
+  it('passes expected citation mappings when a later repeated claim occurrence is cited', () => {
+    const report = evaluateExpectedCitationMappings(
+      [
+        'Repeated mapped claim is initially uncited.',
+        'x'.repeat(140),
+        'Repeated mapped claim is supported here [2](#citation-2).',
+      ].join(' '),
+      [
+        {
+          claim: 'Repeated mapped claim',
+          expectedCitationIds: ['fixture:beta'],
+          windowChars: 35,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+    )
+
+    assert.equal(report.ok, true)
+    assert.equal(report.metrics.satisfiedMappingCount, 1)
+    assert.equal(report.mappingResults[0].occurrenceCount, 2)
+    assert.equal(report.mappingResults[0].occurrences[0].satisfied, false)
+    assert.equal(report.mappingResults[0].occurrences[1].satisfied, true)
+    assert.deepEqual(report.mappingResults[0].satisfiedOccurrence.matchedCitationIndexes, [2])
+  })
+
   it('dry packs the npm tarball with expected files', async () => {
     const npm = npmPackCommand()
     const { stdout } = await execFileAsync(npm.file, npm.args, {
@@ -4562,6 +4775,17 @@ function citationEvidence(count) {
     path: `page-${index + 1}.md`,
     snippet: `Fallback citation evidence ${index + 1}.`,
   }))
+}
+
+function expectedCitationMappingEvidenceBundle() {
+  return {
+    citationCount: 3,
+    citations: [
+      { id: 'fixture:alpha', title: 'Alpha Evidence' },
+      { id: 'fixture:beta', title: 'Beta Evidence' },
+      { id: 'fixture:gamma', title: 'Gamma Evidence' },
+    ],
+  }
 }
 
 function expectedFallbackAnswer(answer, citationCount) {

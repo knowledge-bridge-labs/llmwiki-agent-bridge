@@ -18,6 +18,15 @@
 9. Add expected citation mapping checks:
    - support `citationIndex` and `expectedCitationIds`;
    - resolve ids to current top-level citation indexes;
+   - default multi-target mappings to `require: "any"` and support opt-in
+     `require: "all"`;
+   - keep expected citation mapping report-only gates independent from the
+     broader answer-oracle gate, with fixture-level report-only dominating
+     per-mapping strict settings;
+   - report unknown ids/invalid indexes as unresolved targets with
+     `expected_citation_target_unresolved`;
+   - evaluate every claim occurrence while preserving Loop 6 pass-if-any
+     occurrence behavior;
    - require expected anchors near configured claims in strict runs;
    - report `averageExpectedCitationMappingCoveragePct`.
 10. Verify targeted deterministic local mock tests, `node --check`, and

@@ -16,3 +16,6 @@
       `completion_tokens >= max_tokens`.
 - [x] Aggregate `finishReasonCounts`, `truncatedCount`, `failureCodeCounts`,
       legacy `failureBucketCounts`, and expected citation mapping coverage.
+- [x] Strengthen expected citation mappings with independent report-only
+      gates, fixture-level report-only dominance, default-any/opt-in-all target
+      semantics, unresolved target reporting, and all-occurrence claim scanning.

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { readFile } from 'node:fs/promises'
-import { basename } from 'node:path'
+import { basename, resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
+import { pathToFileURL } from 'node:url'
 import { decode as decodeToon, encode as encodeToon } from '@toon-format/toon'
 
 const TOKEN_ESTIMATE_DESCRIPTION = 'rough estimate only: ceil(utf8Bytes / 4); not a model tokenizer'
@@ -956,6 +957,7 @@ async function evaluateLiveRenderer({ args, config, fixture, renderer }) {
 
 async function evaluateLiveRendererRun({ args, config, fixture, runtimeUserPrompt, runIndex }) {
   const started = performance.now()
+  const citationMappingGate = expectedCitationMappingsGate(fixture.answerOracle)
   try {
     const response = await callChatCompletions({
       config,
@@ -978,7 +980,12 @@ async function evaluateLiveRendererRun({ args, config, fixture, runtimeUserPromp
         outputTextLength: 0,
         citationAnchorsFound: [],
         requiredCitationAnchors: citationCoverage([], fixture.evidenceBundle.citationCount),
-        expectedCitationMappings: evaluateExpectedCitationMappings('', fixture.answerOracle?.expectedCitationMappings, fixture.evidenceBundle),
+        expectedCitationMappings: evaluateExpectedCitationMappings(
+          '',
+          fixture.answerOracle?.expectedCitationMappings,
+          fixture.evidenceBundle,
+          citationMappingGate,
+        ),
         pass: false,
         allRequiredCitationAnchorsCovered: false,
         error: response.error,
@@ -996,7 +1003,7 @@ async function evaluateLiveRendererRun({ args, config, fixture, runtimeUserPromp
       outputText,
       fixture.answerOracle?.expectedCitationMappings,
       fixture.evidenceBundle,
-      answerOracle.gate,
+      citationMappingGate,
       citationAnchors.found,
     )
 
@@ -1035,7 +1042,12 @@ async function evaluateLiveRendererRun({ args, config, fixture, runtimeUserPromp
       outputTextLength: 0,
       citationAnchorsFound: [],
       requiredCitationAnchors: citationCoverage([], fixture.evidenceBundle.citationCount),
-      expectedCitationMappings: evaluateExpectedCitationMappings('', fixture.answerOracle?.expectedCitationMappings, fixture.evidenceBundle),
+      expectedCitationMappings: evaluateExpectedCitationMappings(
+        '',
+        fixture.answerOracle?.expectedCitationMappings,
+        fixture.evidenceBundle,
+        citationMappingGate,
+      ),
       pass: false,
       allRequiredCitationAnchorsCovered: false,
       error: redactForReport(error?.message || String(error), config),
@@ -1112,13 +1124,17 @@ function classifyLiveRunFailureBuckets(result) {
     if (metrics.distortionCount > 0) buckets.push('answer-oracle-distortion')
   }
   if (result.status === 'ok' && result.expectedCitationMappings?.enabled && !result.expectedCitationMappings.ok) {
-    if (result.expectedCitationMappings.metrics?.missingClaimCount > 0) {
+    const metrics = result.expectedCitationMappings.metrics || {}
+    if (strictExpectedCitationMappingMetric(metrics, 'targetResolutionFailureCount') > 0) {
+      buckets.push('expected-citation-target-unresolved')
+    }
+    if (strictExpectedCitationMappingMetric(metrics, 'missingClaimCount') > 0) {
       buckets.push('expected-claim-missing')
     }
-    if (result.expectedCitationMappings.metrics?.expectedCitationMismatchCount > 0) {
+    if (strictExpectedCitationMappingMetric(metrics, 'expectedCitationMismatchCount') > 0) {
       buckets.push('expected-citation-mismatch')
     }
-    if (result.expectedCitationMappings.metrics?.proximityFailureCount > 0) {
+    if (strictExpectedCitationMappingMetric(metrics, 'proximityFailureCount') > 0) {
       buckets.push('citation-proximity')
     }
   }
@@ -1144,11 +1160,19 @@ function classifyLiveRunFailureCodes(result) {
   }
   if (result.status === 'ok' && result.expectedCitationMappings?.enabled && !result.expectedCitationMappings.ok) {
     const metrics = result.expectedCitationMappings.metrics || {}
-    if (metrics.missingClaimCount > 0) codes.push('expected_claim_missing')
-    if (metrics.expectedCitationMismatchCount > 0) codes.push('expected_citation_mismatch')
-    if (metrics.proximityFailureCount > 0) codes.push('claim_citation_proximity_failed')
+    if (strictExpectedCitationMappingMetric(metrics, 'targetResolutionFailureCount') > 0) {
+      codes.push('expected_citation_target_unresolved')
+    }
+    if (strictExpectedCitationMappingMetric(metrics, 'missingClaimCount') > 0) codes.push('expected_claim_missing')
+    if (strictExpectedCitationMappingMetric(metrics, 'expectedCitationMismatchCount') > 0) codes.push('expected_citation_mismatch')
+    if (strictExpectedCitationMappingMetric(metrics, 'proximityFailureCount') > 0) codes.push('claim_citation_proximity_failed')
   }
   return codes
+}
+
+function strictExpectedCitationMappingMetric(metrics, name) {
+  const strictName = `strict${name[0].toUpperCase()}${name.slice(1)}`
+  return Number.isFinite(metrics[strictName]) ? metrics[strictName] : (metrics[name] || 0)
 }
 
 function chooseRepresentativeLiveRun(runs) {
@@ -1404,6 +1428,11 @@ function citationCoverage(coveredIndexes, citationCount) {
   }
 }
 
+function expectedCitationMappingsGate(oracle = null) {
+  const explicitGate = String(oracle?.expectedCitationMappingsGate || oracle?.citationMappingsGate || '').trim().toLowerCase()
+  return explicitGate === 'report-only' ? 'report-only' : 'strict'
+}
+
 function evaluateExpectedCitationMappings(text, mappings = null, evidenceBundleOrCitationCount = 0, gate = 'strict', citationAnchors = null) {
   const expectedMappings = Array.isArray(mappings) ? mappings.filter(Boolean) : []
   const mappingGate = gate === 'report-only' ? 'report-only' : 'strict'
@@ -1430,69 +1459,173 @@ function evaluateExpectedCitationMappings(text, mappings = null, evidenceBundleO
   const proximityFailures = []
   const expectedCitationMismatches = []
   const satisfiedMappings = []
+  const reportOnlyFailures = []
+  const mappingResults = []
+  const targetResolutionFailures = []
+  const strictMetrics = {
+    missingClaimCount: 0,
+    expectedCitationMismatchCount: 0,
+    proximityFailureCount: 0,
+    targetResolutionFailureCount: 0,
+  }
+  let strictMappingCount = 0
+  let reportOnlyMappingCount = 0
 
   for (const mapping of expectedMappings) {
     const claim = mapping?.claim
     const windowChars = Number.isInteger(mapping?.windowChars) && mapping.windowChars > 0
       ? mapping.windowChars
       : 180
+    const require = expectedCitationMappingRequirement(mapping)
+    const effectiveGate = expectedCitationMappingGate(mapping, mappingGate)
     const resolved = resolveExpectedCitationMapping(mapping, context)
-    const claimRange = findFirstOraclePhraseRange(text, claim)
-    const label = formatExpectedCitationMapping(mapping, resolved)
+    const claimRanges = findOraclePhraseRanges(text, claim)
+    const label = formatExpectedCitationMapping(mapping, resolved, require)
+    const mappingResult = {
+      mapping: label,
+      claim: formatOracleItem(claim),
+      gate: effectiveGate,
+      require,
+      windowChars,
+      expectedCitationIds: resolved.expectedCitationIds,
+      expectedCitationIndexes: resolved.expectedCitationIndexes,
+      resolvedCitationIndexes: resolved.citationIndexes,
+      resolvedTargets: resolved.targets,
+      unresolvedCitationIds: resolved.unresolvedCitationIds,
+      invalidCitationIndexes: resolved.invalidCitationIndexes,
+      invalidTargets: resolved.invalidTargets,
+      occurrenceCount: claimRanges.length,
+      satisfied: false,
+    }
+
+    if (effectiveGate === 'report-only') reportOnlyMappingCount += 1
+    else strictMappingCount += 1
 
     if (resolved.invalidTargets.length) {
-      failures.push(`expected citation mismatch: ${label} (${resolved.invalidTargets.join('; ')})`)
-      expectedCitationMismatches.push(label)
+      const failure = `expected citation target unresolved: ${label} (${resolved.invalidTargets.join('; ')})`
+      recordExpectedCitationMappingFailure({
+        failure,
+        category: 'targetResolutionFailureCount',
+        effectiveGate,
+        failures,
+        reportOnlyFailures,
+        strictMetrics,
+      })
+      const resolutionFailure = {
+        mapping: label,
+        gate: effectiveGate,
+        require,
+        expectedCitationIds: resolved.expectedCitationIds,
+        expectedCitationIndexes: resolved.expectedCitationIndexes,
+        unresolvedCitationIds: resolved.unresolvedCitationIds,
+        invalidCitationIndexes: resolved.invalidCitationIndexes,
+        invalidTargets: resolved.invalidTargets,
+      }
+      targetResolutionFailures.push(resolutionFailure)
+      mappingResult.failure = failure
+      mappingResult.failureCode = 'expected_citation_target_unresolved'
+      mappingResults.push(mappingResult)
       continue
     }
-    if (!claimRange) {
-      failures.push(`expected claim missing: ${label}`)
+    if (!claimRanges.length) {
+      const failure = `expected claim missing: ${label}`
+      recordExpectedCitationMappingFailure({
+        failure,
+        category: 'missingClaimCount',
+        effectiveGate,
+        failures,
+        reportOnlyFailures,
+        strictMetrics,
+      })
       missingClaims.push(label)
+      mappingResult.failure = failure
+      mappingResult.failureCode = 'claim_missing'
+      mappingResults.push(mappingResult)
       continue
     }
 
-    const windowStart = Math.max(0, claimRange.start - windowChars)
-    const windowEnd = Math.min(text.length, claimRange.end + windowChars)
-    const expectedIndexes = new Set(resolved.citationIndexes)
-    const nearbyAnchors = validAnchorOffsets.filter((anchor) => (
-      anchor.end >= windowStart && anchor.start <= windowEnd
-    ))
-    const matchedAnchors = nearbyAnchors.filter((anchor) => expectedIndexes.has(anchor.index))
+    const occurrenceEvaluation = evaluateExpectedCitationMappingOccurrences({
+      text,
+      claimRanges,
+      validAnchorOffsets,
+      expectedCitationIndexes: resolved.citationIndexes,
+      require,
+      windowChars,
+    })
+    mappingResult.occurrences = occurrenceEvaluation.occurrences
 
-    if (!matchedAnchors.length) {
-      if (nearbyAnchors.length) {
-        failures.push(
-          `expected citation ${formatExpectedCitationTargets(resolved)} did not match nearby citation anchors (${formatNearbyCitationAnchors(nearbyAnchors)}) for claim: ${label}`,
-        )
+    if (!occurrenceEvaluation.satisfied) {
+      if (occurrenceEvaluation.nearbyAnchors.length) {
+        const failure = `expected citation ${formatExpectedCitationTargets(resolved, require)} did not satisfy require=${require} near any claim occurrence; nearby citation anchors included ${formatNearbyCitationAnchors(occurrenceEvaluation.nearbyAnchors)} for claim: ${label}`
+        recordExpectedCitationMappingFailure({
+          failure,
+          category: 'expectedCitationMismatchCount',
+          effectiveGate,
+          failures,
+          reportOnlyFailures,
+          strictMetrics,
+        })
         expectedCitationMismatches.push(label)
       } else {
-        failures.push(`expected citation ${formatExpectedCitationTargets(resolved)} not within ${windowChars} chars of claim: ${label}`)
+        const failure = `expected citation ${formatExpectedCitationTargets(resolved, require)} not within ${windowChars} chars of any claim occurrence: ${label}`
+        recordExpectedCitationMappingFailure({
+          failure,
+          category: 'proximityFailureCount',
+          effectiveGate,
+          failures,
+          reportOnlyFailures,
+          strictMetrics,
+        })
         proximityFailures.push(label)
       }
+      mappingResult.failure = (effectiveGate === 'report-only' ? reportOnlyFailures : failures).at(-1)
+      mappingResult.failureCode = occurrenceEvaluation.nearbyAnchors.length
+        ? 'expected_citation_mismatch'
+        : 'citation_proximity_failed'
+      mappingResults.push(mappingResult)
       continue
     }
 
+    mappingResult.satisfied = true
+    mappingResult.satisfiedOccurrence = occurrenceEvaluation.satisfiedOccurrence
     satisfiedMappings.push(label)
+    mappingResults.push(mappingResult)
   }
 
+  const strictFailureCount = failures.length
+  const reportOnlyFailureCount = reportOnlyFailures.length
   return {
     enabled: true,
     gate: mappingGate,
-    ok: failures.length === 0,
+    ok: strictFailureCount === 0,
     metrics: {
       expectedMappingCount: expectedMappings.length,
+      strictMappingCount,
+      reportOnlyMappingCount,
       satisfiedMappingCount: satisfiedMappings.length,
       coveragePct: percentage(satisfiedMappings.length, expectedMappings.length),
       missingClaimCount: missingClaims.length,
       expectedCitationMismatchCount: expectedCitationMismatches.length,
       proximityFailureCount: proximityFailures.length,
       missingCitationWithinWindowCount: proximityFailures.length,
+      targetResolutionFailureCount: targetResolutionFailures.length,
+      unresolvedExpectedCitationIdCount: sumNumbers(targetResolutionFailures.map((failure) => failure.unresolvedCitationIds.length)),
+      invalidExpectedCitationIndexCount: sumNumbers(targetResolutionFailures.map((failure) => failure.invalidCitationIndexes.length)),
+      strictFailureCount,
+      reportOnlyFailureCount,
+      strictMissingClaimCount: strictMetrics.missingClaimCount,
+      strictExpectedCitationMismatchCount: strictMetrics.expectedCitationMismatchCount,
+      strictProximityFailureCount: strictMetrics.proximityFailureCount,
+      strictTargetResolutionFailureCount: strictMetrics.targetResolutionFailureCount,
     },
     missingClaims,
     expectedCitationMismatches,
     missingCitationWithinWindow: proximityFailures,
+    targetResolutionFailures,
+    mappingResults,
     satisfiedMappings,
     failures,
+    reportOnlyFailures,
   }
 }
 
@@ -1528,7 +1661,9 @@ function resolveExpectedCitationMapping(mapping, context) {
   const targets = []
   const invalidTargets = []
   const citationIds = expectedCitationIds(mapping)
-  const citationIndexes = expectedCitationIndexes(mapping)
+  const citationIndexValues = expectedCitationIndexValues(mapping)
+  const unresolvedCitationIds = []
+  const invalidCitationIndexes = []
 
   for (const citationId of citationIds) {
     const normalizedCitationId = String(citationId || '').trim()
@@ -1537,15 +1672,19 @@ function resolveExpectedCitationMapping(mapping, context) {
     if (Number.isInteger(resolvedIndex)) {
       targets.push({ id: normalizedCitationId, index: resolvedIndex })
     } else {
+      unresolvedCitationIds.push(normalizedCitationId)
       invalidTargets.push(`unknown citation id ${normalizedCitationId}`)
     }
   }
 
-  for (const citationIndex of citationIndexes) {
+  for (const citationIndexValue of citationIndexValues) {
+    const citationIndex = Number(citationIndexValue)
     if (Number.isInteger(citationIndex) && citationIndex >= 1 && citationIndex <= context.citationCount) {
       targets.push({ index: citationIndex })
     } else {
-      invalidTargets.push(`invalid citation index ${citationIndex}`)
+      const invalidCitationIndex = String(citationIndexValue)
+      invalidCitationIndexes.push(invalidCitationIndex)
+      invalidTargets.push(`invalid citation index ${invalidCitationIndex}`)
     }
   }
 
@@ -1556,7 +1695,11 @@ function resolveExpectedCitationMapping(mapping, context) {
 
   return {
     targets,
+    expectedCitationIds: citationIds,
+    expectedCitationIndexes: citationIndexValues.map((value) => Number(value)),
     citationIndexes: resolvedCitationIndexes,
+    unresolvedCitationIds,
+    invalidCitationIndexes,
     invalidTargets,
   }
 }
@@ -1570,26 +1713,120 @@ function expectedCitationIds(mapping) {
   ].filter((value) => typeof value === 'string' && value.trim())
 }
 
-function expectedCitationIndexes(mapping) {
+function expectedCitationIndexValues(mapping) {
   if (!mapping || typeof mapping !== 'object') return []
   return [
     ...(Array.isArray(mapping.citationIndexes) ? mapping.citationIndexes : []),
     mapping.citationIndex ?? mapping.citation,
   ]
     .filter((value) => value !== undefined && value !== null && value !== '')
-    .map((value) => Number(value))
 }
 
-function findFirstOraclePhraseRange(text, item) {
+function expectedCitationMappingRequirement(mapping) {
+  return String(mapping?.require ?? mapping?.expectedCitationMode ?? '').trim().toLowerCase() === 'all' ? 'all' : 'any'
+}
+
+function expectedCitationMappingGate(mapping, defaultGate) {
+  const normalizedDefaultGate = defaultGate === 'report-only' ? 'report-only' : 'strict'
+  if (normalizedDefaultGate === 'report-only') return 'report-only'
+  if (!mapping || typeof mapping !== 'object') return normalizedDefaultGate
+  if (mapping.reportOnly === true) return 'report-only'
+  if (mapping.reportOnly === false) return 'strict'
+  const explicitGate = String(mapping.gate || '').trim().toLowerCase()
+  if (explicitGate === 'report-only') return 'report-only'
+  if (explicitGate === 'strict') return 'strict'
+  return normalizedDefaultGate
+}
+
+function recordExpectedCitationMappingFailure({
+  failure,
+  category,
+  effectiveGate,
+  failures,
+  reportOnlyFailures,
+  strictMetrics,
+}) {
+  if (effectiveGate === 'report-only') {
+    reportOnlyFailures.push(failure)
+    return
+  }
+
+  failures.push(failure)
+  strictMetrics[category] += 1
+}
+
+function evaluateExpectedCitationMappingOccurrences({
+  text,
+  claimRanges,
+  validAnchorOffsets,
+  expectedCitationIndexes,
+  require,
+  windowChars,
+}) {
+  const expectedIndexes = [...new Set(expectedCitationIndexes)]
+  const occurrences = claimRanges.map((claimRange) => {
+    const windowStart = Math.max(0, claimRange.start - windowChars)
+    const windowEnd = Math.min(String(text || '').length, claimRange.end + windowChars)
+    const nearbyAnchors = validAnchorOffsets.filter((anchor) => (
+      anchor.end >= windowStart && anchor.start <= windowEnd
+    ))
+    const matchedCitationIndexes = [...new Set(
+      nearbyAnchors
+        .filter((anchor) => expectedIndexes.includes(anchor.index))
+        .map((anchor) => anchor.index),
+    )]
+    const missingCitationIndexes = expectedIndexes.filter((index) => !matchedCitationIndexes.includes(index))
+    const satisfied = require === 'all'
+      ? missingCitationIndexes.length === 0
+      : matchedCitationIndexes.length > 0
+
+    return {
+      start: claimRange.start,
+      end: claimRange.end,
+      phrase: claimRange.phrase,
+      windowStart,
+      windowEnd,
+      nearbyCitationIndexes: [...new Set(nearbyAnchors.map((anchor) => anchor.index))],
+      matchedCitationIndexes,
+      missingCitationIndexes,
+      satisfied,
+    }
+  })
+  const satisfiedOccurrence = occurrences.find((occurrence) => occurrence.satisfied) || null
+  const nearbyAnchors = validAnchorOffsets.filter((anchor) => (
+    occurrences.some((occurrence) => anchor.end >= occurrence.windowStart && anchor.start <= occurrence.windowEnd)
+  ))
+
+  return {
+    occurrences,
+    satisfied: Boolean(satisfiedOccurrence),
+    satisfiedOccurrence,
+    nearbyAnchors,
+  }
+}
+
+function findOraclePhraseRanges(text, item) {
   const candidates = oraclePhraseCandidates(item)
   const lowerText = String(text || '').toLowerCase()
+  const ranges = []
+  const seen = new Set()
   for (const candidate of candidates) {
     const phrase = String(candidate || '').trim().toLowerCase()
     if (!phrase) continue
-    const start = lowerText.indexOf(phrase)
-    if (start >= 0) return { start, end: start + phrase.length, phrase: candidate }
+    let searchStart = 0
+    while (searchStart <= lowerText.length) {
+      const start = lowerText.indexOf(phrase, searchStart)
+      if (start < 0) break
+      const end = start + phrase.length
+      const key = `${start}:${end}`
+      if (!seen.has(key)) {
+        ranges.push({ start, end, phrase: candidate })
+        seen.add(key)
+      }
+      searchStart = start + Math.max(phrase.length, 1)
+    }
   }
-  return null
+  return ranges.sort((left, right) => left.start - right.start || left.end - right.end)
 }
 
 function oraclePhraseCandidates(item) {
@@ -1597,18 +1834,19 @@ function oraclePhraseCandidates(item) {
   return [item]
 }
 
-function formatExpectedCitationMapping(mapping, resolved = null) {
+function formatExpectedCitationMapping(mapping, resolved = null, require = 'any') {
   if (!mapping || typeof mapping !== 'object') return String(mapping)
-  return `${formatOracleItem(mapping.claim)} -> ${formatExpectedCitationTargets(resolved)}`
+  return `${formatOracleItem(mapping.claim)} -> ${formatExpectedCitationTargets(resolved, require)}`
 }
 
-function formatExpectedCitationTargets(resolved) {
+function formatExpectedCitationTargets(resolved, require = 'any') {
   if (!resolved || typeof resolved !== 'object') return 'invalid-citation'
   const labels = resolved.targets.map((target) => {
     const anchor = citationAnchor(target.index) || 'invalid-citation'
     return target.id ? `${target.id} (${anchor})` : anchor
   })
-  return labels.length ? labels.join(' or ') : 'invalid-citation'
+  const separator = require === 'all' ? ' and ' : ' or '
+  return labels.length ? labels.join(separator) : 'invalid-citation'
 }
 
 function formatNearbyCitationAnchors(anchors) {
@@ -2788,7 +3026,21 @@ function graphFixture({ id, description, query, sourceId, sourceName, citationPr
   }
 }
 
-await main().catch((error) => {
-  process.stderr.write(`${redactForReport(error?.message || String(error))}\n`)
-  process.exitCode = 1
-})
+function isCliEntrypoint() {
+  return Boolean(process.argv[1])
+    && import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+}
+
+if (isCliEntrypoint()) {
+  await main().catch((error) => {
+    process.stderr.write(`${redactForReport(error?.message || String(error))}\n`)
+    process.exitCode = 1
+  })
+}
+
+export {
+  analyzeCitationAnchors,
+  classifyLiveRunFailureBuckets,
+  classifyLiveRunFailureCodes,
+  evaluateExpectedCitationMappings,
+}

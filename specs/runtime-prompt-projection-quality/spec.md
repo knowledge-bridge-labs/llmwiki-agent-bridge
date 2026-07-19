@@ -51,8 +51,23 @@ quality gates.
 - `REQ-010`: Live evaluation aggregates `finishReasonCounts`,
   `truncatedCount`, `failureCodeCounts`, and legacy `failureBucketCounts`.
 - `REQ-011`: Fixture answer oracles can define
-  `expectedCitationMappings` using `claim`, `windowChars`, and either
-  `citationIndex` or citation-position-independent `expectedCitationIds`.
+  `expectedCitationMappings` using `claim`, `windowChars`,
+  `require: "any" | "all"`, and either `citationIndex` or
+  citation-position-independent `expectedCitationIds`; omitted `require`
+  defaults to `any`.
 - `REQ-012`: Strict live runs fail when an expected claim is missing, the
   configured citation id/index cannot resolve, a wrong citation is near the
   claim, or the expected citation anchor is outside the claim window.
+- `REQ-013`: Expected citation mapping gates are independent from
+  `answerOracle.gate`; fixture-level or per-mapping report-only mappings keep
+  diagnostics in `expectedCitationMappings` without making strict `run.pass`
+  false or adding live failure buckets/codes. Fixture-level report-only
+  dominates per-mapping strict settings; per-mapping gates may downgrade a
+  strict fixture to report-only but cannot upgrade a report-only fixture to
+  strict.
+- `REQ-014`: Unknown `expectedCitationIds` and invalid citation indexes are
+  reported with unresolved target metrics/details and the strict failure code
+  `expected_citation_target_unresolved`.
+- `REQ-015`: Expected citation mappings evaluate every occurrence of the claim
+  phrase and currently pass when any occurrence satisfies the configured
+  citation target condition.
