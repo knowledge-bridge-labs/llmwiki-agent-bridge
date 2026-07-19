@@ -114,3 +114,17 @@
       runtime but does not appear in serialized live reports;
     - keep changes additive and preserve strict answer-oracle, expected
       citation mapping, occurrence, and citation-anchor checks.
+20. Loop 14 benchmark-only strict claim checklist:
+    - add mock runtime request inspection proving live user prompts for
+      `graph-strict-evidence-fidelity` include a clearly labeled
+      benchmark-only checklist with exact expected claim phrases and resolved
+      exact markdown citation anchors;
+    - derive checklist entries from effective strict
+      `answerOracle.expectedCitationMappings`, including strict/required gate
+      status, target requirement semantics, occurrence intent, and
+      nearby/window citation intent;
+    - omit the checklist for fixtures without effective strict expected
+      citation mappings;
+    - keep answer oracle, expected citation mapping, repeated-occurrence,
+      unsupported/contradictory, distortion, and citation-anchor validation
+      unchanged, and keep reports private-data-safe.

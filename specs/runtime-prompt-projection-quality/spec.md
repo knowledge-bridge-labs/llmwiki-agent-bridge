@@ -153,3 +153,15 @@ quality gates.
   coverage, finish reason, truncation, and `outputTextLength`; it must not
   include raw `outputText`, private endpoints, configured model names, keys,
   temp paths, or local absolute paths.
+- `REQ-030`: Live benchmark user prompts include a clearly labeled
+  benchmark-only strict claim checklist when the fixture has effective strict
+  `answerOracle.expectedCitationMappings`. The checklist is derived from those
+  mappings and includes exact configured claim phrases, resolved exact
+  markdown citation anchors such as `[1](#citation-1)`, strict/required gate
+  status, target requirement semantics, occurrence intent including
+  every-occurrence mappings, and nearby/window citation intent. Fixtures
+  without effective strict expected citation mappings omit the checklist or
+  keep it harmless. This prompt aid must not weaken strict answer-oracle,
+  expected-citation, repeated-occurrence, distortion, unsupported,
+  contradictory, or citation-anchor validation, and reports must remain free of
+  raw model output and private runtime/local values.

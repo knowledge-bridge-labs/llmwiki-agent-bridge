@@ -339,13 +339,74 @@ function benchmarkFixture(fixture, renderers) {
   }
 }
 
-function renderRuntimeUserPrompt(query, renderedEvidenceBundle) {
-  return [
+function renderRuntimeUserPrompt(query, renderedEvidenceBundle, { benchmarkChecklist = '' } = {}) {
+  const sections = [
     '# User question',
     query,
     '',
+  ]
+
+  if (benchmarkChecklist) {
+    sections.push(benchmarkChecklist, '')
+  }
+
+  sections.push(
     '# LLMWiki evidence bundle',
     renderedEvidenceBundle,
+  )
+
+  return sections.join('\n')
+}
+
+function renderLiveRuntimeUserPrompt(fixture, renderedEvidenceBundle) {
+  return renderRuntimeUserPrompt(fixture.query, renderedEvidenceBundle, {
+    benchmarkChecklist: renderStrictClaimChecklist(fixture),
+  })
+}
+
+function renderStrictClaimChecklist(fixture) {
+  const oracle = fixture?.answerOracle
+  const mappings = Array.isArray(oracle?.expectedCitationMappings)
+    ? oracle.expectedCitationMappings.filter(Boolean)
+    : []
+  if (!mappings.length) return ''
+
+  const defaultGate = expectedCitationMappingsGate(oracle)
+  const context = expectedCitationMappingContext(fixture?.evidenceBundle)
+  const checklistItems = []
+
+  for (const mapping of mappings) {
+    const effectiveGate = expectedCitationMappingGate(mapping, defaultGate)
+    if (effectiveGate !== 'strict') continue
+
+    const claim = formatOracleItem(mapping?.claim)
+    if (!claim) continue
+
+    const resolved = resolveExpectedCitationMapping(mapping, context)
+    const anchors = resolved.citationIndexes.map(citationAnchor).filter(Boolean)
+    const require = expectedCitationMappingRequirement(mapping)
+    const occurrenceMode = expectedCitationMappingOccurrenceMode(mapping)
+    const windowChars = Number.isInteger(mapping?.windowChars) && mapping.windowChars > 0
+      ? mapping.windowChars
+      : 180
+
+    checklistItems.push([
+      `- Expected claim phrase: "${claim}"`,
+      `  - Expected citation anchor(s): ${anchors.length ? anchors.join(', ') : 'unresolved expected citation target'}`,
+      '  - Mapping gate: strict (required for live pass)',
+      `  - Target requirement: ${require === 'all' ? 'all expected anchors' : 'any expected anchor'}`,
+      `  - Occurrence intent: ${occurrenceMode === 'every' ? 'every occurrence' : 'any occurrence'}`,
+      `  - Nearby/window intent: expected anchor(s) within ${windowChars} chars of each claim occurrence`,
+    ].join('\n'))
+  }
+
+  if (!checklistItems.length) return ''
+
+  return [
+    '# Benchmark-only strict claim checklist',
+    'This checklist is generated only for live benchmark strict expected citation mappings. Use it to preserve exact fixture claim phrases and exact citation anchors near evidence-supported claims; it is not a production bridge prompt contract and it is not raw model output.',
+    '',
+    ...checklistItems,
   ].join('\n')
 }
 
@@ -922,7 +983,7 @@ function stringEnv(name) {
 
 async function evaluateLiveRenderer({ args, config, fixture, renderer }) {
   const renderedEvidenceBundle = renderer.renderEvidenceBundle(fixture.evidenceBundle)
-  const runtimeUserPrompt = renderRuntimeUserPrompt(fixture.query, renderedEvidenceBundle)
+  const runtimeUserPrompt = renderLiveRuntimeUserPrompt(fixture, renderedEvidenceBundle)
   const prompt = measureText(runtimeUserPrompt)
   const runs = []
 

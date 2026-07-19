@@ -81,3 +81,13 @@
 - [x] Add Loop 13 serialized live-report privacy coverage proving a synthetic
       configured runtime model name is used in the mock request but omitted
       from the report.
+- [x] Add Loop 14 mock runtime request inspection proving
+      `graph-strict-evidence-fidelity` live user prompts include a
+      benchmark-only strict claim checklist with exact claim phrases, resolved
+      exact markdown anchors, strict/required gate status, occurrence intent,
+      and nearby/window citation intent.
+- [x] Add Loop 14 coverage proving fixtures without effective strict expected
+      citation mappings omit the strict claim checklist.
+- [x] Implement Loop 14 live-only strict claim checklist rendering without
+      weakening answer-oracle, expected-citation, repeated-occurrence,
+      distortion, unsupported/contradictory, or citation-anchor checks.

@@ -15,6 +15,7 @@ quality gates pass.
 | Portable evidence | Benchmark evidence paths do not expose local roots, parent paths, URLs, or private endpoints | 0 non-portable paths |
 | Runtime citation exactness | Live responses cover every required exact `[n](#citation-n)` anchor and no invalid exact anchors | Required for live smoke pass |
 | Live benchmark prompt contract | Runtime messages preserve configured claim phrases and graph relation phrases, keep relation verbs readable, cite exact anchors near supported claims, cite every repeated occurrence when required, and avoid evidence-free claims | Required for strict live benchmark isolation |
+| Benchmark-only strict claim checklist | Live user prompts list effective strict expected claim phrases with resolved exact markdown anchors, strict/required gate status, occurrence intent, and nearby/window intent | Required when a live fixture defines strict `expectedCitationMappings`; omitted for fixtures without strict mappings |
 | Runtime completion | Live responses report `finishReason`, `truncation`, and aggregate truncation counts | `finish_reason=length` and inferred max-token exhaustion fail strict runs |
 | Lossy renderer isolation | Lossy projections are labeled and cannot silently become the production contract | Must be explicit candidate/eval-only |
 | Reproducibility | Offline benchmark does not call provider/runtime/network | Required |
@@ -88,6 +89,15 @@ failures.
 Unknown `expectedCitationIds` and out-of-range citation indexes are reported as
 target-resolution failures with `expected_citation_target_unresolved`, not as
 wrong-nearby-citation mismatches.
+For live benchmark runs, effective strict expected citation mappings also feed
+a benchmark-only checklist in the runtime user prompt. The checklist names the
+exact configured claim phrase, the resolved exact markdown anchor or anchors,
+the strict/required gate status, `require` target semantics, occurrence intent
+including `occurrenceMode: "every"`, and the configured nearby/window intent.
+This is a prompt aid for strict fixture isolation only; it does not change
+production bridge prompting and does not relax answer-oracle, expected-citation
+mapping, repeated-occurrence, distortion, unsupported, contradictory, or
+citation-anchor gates.
 Live renderer and totals aggregates also roll these occurrence fields up as
 totals plus `occurrenceCoveragePct` and
 `averageExpectedCitationOccurrenceCoveragePct`, so renderer comparison can
@@ -458,3 +468,40 @@ These metrics can evolve as fixtures improve:
 - Retrospective: this closes the non-blocking privacy/test-hardening gap while
   preserving strict answer-oracle, expected citation mapping, occurrence, and
   citation-anchor checks.
+
+### Loop 14: Benchmark-only strict claim checklist
+
+- Research/analysis: the strict prompt contract told runtimes to preserve
+  configured claims, but live strict fixtures still required the model to infer
+  which exact expected phrases and anchors the deterministic oracle would
+  validate. A benchmark-only checklist can isolate prompt-following behavior
+  without weakening the oracle.
+- TDD target: mock runtime request inspection proves
+  `graph-strict-evidence-fidelity` live user prompts include the exact
+  promotion-gate claim phrase, resolved exact markdown anchors, strict/required
+  gate status, target requirement semantics, every-occurrence repeated-citation
+  intent, and nearby/window citation intent. A no-mapping fixture omits the
+  checklist.
+- Quality gates added: live user prompts now include a clearly labeled
+  benchmark-only strict claim checklist derived from effective strict
+  `answerOracle.expectedCitationMappings`. Reports still contain prompt
+  measurements and safe diagnostics, not raw prompt text or raw model output.
+- Optional live smoke: ran a private-safe `compact-json` one-run smoke for
+  `graph-linear-chain` and `graph-strict-evidence-fidelity`. Raw
+  stdout/stderr stayed outside the repo, and the sensitive scan found 0 raw
+  sensitive matches.
+- Result: strict validation still failed with recommendation blocked: 2 runs, 0
+  pass, 2 fail, `finishReasonCounts.stop=2`, and output length avg 1290, min
+  1088, max 1492. Aggregate failure codes were `citation_anchor_missing`,
+  `expected_claim_missing`, and `expected_citation_mismatch`; missing oracle
+  relations were none. Sanitized fixture details: `graph-linear-chain` missed
+  required anchor `[1]`; `graph-strict-evidence-fidelity` still missed
+  `Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation`
+  and placed nearby anchor `[5]` where `[3]` was expected.
+- Retrospective: the checklist appears to remove the prior oracle-omission
+  signal in this isolated smoke, but strict citation anchor coverage/placement
+  and exact promotion-claim preservation remain unresolved. This is
+  benchmark-only behavior, so no ADR or public contract change is needed, and
+  strict answer-oracle, expected-citation mapping, repeated-occurrence,
+  distortion, unsupported/contradictory, and citation-anchor checks remain
+  unchanged.

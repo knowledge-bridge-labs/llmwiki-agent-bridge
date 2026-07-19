@@ -4369,7 +4369,7 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(runtime.requests.length, 1)
   })
 
-  it('sends claim-preserving live prompt contract to the mock runtime', async (t) => {
+  it('sends claim-preserving live prompt contract and strict claim checklist to the mock runtime', async (t) => {
     const runtime = await startFixtureServer(async ({ response }) => {
       writeJson(response, 200, {
         choices: [
@@ -4405,7 +4405,9 @@ describe('llmwiki-agent-bridge', () => {
 
     assert.equal(runtime.requests.length, 1)
     const systemMessage = runtime.requests[0].body.messages.find((message) => message.role === 'system')
+    const userMessage = runtime.requests[0].body.messages.find((message) => message.role === 'user')
     assert(systemMessage)
+    assert(userMessage)
     assert.match(systemMessage.content, /preserve configured claim phrases/i)
     assert.match(systemMessage.content, /graph relation phrases/i)
     assert.match(systemMessage.content, /instead of paraphrasing/i)
@@ -4414,6 +4416,62 @@ describe('llmwiki-agent-bridge', () => {
     assert.match(systemMessage.content, /cite every occurrence/i)
     assert.match(systemMessage.content, /repeated-citation gates/i)
     assert.match(systemMessage.content, /do not use evidence-free claims/i)
+
+    assert.match(userMessage.content, /# Benchmark-only strict claim checklist/)
+    assert.match(userMessage.content, /generated only for live benchmark strict expected citation mappings/i)
+    assert.match(userMessage.content, /Expected claim phrase: "Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation"/)
+    assert.match(userMessage.content, /Expected citation anchor\(s\): \[1\]\(#citation-1\), \[2\]\(#citation-2\)/)
+    assert.match(userMessage.content, /Mapping gate: strict \(required for live pass\)/)
+    assert.match(userMessage.content, /Target requirement: all expected anchors/)
+    assert.match(userMessage.content, /Occurrence intent: any occurrence/)
+    assert.match(userMessage.content, /Nearby\/window intent: expected anchor\(s\) within 120 chars/)
+    assert.match(userMessage.content, /Expected claim phrase: "Citation Fidelity Gate enforces Repeated Citation Gate"/)
+    assert.match(userMessage.content, /Expected citation anchor\(s\): \[4\]\(#citation-4\)/)
+    assert.match(userMessage.content, /Occurrence intent: every occurrence/)
+    assert.match(userMessage.content, /Nearby\/window intent: expected anchor\(s\) within 90 chars/)
+  })
+
+  it('omits strict claim checklist for live fixtures without strict expected citation mappings', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: 'The synthetic release readiness answer cites both required evidence anchors [1](#citation-1) [2](#citation-2).',
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 14,
+          total_tokens: 34,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const { stdout } = await runRuntimePromptBenchmark([
+      '--live',
+      '--fixture',
+      'single-source',
+      '--renderer',
+      'compact-json',
+      '--max-tokens',
+      '64',
+      '--timeout-ms',
+      '10000',
+    ], {
+      env: mockRuntimeEnv(runtime),
+    })
+
+    const report = JSON.parse(stdout)
+    const userMessage = runtime.requests[0].body.messages.find((message) => message.role === 'user')
+
+    assert.equal(report.live.validation.ok, true)
+    assert(userMessage)
+    assert.doesNotMatch(userMessage.content, /# Benchmark-only strict claim checklist/)
+    assert.doesNotMatch(userMessage.content, /Expected claim phrase:/)
   })
 
   it('emits a safe diagnostic summary for failing live mock runs', async (t) => {

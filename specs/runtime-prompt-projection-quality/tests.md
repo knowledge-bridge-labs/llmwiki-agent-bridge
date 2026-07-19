@@ -143,6 +143,20 @@
   citation gates after the prompt-contract change.
 - Oracle synonym tolerance remains intentionally deferred; strict omission,
   distortion, and citation checks are not weakened in Loop 12.
+- Live mock request inspection proves `graph-strict-evidence-fidelity` user
+  prompts include a clearly labeled benchmark-only strict claim checklist with
+  the exact phrase
+  `Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation`,
+  resolved exact markdown anchors `[1](#citation-1)` and
+  `[2](#citation-2)`, strict/required gate status, `require: "all"` target
+  intent, repeated `occurrenceMode: "every"` intent, and configured
+  nearby/window citation intent.
+- Live mock request inspection proves fixtures without effective strict
+  expected citation mappings omit the benchmark-only strict claim checklist.
+- The good `graph-strict-evidence-fidelity` mock answer still passes while
+  omission, wrong-anchor, every-occurrence, unsupported, contradictory,
+  distortion, and citation-anchor failures still fail through existing strict
+  gates; Loop 14 does not loosen oracle behavior.
 
 ## Commands
 
@@ -156,7 +170,7 @@ node scripts/benchmark-runtime-prompt.mjs --live --fixture graph-linear-chain,gr
 # Optional only when the fallback run completes quickly and safely:
 node scripts/benchmark-runtime-prompt.mjs --live --fixture graph-linear-chain,graph-strict-evidence-fidelity --renderer compact-json,markdown-summary,toon --live-runs 3 --temperature 0.2 --max-tokens 768 --timeout-ms 120000 > "$OS_TEMP_DIR/runtime-prompt-loop11-runs3.stdout.json" 2> "$OS_TEMP_DIR/runtime-prompt-loop11-runs3.stderr.txt"
 npm test -- --test-name-pattern "offline.*size-only|runtime prompt rendering offline|quality-first|recommendation"
-npm test -- --test-name-pattern "claim-preserving|safe diagnostic|graph-strict-evidence-fidelity|runtime prompt rendering offline"
+npm test -- --test-name-pattern "strict claim checklist|claim-preserving|safe diagnostic|graph-strict-evidence-fidelity|runtime prompt rendering offline"
 npm test -- --test-name-pattern "runtime prompt rendering offline|graph-strict-evidence-fidelity|strict evidence-fidelity"
 npm test -- --test-name-pattern "Graphify graph fixture|exact citation anchors|answer oracle|unsupported|contradictory|oracle distortion|repeated live|finish reason|inferred live runtime truncation|citation stuffing|expected citation mapping|every-occurrence|occurrenceMode|occurrence coverage|smaller live renderer|size-saving live renderer|every renderer fails|report-only aggregate diagnostics"
 node --check scripts/benchmark-runtime-prompt.mjs
