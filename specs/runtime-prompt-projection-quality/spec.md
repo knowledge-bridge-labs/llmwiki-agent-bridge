@@ -18,6 +18,8 @@ quality gates.
   without adding production dependencies.
 - Keep public bridge API and artifact contracts unchanged.
 - Separate lossless codecs from lossy prompt projections in reports.
+- Attribute live-runtime failures with stable local report codes before ranking
+  prompt renderers.
 
 ## Non-Goals
 
@@ -41,3 +43,16 @@ quality gates.
   answer oracle.
 - `REQ-007`: Live evaluation can run each fixture/renderer multiple times and
   reports pass rate plus variance-sensitive aggregate metrics.
+- `REQ-008`: Live evaluation captures `finishReason` and an explicit
+  `truncation` object for each run.
+- `REQ-009`: Strict live runs fail when `finish_reason` is `length` or when
+  `finish_reason` is missing and usage indicates
+  `completion_tokens >= max_tokens`.
+- `REQ-010`: Live evaluation aggregates `finishReasonCounts`,
+  `truncatedCount`, `failureCodeCounts`, and legacy `failureBucketCounts`.
+- `REQ-011`: Fixture answer oracles can define
+  `expectedCitationMappings` using `claim`, `windowChars`, and either
+  `citationIndex` or citation-position-independent `expectedCitationIds`.
+- `REQ-012`: Strict live runs fail when an expected claim is missing, the
+  configured citation id/index cannot resolve, a wrong citation is near the
+  claim, or the expected citation anchor is outside the claim window.

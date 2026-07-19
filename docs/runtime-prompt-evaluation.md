@@ -14,9 +14,12 @@ quality gates pass.
 | Graph provenance | Every `graphNodes` and `graphEdges` entry has a valid citation index | 100% for graph fixtures |
 | Portable evidence | Benchmark evidence paths do not expose local roots, parent paths, URLs, or private endpoints | 0 non-portable paths |
 | Runtime citation exactness | Live responses cover every required exact `[n](#citation-n)` anchor and no invalid exact anchors | Required for live smoke pass |
+| Runtime completion | Live responses report `finishReason`, `truncation`, and aggregate truncation counts | `finish_reason=length` and inferred max-token exhaustion fail strict runs |
 | Lossy renderer isolation | Lossy projections are labeled and cannot silently become the production contract | Must be explicit candidate/eval-only |
 | Reproducibility | Offline benchmark does not call provider/runtime/network | Required |
 | Answer oracle | Live outputs cover configured required terms/relations and avoid forbidden terms | Required when a fixture defines an oracle |
+| Expected citation mappings | Configured claims resolve to expected citation anchors within `windowChars` | Required when a strict fixture defines mappings |
+| Failure taxonomy | Live reports include `failureCodes` and aggregate `failureCodeCounts` | Required for failure attribution |
 
 Fixtures may set an answer oracle to `report-only` while a new oracle is being
 calibrated. Production-quality fixture gates should remain strict.
@@ -44,7 +47,8 @@ These metrics can evolve as fixtures improve:
 - Required relation preservation beyond exact relation phrase matching.
 - Unsupported claim rate.
 - Contradiction or distorted relation count.
-- Source/citation proximity around claims.
+- Richer semantic citation support checks beyond configured claim/citation
+  proximity windows.
 - Per-fixture and per-renderer variance over repeated live runs.
 - Actual model tokenizer counts when the served model tokenizer is available.
 
@@ -122,3 +126,23 @@ These metrics can evolve as fixtures improve:
   The next loop should add failure taxonomy, finish-reason/truncation capture,
   fixture-specific expected citation mappings, and stronger claim-to-citation
   checks before ranking renderers.
+
+### Loop 5: Failure taxonomy and claim-citation proximity
+
+- Research/analysis: exact required-anchor coverage is not enough because a
+  response can stuff all citation anchors far from the claims they support.
+  Runtime completion also needs explicit attribution because truncated answers
+  can still mention every required anchor.
+- TDD target: deterministic local mock responses fail when `finish_reason` is
+  `length`, when `finish_reason` is missing but `completion_tokens` reaches
+  `max_tokens`, and when all anchors are present but configured expected
+  citation mappings are outside the claim window.
+- Quality gates added: per-run `finishReason`, explicit `truncation` object,
+  inferred truncation from usage/max-token exhaustion, `failureCodes`,
+  aggregate `finishReasonCounts`, `truncatedCount`, `failureCodeCounts`,
+  `failureBucketCounts`, fixture `answerOracle.expectedCitationMappings` with
+  `expectedCitationIds` or `citationIndex`, and
+  `averageExpectedCitationMappingCoveragePct` at renderer and totals levels.
+- Retrospective: this remains a deterministic local gate, not an LLM judge.
+  It improves attribution for renderer comparisons without recording private
+  endpoint, model, key, or raw live response details in repository docs.

@@ -8,5 +8,11 @@
 - [x] Add repeated live eval variance reporting.
 - [x] Report loop completion with scored rubrics.
 - [x] Run private-data-safe real runtime calibration smoke.
-- [ ] Add failure taxonomy and finish-reason/truncation capture.
-- [ ] Add expected citation mapping and claim-citation proximity checks.
+- [x] Add failure taxonomy and finish-reason/truncation capture.
+- [x] Add expected citation mapping and claim-citation proximity checks.
+- [x] Support `expectedCitationIds` so fixtures do not hard-code citation
+      positions.
+- [x] Infer truncation when `finish_reason` is missing and
+      `completion_tokens >= max_tokens`.
+- [x] Aggregate `finishReasonCounts`, `truncatedCount`, `failureCodeCounts`,
+      legacy `failureBucketCounts`, and expected citation mapping coverage.

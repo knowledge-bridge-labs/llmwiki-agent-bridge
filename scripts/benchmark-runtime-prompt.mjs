@@ -943,6 +943,7 @@ async function evaluateLiveRenderer({ args, config, fixture, renderer }) {
     averageRequiredCitationAnchorCoveragePct: aggregate.averageRequiredCitationAnchorCoveragePct,
     averageAnswerOracleRequiredTermCoveragePct: aggregate.averageAnswerOracleRequiredTermCoveragePct,
     averageAnswerOracleRequiredRelationCoveragePct: aggregate.averageAnswerOracleRequiredRelationCoveragePct,
+    averageExpectedCitationMappingCoveragePct: aggregate.averageExpectedCitationMappingCoveragePct,
     representativeRunIndex,
     pass: aggregate.runCount > 0 && aggregate.passCount === aggregate.runCount,
     invalidCitationAnchorCount: aggregate.invalidCitationAnchorCount,
@@ -966,55 +967,188 @@ async function evaluateLiveRendererRun({ args, config, fixture, runtimeUserPromp
     const latencyMs = Math.round(performance.now() - started)
 
     if (!response.ok) {
-      return {
+      return withLiveRunFailureBuckets({
         runIndex,
         status: response.status,
         httpStatus: response.httpStatus,
+        finishReason: null,
+        truncation: analyzeOutputTruncation({ finishReason: null, usage: undefined, maxTokens: args.maxTokens }),
+        truncated: false,
         latencyMs,
         outputTextLength: 0,
         citationAnchorsFound: [],
         requiredCitationAnchors: citationCoverage([], fixture.evidenceBundle.citationCount),
+        expectedCitationMappings: evaluateExpectedCitationMappings('', fixture.answerOracle?.expectedCitationMappings, fixture.evidenceBundle),
         pass: false,
         allRequiredCitationAnchorsCovered: false,
         error: response.error,
-      }
+      })
     }
 
     const outputText = extractChatCompletionText(response.payload)
+    const finishReason = extractChatCompletionFinishReason(response.payload)
+    const usage = summarizeUsage(response.payload?.usage)
+    const truncation = analyzeOutputTruncation({ finishReason, usage, maxTokens: args.maxTokens })
+    const truncated = truncation.detected
     const citationAnchors = analyzeCitationAnchors(outputText, fixture.evidenceBundle.citationCount)
     const answerOracle = evaluateAnswerOracle(outputText, fixture.answerOracle)
+    const expectedCitationMappings = evaluateExpectedCitationMappings(
+      outputText,
+      fixture.answerOracle?.expectedCitationMappings,
+      fixture.evidenceBundle,
+      answerOracle.gate,
+      citationAnchors.found,
+    )
 
-    return {
+    return withLiveRunFailureBuckets({
       runIndex,
       status: 'ok',
       httpStatus: response.httpStatus,
+      finishReason,
+      truncation,
+      truncated,
       latencyMs,
       outputTextLength: Array.from(outputText).length,
       citationAnchorsFound: citationAnchors.found,
       requiredCitationAnchors: citationAnchors.coverage,
       answerOracle,
+      expectedCitationMappings,
       pass: citationAnchors.coverage.coveredCount === citationAnchors.coverage.requiredCount
         && citationAnchors.invalidCount === 0
-        && (answerOracle.gate === 'report-only' || answerOracle.ok),
+        && !truncated
+        && (answerOracle.gate === 'report-only' || answerOracle.ok)
+        && (expectedCitationMappings.gate === 'report-only' || expectedCitationMappings.ok),
       invalidCitationAnchorCount: citationAnchors.invalidCount,
       allRequiredCitationAnchorsCovered: citationAnchors.coverage.coveredCount === citationAnchors.coverage.requiredCount,
-      usage: summarizeUsage(response.payload?.usage),
-    }
+      usage,
+    })
   } catch (error) {
     const latencyMs = Math.round(performance.now() - started)
-    return {
+    return withLiveRunFailureBuckets({
       runIndex,
       status: 'error',
       httpStatus: null,
+      finishReason: null,
+      truncation: analyzeOutputTruncation({ finishReason: null, usage: undefined, maxTokens: args.maxTokens }),
+      truncated: false,
       latencyMs,
       outputTextLength: 0,
       citationAnchorsFound: [],
       requiredCitationAnchors: citationCoverage([], fixture.evidenceBundle.citationCount),
+      expectedCitationMappings: evaluateExpectedCitationMappings('', fixture.answerOracle?.expectedCitationMappings, fixture.evidenceBundle),
       pass: false,
       allRequiredCitationAnchorsCovered: false,
       error: redactForReport(error?.message || String(error), config),
+    })
+  }
+}
+
+function withLiveRunFailureBuckets(result) {
+  return {
+    ...result,
+    failureBuckets: classifyLiveRunFailureBuckets(result),
+    failureCodes: classifyLiveRunFailureCodes(result),
+  }
+}
+
+function analyzeOutputTruncation({ finishReason, usage, maxTokens }) {
+  const completionTokens = usage?.completionTokens
+  const normalizedFinishReason = typeof finishReason === 'string' && finishReason.trim()
+    ? finishReason.trim()
+    : null
+  const normalizedMaxTokens = Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : null
+
+  if (normalizedFinishReason === 'length') {
+    return {
+      detected: true,
+      inferred: false,
+      reason: 'finish_reason_length',
+      finishReason: normalizedFinishReason,
+      completionTokens: Number.isFinite(completionTokens) ? completionTokens : null,
+      maxTokens: normalizedMaxTokens,
     }
   }
+
+  if (!normalizedFinishReason
+    && Number.isFinite(completionTokens)
+    && normalizedMaxTokens
+    && completionTokens >= normalizedMaxTokens
+  ) {
+    return {
+      detected: true,
+      inferred: true,
+      reason: 'completion_tokens_reached_max_tokens',
+      finishReason: null,
+      completionTokens,
+      maxTokens: normalizedMaxTokens,
+    }
+  }
+
+  return {
+    detected: false,
+    inferred: false,
+    reason: null,
+    finishReason: normalizedFinishReason,
+    completionTokens: Number.isFinite(completionTokens) ? completionTokens : null,
+    maxTokens: normalizedMaxTokens,
+  }
+}
+
+function classifyLiveRunFailureBuckets(result) {
+  const buckets = []
+  if (result.status !== 'ok') buckets.push('runtime-error')
+  if (result.truncation?.detected || result.truncated) buckets.push('truncated')
+  if (result.invalidCitationAnchorCount > 0) buckets.push('invalid-citation-anchor')
+  if (result.requiredCitationAnchors?.missing?.length) buckets.push('missing-required-citation-anchor')
+  if (result.answerOracle?.enabled && !result.answerOracle.ok) {
+    const metrics = result.answerOracle.metrics || {}
+    if (
+      metrics.missingRequiredTermCount > 0
+      || metrics.missingRequiredPhraseCount > 0
+      || metrics.missingRequiredRelationCount > 0
+    ) {
+      buckets.push('answer-oracle-omission')
+    }
+    if (metrics.distortionCount > 0) buckets.push('answer-oracle-distortion')
+  }
+  if (result.status === 'ok' && result.expectedCitationMappings?.enabled && !result.expectedCitationMappings.ok) {
+    if (result.expectedCitationMappings.metrics?.missingClaimCount > 0) {
+      buckets.push('expected-claim-missing')
+    }
+    if (result.expectedCitationMappings.metrics?.expectedCitationMismatchCount > 0) {
+      buckets.push('expected-citation-mismatch')
+    }
+    if (result.expectedCitationMappings.metrics?.proximityFailureCount > 0) {
+      buckets.push('citation-proximity')
+    }
+  }
+  return buckets
+}
+
+function classifyLiveRunFailureCodes(result) {
+  const codes = []
+  if (result.status !== 'ok') codes.push('runtime_call_failed')
+  if (result.truncation?.detected || result.truncated) codes.push('runtime_output_incomplete')
+  if (result.invalidCitationAnchorCount > 0) codes.push('citation_anchor_invalid')
+  if (result.requiredCitationAnchors?.missing?.length) codes.push('citation_anchor_missing')
+  if (result.answerOracle?.enabled && !result.answerOracle.ok) {
+    const metrics = result.answerOracle.metrics || {}
+    if (
+      metrics.missingRequiredTermCount > 0
+      || metrics.missingRequiredPhraseCount > 0
+      || metrics.missingRequiredRelationCount > 0
+    ) {
+      codes.push('oracle_omission')
+    }
+    if (metrics.distortionCount > 0) codes.push('oracle_distortion')
+  }
+  if (result.status === 'ok' && result.expectedCitationMappings?.enabled && !result.expectedCitationMappings.ok) {
+    const metrics = result.expectedCitationMappings.metrics || {}
+    if (metrics.missingClaimCount > 0) codes.push('expected_claim_missing')
+    if (metrics.expectedCitationMismatchCount > 0) codes.push('expected_citation_mismatch')
+    if (metrics.proximityFailureCount > 0) codes.push('claim_citation_proximity_failed')
+  }
+  return codes
 }
 
 function chooseRepresentativeLiveRun(runs) {
@@ -1032,8 +1166,12 @@ function summarizeLiveRendererRuns(runs) {
     runs.map((run) => run.requiredCitationAnchors?.coveragePct),
   )
   const statusCounts = countBy(runs.map((run) => run.status || 'unknown'))
+  const finishReasonCounts = countBy(runs.map((run) => run.finishReason || 'none'))
+  const failureBucketCounts = countBy(runs.flatMap((run) => run.failureBuckets || []))
+  const failureCodeCounts = countBy(runs.flatMap((run) => run.failureCodes || []))
   const invalidCitationAnchorCount = sumNumbers(runs.map((run) => run.invalidCitationAnchorCount))
   const allRequiredCitationAnchorsCoveredCount = runs.filter((run) => run.allRequiredCitationAnchorsCovered).length
+  const truncatedCount = runs.filter((run) => run.truncation?.detected || run.truncated).length
 
   return {
     runCount,
@@ -1043,7 +1181,11 @@ function summarizeLiveRendererRuns(runs) {
     passRatePct: percentage(passCount, runCount),
     status: summarizeLiveRunStatus(statusCounts),
     statusCounts,
+    finishReasonCounts,
+    failureBucketCounts,
+    failureCodeCounts,
     errorCount: runCount - okCount,
+    truncatedCount,
     latencyMs,
     outputTextLength,
     usage,
@@ -1053,6 +1195,9 @@ function summarizeLiveRendererRuns(runs) {
     ),
     averageAnswerOracleRequiredRelationCoveragePct: average(
       runs.map((run) => run.answerOracle?.metrics?.requiredRelationCoveragePct),
+    ),
+    averageExpectedCitationMappingCoveragePct: average(
+      runs.map((run) => run.expectedCitationMappings?.metrics?.coveragePct),
     ),
     invalidCitationAnchorCount,
     allRequiredCitationAnchorsCoveredCount,
@@ -1196,7 +1341,7 @@ function extractRuntimeError(payload) {
 }
 
 function extractChatCompletionText(payload) {
-  const choice = Array.isArray(payload?.choices) ? payload.choices[0] : null
+  const choice = firstChatCompletionChoice(payload)
   const content = choice?.message?.content ?? choice?.text
   if (typeof content === 'string') return content
   if (Array.isArray(content)) {
@@ -1207,6 +1352,16 @@ function extractChatCompletionText(payload) {
     }).join('')
   }
   return ''
+}
+
+function extractChatCompletionFinishReason(payload) {
+  const choice = firstChatCompletionChoice(payload)
+  const finishReason = choice?.finish_reason ?? choice?.finishReason
+  return typeof finishReason === 'string' && finishReason.trim() ? finishReason.trim() : null
+}
+
+function firstChatCompletionChoice(payload) {
+  return Array.isArray(payload?.choices) ? payload.choices[0] : null
 }
 
 function analyzeCitationAnchors(text, citationCount) {
@@ -1224,7 +1379,7 @@ function analyzeCitationAnchors(text, citationCount) {
       && citationIndex >= 1
       && citationIndex <= citationCount
     const anchor = `[${match[1]}](#citation-${match[2]})`
-    found.push({ anchor, index: citationIndex, valid })
+    found.push({ anchor, index: citationIndex, valid, start: match.index, end: match.index + anchor.length })
     if (valid) validIndexes.add(citationIndex)
     else invalidCount += 1
   }
@@ -1247,6 +1402,217 @@ function citationCoverage(coveredIndexes, citationCount) {
     required,
     missing,
   }
+}
+
+function evaluateExpectedCitationMappings(text, mappings = null, evidenceBundleOrCitationCount = 0, gate = 'strict', citationAnchors = null) {
+  const expectedMappings = Array.isArray(mappings) ? mappings.filter(Boolean) : []
+  const mappingGate = gate === 'report-only' ? 'report-only' : 'strict'
+  if (!expectedMappings.length) {
+    return {
+      enabled: false,
+      gate: mappingGate,
+      ok: true,
+      failures: [],
+    }
+  }
+
+  const context = expectedCitationMappingContext(evidenceBundleOrCitationCount)
+  const anchors = Array.isArray(citationAnchors)
+    ? citationAnchors
+    : analyzeCitationAnchors(text, context.citationCount).found
+  const validAnchorOffsets = anchors.filter((anchor) => (
+    anchor.valid
+    && Number.isFinite(anchor.start)
+    && Number.isFinite(anchor.end)
+  ))
+  const failures = []
+  const missingClaims = []
+  const proximityFailures = []
+  const expectedCitationMismatches = []
+  const satisfiedMappings = []
+
+  for (const mapping of expectedMappings) {
+    const claim = mapping?.claim
+    const windowChars = Number.isInteger(mapping?.windowChars) && mapping.windowChars > 0
+      ? mapping.windowChars
+      : 180
+    const resolved = resolveExpectedCitationMapping(mapping, context)
+    const claimRange = findFirstOraclePhraseRange(text, claim)
+    const label = formatExpectedCitationMapping(mapping, resolved)
+
+    if (resolved.invalidTargets.length) {
+      failures.push(`expected citation mismatch: ${label} (${resolved.invalidTargets.join('; ')})`)
+      expectedCitationMismatches.push(label)
+      continue
+    }
+    if (!claimRange) {
+      failures.push(`expected claim missing: ${label}`)
+      missingClaims.push(label)
+      continue
+    }
+
+    const windowStart = Math.max(0, claimRange.start - windowChars)
+    const windowEnd = Math.min(text.length, claimRange.end + windowChars)
+    const expectedIndexes = new Set(resolved.citationIndexes)
+    const nearbyAnchors = validAnchorOffsets.filter((anchor) => (
+      anchor.end >= windowStart && anchor.start <= windowEnd
+    ))
+    const matchedAnchors = nearbyAnchors.filter((anchor) => expectedIndexes.has(anchor.index))
+
+    if (!matchedAnchors.length) {
+      if (nearbyAnchors.length) {
+        failures.push(
+          `expected citation ${formatExpectedCitationTargets(resolved)} did not match nearby citation anchors (${formatNearbyCitationAnchors(nearbyAnchors)}) for claim: ${label}`,
+        )
+        expectedCitationMismatches.push(label)
+      } else {
+        failures.push(`expected citation ${formatExpectedCitationTargets(resolved)} not within ${windowChars} chars of claim: ${label}`)
+        proximityFailures.push(label)
+      }
+      continue
+    }
+
+    satisfiedMappings.push(label)
+  }
+
+  return {
+    enabled: true,
+    gate: mappingGate,
+    ok: failures.length === 0,
+    metrics: {
+      expectedMappingCount: expectedMappings.length,
+      satisfiedMappingCount: satisfiedMappings.length,
+      coveragePct: percentage(satisfiedMappings.length, expectedMappings.length),
+      missingClaimCount: missingClaims.length,
+      expectedCitationMismatchCount: expectedCitationMismatches.length,
+      proximityFailureCount: proximityFailures.length,
+      missingCitationWithinWindowCount: proximityFailures.length,
+    },
+    missingClaims,
+    expectedCitationMismatches,
+    missingCitationWithinWindow: proximityFailures,
+    satisfiedMappings,
+    failures,
+  }
+}
+
+function expectedCitationMappingContext(evidenceBundleOrCitationCount) {
+  if (Number.isInteger(evidenceBundleOrCitationCount)) {
+    return {
+      citationCount: evidenceBundleOrCitationCount,
+      citationIdToIndex: new Map(),
+    }
+  }
+
+  const evidenceBundle = evidenceBundleOrCitationCount && typeof evidenceBundleOrCitationCount === 'object'
+    ? evidenceBundleOrCitationCount
+    : {}
+  const citations = Array.isArray(evidenceBundle.citations) ? evidenceBundle.citations : []
+  const citationCount = Number.isInteger(evidenceBundle.citationCount)
+    ? evidenceBundle.citationCount
+    : citations.length
+  const citationIdToIndex = new Map()
+  citations.forEach((citation, index) => {
+    if (typeof citation?.id === 'string' && citation.id.trim()) {
+      citationIdToIndex.set(citation.id.trim(), index + 1)
+    }
+  })
+
+  return {
+    citationCount,
+    citationIdToIndex,
+  }
+}
+
+function resolveExpectedCitationMapping(mapping, context) {
+  const targets = []
+  const invalidTargets = []
+  const citationIds = expectedCitationIds(mapping)
+  const citationIndexes = expectedCitationIndexes(mapping)
+
+  for (const citationId of citationIds) {
+    const normalizedCitationId = String(citationId || '').trim()
+    if (!normalizedCitationId) continue
+    const resolvedIndex = context.citationIdToIndex.get(normalizedCitationId)
+    if (Number.isInteger(resolvedIndex)) {
+      targets.push({ id: normalizedCitationId, index: resolvedIndex })
+    } else {
+      invalidTargets.push(`unknown citation id ${normalizedCitationId}`)
+    }
+  }
+
+  for (const citationIndex of citationIndexes) {
+    if (Number.isInteger(citationIndex) && citationIndex >= 1 && citationIndex <= context.citationCount) {
+      targets.push({ index: citationIndex })
+    } else {
+      invalidTargets.push(`invalid citation index ${citationIndex}`)
+    }
+  }
+
+  const resolvedCitationIndexes = [...new Set(targets.map((target) => target.index))]
+  if (!resolvedCitationIndexes.length && !invalidTargets.length) {
+    invalidTargets.push('missing expected citation id or index')
+  }
+
+  return {
+    targets,
+    citationIndexes: resolvedCitationIndexes,
+    invalidTargets,
+  }
+}
+
+function expectedCitationIds(mapping) {
+  if (!mapping || typeof mapping !== 'object') return []
+  return [
+    ...(Array.isArray(mapping.expectedCitationIds) ? mapping.expectedCitationIds : []),
+    mapping.expectedCitationId,
+    mapping.citationId,
+  ].filter((value) => typeof value === 'string' && value.trim())
+}
+
+function expectedCitationIndexes(mapping) {
+  if (!mapping || typeof mapping !== 'object') return []
+  return [
+    ...(Array.isArray(mapping.citationIndexes) ? mapping.citationIndexes : []),
+    mapping.citationIndex ?? mapping.citation,
+  ]
+    .filter((value) => value !== undefined && value !== null && value !== '')
+    .map((value) => Number(value))
+}
+
+function findFirstOraclePhraseRange(text, item) {
+  const candidates = oraclePhraseCandidates(item)
+  const lowerText = String(text || '').toLowerCase()
+  for (const candidate of candidates) {
+    const phrase = String(candidate || '').trim().toLowerCase()
+    if (!phrase) continue
+    const start = lowerText.indexOf(phrase)
+    if (start >= 0) return { start, end: start + phrase.length, phrase: candidate }
+  }
+  return null
+}
+
+function oraclePhraseCandidates(item) {
+  if (item && typeof item === 'object' && Array.isArray(item.anyOf)) return item.anyOf
+  return [item]
+}
+
+function formatExpectedCitationMapping(mapping, resolved = null) {
+  if (!mapping || typeof mapping !== 'object') return String(mapping)
+  return `${formatOracleItem(mapping.claim)} -> ${formatExpectedCitationTargets(resolved)}`
+}
+
+function formatExpectedCitationTargets(resolved) {
+  if (!resolved || typeof resolved !== 'object') return 'invalid-citation'
+  const labels = resolved.targets.map((target) => {
+    const anchor = citationAnchor(target.index) || 'invalid-citation'
+    return target.id ? `${target.id} (${anchor})` : anchor
+  })
+  return labels.length ? labels.join(' or ') : 'invalid-citation'
+}
+
+function formatNearbyCitationAnchors(anchors) {
+  return anchors.slice(0, 5).map((anchor) => anchor.anchor).join(', ') || 'none'
 }
 
 function evaluateAnswerOracle(text, oracle = null) {
@@ -1397,14 +1763,14 @@ function validateLiveFixtureReports(fixtureReports) {
         const reasons = liveRunFailureReasons(run)
         const runLabel = result.runCount > 1 ? ` run ${run.runIndex}/${result.runCount}` : ''
         failures.push(
-          `${fixture.id}/${rendererId}${runLabel}: live response must complete, cover every required exact [n](#citation-n) anchor, include no invalid exact anchors, and satisfy answer oracle checks (${reasons.join('; ') || 'unknown'})`,
+          `${fixture.id}/${rendererId}${runLabel}: live response must complete, cover every required exact [n](#citation-n) anchor, include no invalid exact anchors, satisfy answer oracle checks, and keep expected claim citations near claims (${reasons.join('; ') || 'unknown'})`,
         )
       }
     }
   }
   return {
     ok: failures.length === 0,
-    checks: ['every strict live renderer run completes, covers every required exact [n](#citation-n) anchor, includes no invalid exact anchors, and satisfies answer oracle checks when configured'],
+    checks: ['every strict live renderer run completes, covers every required exact [n](#citation-n) anchor, includes no invalid exact anchors, satisfies answer oracle checks, and keeps configured expected citations near claims'],
     failures,
   }
 }
@@ -1412,6 +1778,13 @@ function validateLiveFixtureReports(fixtureReports) {
 function liveRunFailureReasons(result) {
   const reasons = []
   if (result.status !== 'ok') reasons.push(`runtime status: ${result.status}`)
+  if (result.truncation?.detected || result.truncated) {
+    if (result.truncation?.inferred) {
+      reasons.push(`inferred truncation: completion_tokens ${result.truncation.completionTokens} reached max_tokens ${result.truncation.maxTokens}`)
+    } else {
+      reasons.push(`finish_reason indicates truncation: ${result.finishReason}`)
+    }
+  }
   if (result.invalidCitationAnchorCount > 0) {
     reasons.push(`invalid exact citation anchors: ${result.invalidCitationAnchorCount}`)
   }
@@ -1420,6 +1793,15 @@ function liveRunFailureReasons(result) {
   }
   if (result.answerOracle?.enabled && !result.answerOracle.ok) {
     reasons.push(`answer oracle failed: ${result.answerOracle.failures.join('; ')}`)
+  }
+  if (result.status === 'ok' && result.expectedCitationMappings?.enabled && !result.expectedCitationMappings.ok) {
+    reasons.push(`expected citation mappings failed: ${result.expectedCitationMappings.failures.join('; ')}`)
+  }
+  if (result.failureBuckets?.length) {
+    reasons.push(`failure buckets: ${result.failureBuckets.join(', ')}`)
+  }
+  if (result.failureCodes?.length) {
+    reasons.push(`failure codes: ${result.failureCodes.join(', ')}`)
   }
   return reasons
 }
@@ -1440,8 +1822,12 @@ function summarizeLiveFixtureReports(fixtureReports, renderers) {
     const latencyMs = summarizeNumbers(runs.map((run) => run.latencyMs))
     const outputTextLength = summarizeNumbers(runs.map((run) => run.outputTextLength))
     const usage = summarizeLiveRunUsage(runs)
+    const finishReasonCounts = countBy(runs.map((run) => run.finishReason || 'none'))
+    const failureBucketCounts = countBy(runs.flatMap((run) => run.failureBuckets || []))
+    const failureCodeCounts = countBy(runs.flatMap((run) => run.failureCodes || []))
     const passCount = runs.filter((run) => run.pass).length
     const okCount = runs.filter((run) => run.status === 'ok').length
+    const truncatedCount = runs.filter((run) => run.truncation?.detected || run.truncated).length
     const citationCoveragePct = summarizeNumbers(
       runs.map((run) => run.requiredCitationAnchors?.coveragePct),
     )
@@ -1454,6 +1840,10 @@ function summarizeLiveFixtureReports(fixtureReports, renderers) {
       failCount: runs.length - passCount,
       passRatePct: percentage(passCount, runs.length),
       errorCount: runs.length - okCount,
+      truncatedCount,
+      finishReasonCounts,
+      failureBucketCounts,
+      failureCodeCounts,
       latencyMs,
       outputTextLength,
       usage,
@@ -1463,6 +1853,9 @@ function summarizeLiveFixtureReports(fixtureReports, renderers) {
       ),
       averageAnswerOracleRequiredRelationCoveragePct: average(
         runs.map((run) => run.answerOracle?.metrics?.requiredRelationCoveragePct),
+      ),
+      averageExpectedCitationMappingCoveragePct: average(
+        runs.map((run) => run.expectedCitationMappings?.metrics?.coveragePct),
       ),
       variance: {
         mixedPassStatus: passCount > 0 && passCount < runs.length,
@@ -2199,6 +2592,18 @@ function buildEvidenceBundleFixtures() {
         forbiddenTerms: [
           'production default is approved',
           'citations are optional',
+        ],
+        expectedCitationMappings: [
+          {
+            claim: 'Runtime Prompt Decision requires Prompt Codec Implementation',
+            expectedCitationIds: ['graph-linear:linear-implementation'],
+            windowChars: 120,
+          },
+          {
+            claim: 'Prompt Codec Implementation measured by Prompt renderer benchmark',
+            expectedCitationIds: ['graph-linear:linear-validation'],
+            windowChars: 120,
+          },
         ],
       },
     }),

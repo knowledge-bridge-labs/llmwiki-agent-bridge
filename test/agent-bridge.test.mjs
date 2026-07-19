@@ -3951,7 +3951,7 @@ describe('llmwiki-agent-bridge', () => {
             message: {
               content: isMarkdownSummary
                 ? 'Runtime Prompt Decision and Runtime Prompt Validation are mentioned with all citations [1](#citation-1) [2](#citation-2) [3](#citation-3).'
-                : 'Runtime Prompt Decision requires Prompt Codec Implementation, and Prompt Codec Implementation measured by Prompt renderer benchmark before Runtime Prompt Validation [1](#citation-1) [2](#citation-2) [3](#citation-3).',
+                : 'Runtime Prompt Decision requires Prompt Codec Implementation [2](#citation-2), and Prompt Codec Implementation measured by Prompt renderer benchmark [3](#citation-3) before Runtime Prompt Validation [1](#citation-1).',
             },
           },
         ],
@@ -4001,6 +4001,10 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(report.live.validation.ok, false)
     assert.equal(liveFixture.renderers['compact-json'].pass, true)
     assert.equal(liveFixture.renderers['compact-json'].answerOracle.ok, true)
+    assert.equal(liveFixture.renderers['compact-json'].expectedCitationMappings.ok, true)
+    assert.equal(liveFixture.renderers['compact-json'].expectedCitationMappings.metrics.coveragePct, 100)
+    assert.equal(liveFixture.renderers['compact-json'].expectedCitationMappings.metrics.satisfiedMappingCount, 2)
+    assert.equal(liveFixture.renderers['compact-json'].averageExpectedCitationMappingCoveragePct, 100)
     assert.equal(liveFixture.renderers['markdown-summary'].pass, false)
     assert.equal(liveFixture.renderers['markdown-summary'].allRequiredCitationAnchorsCovered, true)
     assert.equal(liveFixture.renderers['markdown-summary'].answerOracle.ok, false)
@@ -4018,7 +4022,7 @@ describe('llmwiki-agent-bridge', () => {
           {
             message: {
               content: passingRun
-                ? 'Runtime Prompt Decision requires Prompt Codec Implementation, and Prompt Codec Implementation measured by Prompt renderer benchmark before Runtime Prompt Validation [1](#citation-1) [2](#citation-2) [3](#citation-3).'
+                ? 'Runtime Prompt Decision requires Prompt Codec Implementation [2](#citation-2), and Prompt Codec Implementation measured by Prompt renderer benchmark [3](#citation-3) before Runtime Prompt Validation [1](#citation-1).'
                 : 'Runtime Prompt Decision is mentioned without the required relation or exact citation anchors.',
             },
           },
@@ -4179,6 +4183,315 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(rendererTotals.passRatePct, 66.67)
     assert.equal(rendererTotals.variance.mixedPassStatus, true)
     assert.equal(runtime.requests.length, 3)
+  })
+
+  it('classifies live runtime truncation from finish reason', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'length',
+            message: {
+              content: 'Truncated output still lists both citations [1](#citation-1) [2](#citation-2).',
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 12,
+          completion_tokens: 32,
+          total_tokens: 44,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'single-source',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '32',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /finish_reason indicates truncation: length/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+
+    assert.equal(rendererReport.pass, false)
+    assert.equal(rendererReport.finishReason, 'length')
+    assert.equal(rendererReport.truncated, true)
+    assert.deepEqual(rendererReport.truncation, {
+      detected: true,
+      inferred: false,
+      reason: 'finish_reason_length',
+      finishReason: 'length',
+      completionTokens: 32,
+      maxTokens: 32,
+    })
+    assert.deepEqual(rendererReport.failureBuckets, ['truncated'])
+    assert.deepEqual(rendererReport.failureCodes, ['runtime_output_incomplete'])
+    assert.equal(rendererReport.aggregate.truncatedCount, 1)
+    assert.equal(rendererReport.aggregate.finishReasonCounts.length, 1)
+    assert.equal(rendererReport.aggregate.failureBucketCounts.truncated, 1)
+    assert.equal(rendererReport.aggregate.failureCodeCounts.runtime_output_incomplete, 1)
+    assert.equal(rendererTotals.truncatedCount, 1)
+    assert.equal(rendererTotals.finishReasonCounts.length, 1)
+    assert.equal(rendererTotals.failureBucketCounts.truncated, 1)
+    assert.equal(rendererTotals.failureCodeCounts.runtime_output_incomplete, 1)
+  })
+
+  it('infers live runtime truncation when finish reason is missing and max tokens are exhausted', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            message: {
+              content: 'Output has the required citations but no finish reason [1](#citation-1) [2](#citation-2).',
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 12,
+          completion_tokens: 32,
+          total_tokens: 44,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'single-source',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '32',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /inferred truncation: completion_tokens 32 reached max_tokens 32/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+
+    assert.equal(rendererReport.pass, false)
+    assert.equal(rendererReport.finishReason, null)
+    assert.equal(rendererReport.truncated, true)
+    assert.deepEqual(rendererReport.truncation, {
+      detected: true,
+      inferred: true,
+      reason: 'completion_tokens_reached_max_tokens',
+      finishReason: null,
+      completionTokens: 32,
+      maxTokens: 32,
+    })
+    assert.deepEqual(rendererReport.failureCodes, ['runtime_output_incomplete'])
+    assert.equal(rendererReport.aggregate.finishReasonCounts.none, 1)
+    assert.equal(rendererReport.aggregate.failureCodeCounts.runtime_output_incomplete, 1)
+    assert.equal(rendererTotals.truncatedCount, 1)
+    assert.equal(rendererTotals.failureCodeCounts.runtime_output_incomplete, 1)
+  })
+
+  it('rejects citation stuffing away from expected claim mappings', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: [
+                'Runtime Prompt Decision requires Prompt Codec Implementation.',
+                'Prompt Codec Implementation measured by Prompt renderer benchmark before Runtime Prompt Validation.',
+                'Padding separates claims from citation anchors.',
+                'x'.repeat(260),
+                '[1](#citation-1) [2](#citation-2) [3](#citation-3).',
+              ].join(' '),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 20,
+          total_tokens: 40,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'graph-linear-chain',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '128',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /expected citation mappings failed/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+
+    assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
+    assert.equal(rendererReport.answerOracle.ok, true)
+    assert.equal(rendererReport.expectedCitationMappings.ok, false)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.expectedMappingCount, 2)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.satisfiedMappingCount, 0)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.coveragePct, 0)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.proximityFailureCount, 2)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.expectedCitationMismatchCount, 0)
+    assert.deepEqual(rendererReport.failureBuckets, ['citation-proximity'])
+    assert.deepEqual(rendererReport.failureCodes, ['claim_citation_proximity_failed'])
+    assert.equal(rendererReport.aggregate.failureBucketCounts['citation-proximity'], 1)
+    assert.equal(rendererReport.aggregate.failureCodeCounts.claim_citation_proximity_failed, 1)
+    assert.equal(rendererReport.averageExpectedCitationMappingCoveragePct, 0)
+    assert.equal(rendererTotals.averageExpectedCitationMappingCoveragePct, 0)
+    assert.equal(rendererTotals.failureBucketCounts['citation-proximity'], 1)
+    assert.equal(rendererTotals.failureCodeCounts.claim_citation_proximity_failed, 1)
+  })
+
+  it('rejects nearby wrong citation anchors for expected claim mappings', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: [
+                'Runtime Prompt Decision requires Prompt Codec Implementation [1](#citation-1).',
+                'Padding separates the first expected claim from other anchors.',
+                'x'.repeat(260),
+                'Prompt Codec Implementation measured by Prompt renderer benchmark [2](#citation-2) before Runtime Prompt Validation.',
+                'Padding separates the second expected claim from the complete anchor list.',
+                'y'.repeat(260),
+                'All required anchors exist away from the mapped claims: [1](#citation-1) [2](#citation-2) [3](#citation-3).',
+              ].join(' '),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 28,
+          total_tokens: 48,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'graph-linear-chain',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '128',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /expected-citation-mismatch/)
+    assert.match(error.stderr, /expected_citation_mismatch/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+
+    assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
+    assert.equal(rendererReport.answerOracle.ok, true)
+    assert.equal(rendererReport.expectedCitationMappings.ok, false)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.expectedMappingCount, 2)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.satisfiedMappingCount, 0)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.coveragePct, 0)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.expectedCitationMismatchCount, 2)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.proximityFailureCount, 0)
+    assert.deepEqual(rendererReport.failureBuckets, ['expected-citation-mismatch'])
+    assert.deepEqual(rendererReport.failureCodes, ['expected_citation_mismatch'])
+    assert.equal(rendererReport.aggregate.failureBucketCounts['expected-citation-mismatch'], 1)
+    assert.equal(rendererReport.aggregate.failureCodeCounts.expected_citation_mismatch, 1)
+    assert.equal(rendererTotals.failureBucketCounts['expected-citation-mismatch'], 1)
+    assert.equal(rendererTotals.failureCodeCounts.expected_citation_mismatch, 1)
   })
 
   it('dry packs the npm tarball with expected files', async () => {

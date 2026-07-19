@@ -30,6 +30,15 @@ should remain optional evaluation input rather than a runtime dependency.
     define required terms, required relations, or forbidden terms.
   - repeated live evaluation must report per-run outcomes and aggregate
     pass-rate/variance metrics.
+  - live runtime smoke must record `finishReason`, an explicit `truncation`
+    object, truncation counts, and fail strict runs when `finish_reason` is
+    `length` or when missing `finish_reason` plus usage indicates
+    `completion_tokens >= max_tokens`.
+  - live runtime smoke must classify failed runs with stable `failureCodes`
+    while retaining human-readable failure buckets for continuity.
+  - strict fixtures may define `answerOracle.expectedCitationMappings` with a
+    claim, `windowChars`, and either `expectedCitationIds` or `citationIndex`;
+    configured claims must cite the expected anchor close to the claim.
 - Keep Graphify support eval-only by reading a pre-generated `graph.json`.
 - Do not install, import, execute, or depend on Graphify from the Node package.
 - Keep lossy renderers, including markdown summary projections, explicit and
@@ -49,6 +58,12 @@ should remain optional evaluation input rather than a runtime dependency.
   obvious distortions but do not replace semantic claim/citation judging.
 - Repeated live runs make unstable renderers visible, but they increase live
   provider cost linearly with fixture, renderer, and run counts.
+- Failure codes make truncation, runtime-call failures, citation-anchor
+  failures, oracle omissions/distortions, and claim-citation proximity failures
+  easier to aggregate across repeated runs.
+- Citation-ID-based expected mappings let fixture authors avoid hard-coding
+  fragile citation positions while preserving exact anchor checks in rendered
+  answers.
 - The first real-runtime calibration smoke failed all strict runs, so current
   renderer readiness is blocked by answer-quality and evaluation-attribution
   gaps rather than by token-size comparison.
@@ -59,8 +74,8 @@ should remain optional evaluation input rather than a runtime dependency.
   forbidden claims, and expected citation mappings.
 - Run repeated live evals against real local/runtime models and record
   renderer-specific variance before changing defaults.
-- Add failure taxonomy, finish-reason/truncation capture, and claim-citation
-  proximity checks before treating live pass rates as renderer rankings.
+- Calibrate claim-citation window sizes with private-data-safe live smokes
+  before treating live pass rates as renderer rankings.
 - Consider model-specific tokenizer counts when tokenizer access is available.
 
 ## Links
