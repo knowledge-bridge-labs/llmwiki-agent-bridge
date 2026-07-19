@@ -20,14 +20,27 @@
    - resolve ids to current top-level citation indexes;
    - default multi-target mappings to `require: "any"` and support opt-in
      `require: "all"`;
+   - default repeated-claim mappings to `occurrenceMode: "any"` and support
+     opt-in `occurrenceMode: "every"` independently from target `require`
+     semantics;
    - keep expected citation mapping report-only gates independent from the
      broader answer-oracle gate, with fixture-level report-only dominating
      per-mapping strict settings;
    - report unknown ids/invalid indexes as unresolved targets with
      `expected_citation_target_unresolved`;
+   - report aggregate claim-occurrence coverage metrics;
    - evaluate every claim occurrence while preserving Loop 6 pass-if-any
-     occurrence behavior;
+     occurrence behavior as the default;
    - require expected anchors near configured claims in strict runs;
    - report `averageExpectedCitationMappingCoveragePct`.
-10. Verify targeted deterministic local mock tests, `node --check`, and
+10. Add configured answer-oracle unsupported/contradictory claim checks:
+    - detect only fixture-configured strings, `anyOf`, or `allOf` patterns;
+    - report unsupported and contradictory claim hit metrics;
+    - classify strict failures with `oracle_unsupported_claim` and
+      `oracle_contradiction` while preserving broad `oracle_distortion`;
+    - count forbidden term hits, forbidden claim hits, unsupported claim hits,
+      and contradictory claim hits in aggregate `distortionCount`;
+    - keep answer-oracle report-only diagnostics from emitting strict failure
+      buckets/codes.
+11. Verify targeted deterministic local mock tests, `node --check`, and
     whitespace diff checks.

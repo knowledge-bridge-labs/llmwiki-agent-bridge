@@ -19,3 +19,13 @@
 - [x] Strengthen expected citation mappings with independent report-only
       gates, fixture-level report-only dominance, default-any/opt-in-all target
       semantics, unresolved target reporting, and all-occurrence claim scanning.
+- [x] Add `occurrenceMode: "any" | "every"` for expected citation mappings,
+      preserving default-any repeated-claim compatibility while supporting
+      opt-in every-occurrence enforcement.
+- [x] Report claim occurrence counts, satisfied/unsatisfied occurrence counts,
+      occurrence coverage percentage, and every-occurrence failure codes.
+- [x] Add configured `unsupportedClaims` and `contradictoryClaims`
+      answer-oracle checks with distinct strict failure codes and report-only
+      classification behavior.
+- [x] Count forbidden, unsupported, and contradictory configured negative
+      pattern hits in aggregate answer-oracle `distortionCount`.

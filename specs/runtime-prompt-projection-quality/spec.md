@@ -40,7 +40,8 @@ quality gates.
 - `REQ-005`: Live smoke fails responses that omit any required exact citation
   anchor or include invalid exact anchors.
 - `REQ-006`: Live smoke fails responses that violate a fixture's deterministic
-  answer oracle.
+  answer oracle, including explicitly configured required, forbidden,
+  unsupported, and contradictory patterns.
 - `REQ-007`: Live evaluation can run each fixture/renderer multiple times and
   reports pass rate plus variance-sensitive aggregate metrics.
 - `REQ-008`: Live evaluation captures `finishReason` and an explicit
@@ -69,5 +70,26 @@ quality gates.
   reported with unresolved target metrics/details and the strict failure code
   `expected_citation_target_unresolved`.
 - `REQ-015`: Expected citation mappings evaluate every occurrence of the claim
-  phrase and currently pass when any occurrence satisfies the configured
+  phrase and, by default, pass when any occurrence satisfies the configured
   citation target condition.
+- `REQ-016`: Expected citation mappings support
+  `occurrenceMode: "any" | "every"` independently from `require`; omitted
+  `occurrenceMode` defaults to `any`, and `every` requires each repeated claim
+  occurrence to satisfy the mapping.
+- `REQ-017`: Expected citation mapping reports include aggregate occurrence
+  metrics: `claimOccurrenceCount`, `satisfiedOccurrenceCount`,
+  `unsatisfiedOccurrenceCount`, and `occurrenceCoveragePct`.
+- `REQ-018`: Strict every-occurrence mapping failures emit the distinct
+  `expected_citation_every_occurrence_failed` failure code and corresponding
+  aggregate failure-code metrics.
+- `REQ-019`: Answer oracles support configured `unsupportedClaims` and
+  `contradictoryClaims` pattern checks, report `unsupportedClaimHitCount` and
+  `contradictoryClaimHitCount`, and emit distinct strict failure codes
+  `oracle_unsupported_claim` and `oracle_contradiction` while preserving the
+  broad `oracle_distortion` code.
+- `REQ-020`: When `answerOracle.gate` is `report-only`, answer-oracle
+  diagnostics remain visible but strict answer-oracle failure buckets/codes are
+  not emitted.
+- `REQ-021`: `answerOracle.metrics.distortionCount` aggregates all configured
+  negative-pattern hits: forbidden terms, forbidden claims, unsupported claims,
+  and contradictory claims.

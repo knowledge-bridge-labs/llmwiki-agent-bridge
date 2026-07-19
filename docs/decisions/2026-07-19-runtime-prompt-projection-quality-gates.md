@@ -28,6 +28,16 @@ should remain optional evaluation input rather than a runtime dependency.
     `[n](#citation-n)` anchors.
   - live runtime smoke must satisfy deterministic answer oracles when fixtures
     define required terms, required relations, or forbidden terms.
+  - answer oracles may explicitly configure `unsupportedClaims` and
+    `contradictoryClaims`; these are deterministic pattern checks, not general
+    semantic judging, and strict runs fail when the configured patterns appear
+    even if citation anchors are complete.
+  - answer-oracle `distortionCount` aggregates all configured negative-pattern
+    hits: forbidden terms, forbidden claims, unsupported claims, and
+    contradictory claims. Strict unsupported/contradictory hits retain distinct
+    failure codes while also preserving broad distortion accounting.
+  - report-only answer-oracle failures remain diagnostic and do not emit strict
+    live failure buckets/codes.
   - repeated live evaluation must report per-run outcomes and aggregate
     pass-rate/variance metrics.
   - live runtime smoke must record `finishReason`, an explicit `truncation`
@@ -40,6 +50,11 @@ should remain optional evaluation input rather than a runtime dependency.
     claim, `windowChars`, `require: "any" | "all"`, and either
     `expectedCitationIds` or `citationIndex`; configured claims must cite the
     expected anchor close to the claim.
+  - expected citation mappings may also set
+    `occurrenceMode: "any" | "every"` independently from `require`; omitted
+    `occurrenceMode` preserves pass-if-any repeated-claim behavior, while
+    `every` requires each repeated claim occurrence to satisfy the configured
+    citation target condition.
   - expected citation mapping gates are independent from the broader answer
     oracle gate: `answerOracle.expectedCitationMappingsGate` or per-mapping
     `gate: "report-only"` records diagnostics without affecting strict live
@@ -48,6 +63,8 @@ should remain optional evaluation input rather than a runtime dependency.
   - unresolved citation-id/index targets use the distinct
     `expected_citation_target_unresolved` failure code instead of
     `expected_citation_mismatch`.
+  - every-occurrence mapping failures use occurrence metrics and the distinct
+    `expected_citation_every_occurrence_failed` failure code.
 - Keep Graphify support eval-only by reading a pre-generated `graph.json`.
 - Do not install, import, execute, or depend on Graphify from the Node package.
 - Keep lossy renderers, including markdown summary projections, explicit and
@@ -68,17 +85,22 @@ should remain optional evaluation input rather than a runtime dependency.
 - Repeated live runs make unstable renderers visible, but they increase live
   provider cost linearly with fixture, renderer, and run counts.
 - Failure codes make truncation, runtime-call failures, citation-anchor
-  failures, oracle omissions/distortions, and claim-citation proximity failures
-  easier to aggregate across repeated runs.
+  failures, oracle omissions/distortions, unsupported or contradictory claim
+  hits, and claim-citation proximity or occurrence failures easier to aggregate
+  across repeated runs.
 - Citation-ID-based expected mappings let fixture authors avoid hard-coding
   fragile citation positions while preserving exact anchor checks in rendered
   answers.
 - Multi-target mappings default to `require: "any"` for Loop 5 compatibility;
   `require: "all"` is opt-in when every target must appear in the same claim
   window.
-- Repeated claim handling currently scans every occurrence and passes if any
-  occurrence satisfies the mapping. This avoids first-occurrence false
-  failures, but it is intentionally weaker than a future every-occurrence gate.
+- Repeated claim handling scans every occurrence and defaults to pass-if-any to
+  avoid first-occurrence false failures. Fixtures that need stricter evidence
+  discipline can opt into every-occurrence mode.
+- Unsupported and contradictory claim checks are intentionally explicit
+  configured-pattern detectors; they improve deterministic attribution but do
+  not replace a semantic judge. They are counted in aggregate distortion
+  metrics while also retaining distinct category metrics and failure codes.
 - The first real-runtime calibration smoke failed all strict runs, so current
   renderer readiness is blocked by answer-quality and evaluation-attribution
   gaps rather than by token-size comparison.
@@ -86,14 +108,14 @@ should remain optional evaluation input rather than a runtime dependency.
 ## Follow-ups
 
 - Expand answer-level oracle fixtures for required facts, required relations,
-  forbidden claims, and expected citation mappings.
+  forbidden claims, unsupported claims, contradictory claims, and expected
+  citation mappings.
 - Run repeated live evals against real local/runtime models and record
   renderer-specific variance before changing defaults.
 - Calibrate claim-citation window sizes with private-data-safe live smokes
   before treating live pass rates as renderer rankings.
-- Consider an opt-in every-occurrence expected citation mapping mode after
-  fixture authors distinguish introductory repeated claims from repeated
-  supported claims.
+- Calibrate every-occurrence expected citation mapping usage so fixtures
+  distinguish introductory repeated claims from repeated supported claims.
 - Consider model-specific tokenizer counts when tokenizer access is available.
 
 ## Links

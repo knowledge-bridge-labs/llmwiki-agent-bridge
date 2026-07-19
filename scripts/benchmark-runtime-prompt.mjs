@@ -1112,7 +1112,7 @@ function classifyLiveRunFailureBuckets(result) {
   if (result.truncation?.detected || result.truncated) buckets.push('truncated')
   if (result.invalidCitationAnchorCount > 0) buckets.push('invalid-citation-anchor')
   if (result.requiredCitationAnchors?.missing?.length) buckets.push('missing-required-citation-anchor')
-  if (result.answerOracle?.enabled && !result.answerOracle.ok) {
+  if (result.answerOracle?.enabled && result.answerOracle.gate !== 'report-only' && !result.answerOracle.ok) {
     const metrics = result.answerOracle.metrics || {}
     if (
       metrics.missingRequiredTermCount > 0
@@ -1122,6 +1122,8 @@ function classifyLiveRunFailureBuckets(result) {
       buckets.push('answer-oracle-omission')
     }
     if (metrics.distortionCount > 0) buckets.push('answer-oracle-distortion')
+    if (metrics.unsupportedClaimHitCount > 0) buckets.push('answer-oracle-unsupported')
+    if (metrics.contradictoryClaimHitCount > 0) buckets.push('answer-oracle-contradiction')
   }
   if (result.status === 'ok' && result.expectedCitationMappings?.enabled && !result.expectedCitationMappings.ok) {
     const metrics = result.expectedCitationMappings.metrics || {}
@@ -1133,6 +1135,9 @@ function classifyLiveRunFailureBuckets(result) {
     }
     if (strictExpectedCitationMappingMetric(metrics, 'expectedCitationMismatchCount') > 0) {
       buckets.push('expected-citation-mismatch')
+    }
+    if (strictExpectedCitationMappingMetric(metrics, 'everyOccurrenceFailureCount') > 0) {
+      buckets.push('expected-citation-every-occurrence')
     }
     if (strictExpectedCitationMappingMetric(metrics, 'proximityFailureCount') > 0) {
       buckets.push('citation-proximity')
@@ -1147,7 +1152,7 @@ function classifyLiveRunFailureCodes(result) {
   if (result.truncation?.detected || result.truncated) codes.push('runtime_output_incomplete')
   if (result.invalidCitationAnchorCount > 0) codes.push('citation_anchor_invalid')
   if (result.requiredCitationAnchors?.missing?.length) codes.push('citation_anchor_missing')
-  if (result.answerOracle?.enabled && !result.answerOracle.ok) {
+  if (result.answerOracle?.enabled && result.answerOracle.gate !== 'report-only' && !result.answerOracle.ok) {
     const metrics = result.answerOracle.metrics || {}
     if (
       metrics.missingRequiredTermCount > 0
@@ -1157,6 +1162,8 @@ function classifyLiveRunFailureCodes(result) {
       codes.push('oracle_omission')
     }
     if (metrics.distortionCount > 0) codes.push('oracle_distortion')
+    if (metrics.unsupportedClaimHitCount > 0) codes.push('oracle_unsupported_claim')
+    if (metrics.contradictoryClaimHitCount > 0) codes.push('oracle_contradiction')
   }
   if (result.status === 'ok' && result.expectedCitationMappings?.enabled && !result.expectedCitationMappings.ok) {
     const metrics = result.expectedCitationMappings.metrics || {}
@@ -1165,6 +1172,7 @@ function classifyLiveRunFailureCodes(result) {
     }
     if (strictExpectedCitationMappingMetric(metrics, 'missingClaimCount') > 0) codes.push('expected_claim_missing')
     if (strictExpectedCitationMappingMetric(metrics, 'expectedCitationMismatchCount') > 0) codes.push('expected_citation_mismatch')
+    if (strictExpectedCitationMappingMetric(metrics, 'everyOccurrenceFailureCount') > 0) codes.push('expected_citation_every_occurrence_failed')
     if (strictExpectedCitationMappingMetric(metrics, 'proximityFailureCount') > 0) codes.push('claim_citation_proximity_failed')
   }
   return codes
@@ -1458,6 +1466,7 @@ function evaluateExpectedCitationMappings(text, mappings = null, evidenceBundleO
   const missingClaims = []
   const proximityFailures = []
   const expectedCitationMismatches = []
+  const everyOccurrenceFailures = []
   const satisfiedMappings = []
   const reportOnlyFailures = []
   const mappingResults = []
@@ -1465,11 +1474,17 @@ function evaluateExpectedCitationMappings(text, mappings = null, evidenceBundleO
   const strictMetrics = {
     missingClaimCount: 0,
     expectedCitationMismatchCount: 0,
+    everyOccurrenceFailureCount: 0,
     proximityFailureCount: 0,
     targetResolutionFailureCount: 0,
   }
   let strictMappingCount = 0
   let reportOnlyMappingCount = 0
+  let anyOccurrenceMappingCount = 0
+  let everyOccurrenceMappingCount = 0
+  let claimOccurrenceCount = 0
+  let satisfiedOccurrenceCount = 0
+  let unsatisfiedOccurrenceCount = 0
 
   for (const mapping of expectedMappings) {
     const claim = mapping?.claim
@@ -1477,6 +1492,7 @@ function evaluateExpectedCitationMappings(text, mappings = null, evidenceBundleO
       ? mapping.windowChars
       : 180
     const require = expectedCitationMappingRequirement(mapping)
+    const occurrenceMode = expectedCitationMappingOccurrenceMode(mapping)
     const effectiveGate = expectedCitationMappingGate(mapping, mappingGate)
     const resolved = resolveExpectedCitationMapping(mapping, context)
     const claimRanges = findOraclePhraseRanges(text, claim)
@@ -1486,6 +1502,7 @@ function evaluateExpectedCitationMappings(text, mappings = null, evidenceBundleO
       claim: formatOracleItem(claim),
       gate: effectiveGate,
       require,
+      occurrenceMode,
       windowChars,
       expectedCitationIds: resolved.expectedCitationIds,
       expectedCitationIndexes: resolved.expectedCitationIndexes,
@@ -1500,6 +1517,8 @@ function evaluateExpectedCitationMappings(text, mappings = null, evidenceBundleO
 
     if (effectiveGate === 'report-only') reportOnlyMappingCount += 1
     else strictMappingCount += 1
+    if (occurrenceMode === 'every') everyOccurrenceMappingCount += 1
+    else anyOccurrenceMappingCount += 1
 
     if (resolved.invalidTargets.length) {
       const failure = `expected citation target unresolved: ${label} (${resolved.invalidTargets.join('; ')})`
@@ -1553,8 +1572,34 @@ function evaluateExpectedCitationMappings(text, mappings = null, evidenceBundleO
       windowChars,
     })
     mappingResult.occurrences = occurrenceEvaluation.occurrences
+    mappingResult.anyOccurrenceSatisfied = occurrenceEvaluation.satisfied
+    mappingResult.everyOccurrenceSatisfied = occurrenceEvaluation.everyOccurrenceSatisfied
+    mappingResult.unsatisfiedOccurrenceCount = occurrenceEvaluation.unsatisfiedOccurrences.length
+    mappingResult.unsatisfiedOccurrences = occurrenceEvaluation.unsatisfiedOccurrences
+    claimOccurrenceCount += occurrenceEvaluation.occurrences.length
+    satisfiedOccurrenceCount += occurrenceEvaluation.satisfiedOccurrences.length
+    unsatisfiedOccurrenceCount += occurrenceEvaluation.unsatisfiedOccurrences.length
+    const mappingSatisfied = occurrenceMode === 'every'
+      ? occurrenceEvaluation.everyOccurrenceSatisfied
+      : occurrenceEvaluation.satisfied
 
-    if (!occurrenceEvaluation.satisfied) {
+    if (!mappingSatisfied) {
+      if (occurrenceMode === 'every') {
+        const failure = `expected citation ${formatExpectedCitationTargets(resolved, require)} did not satisfy occurrenceMode=every for ${occurrenceEvaluation.unsatisfiedOccurrences.length} of ${occurrenceEvaluation.occurrences.length} claim occurrences: ${label}`
+        recordExpectedCitationMappingFailure({
+          failure,
+          category: 'everyOccurrenceFailureCount',
+          effectiveGate,
+          failures,
+          reportOnlyFailures,
+          strictMetrics,
+        })
+        everyOccurrenceFailures.push(label)
+        mappingResult.failure = (effectiveGate === 'report-only' ? reportOnlyFailures : failures).at(-1)
+        mappingResult.failureCode = 'expected_citation_every_occurrence_failed'
+        mappingResults.push(mappingResult)
+        continue
+      }
       if (occurrenceEvaluation.nearbyAnchors.length) {
         const failure = `expected citation ${formatExpectedCitationTargets(resolved, require)} did not satisfy require=${require} near any claim occurrence; nearby citation anchors included ${formatNearbyCitationAnchors(occurrenceEvaluation.nearbyAnchors)} for claim: ${label}`
         recordExpectedCitationMappingFailure({
@@ -1602,10 +1647,17 @@ function evaluateExpectedCitationMappings(text, mappings = null, evidenceBundleO
       expectedMappingCount: expectedMappings.length,
       strictMappingCount,
       reportOnlyMappingCount,
+      anyOccurrenceMappingCount,
+      everyOccurrenceMappingCount,
       satisfiedMappingCount: satisfiedMappings.length,
       coveragePct: percentage(satisfiedMappings.length, expectedMappings.length),
+      claimOccurrenceCount,
+      satisfiedOccurrenceCount,
+      unsatisfiedOccurrenceCount,
+      occurrenceCoveragePct: percentage(satisfiedOccurrenceCount, claimOccurrenceCount),
       missingClaimCount: missingClaims.length,
       expectedCitationMismatchCount: expectedCitationMismatches.length,
+      everyOccurrenceFailureCount: everyOccurrenceFailures.length,
       proximityFailureCount: proximityFailures.length,
       missingCitationWithinWindowCount: proximityFailures.length,
       targetResolutionFailureCount: targetResolutionFailures.length,
@@ -1615,11 +1667,13 @@ function evaluateExpectedCitationMappings(text, mappings = null, evidenceBundleO
       reportOnlyFailureCount,
       strictMissingClaimCount: strictMetrics.missingClaimCount,
       strictExpectedCitationMismatchCount: strictMetrics.expectedCitationMismatchCount,
+      strictEveryOccurrenceFailureCount: strictMetrics.everyOccurrenceFailureCount,
       strictProximityFailureCount: strictMetrics.proximityFailureCount,
       strictTargetResolutionFailureCount: strictMetrics.targetResolutionFailureCount,
     },
     missingClaims,
     expectedCitationMismatches,
+    everyOccurrenceFailures,
     missingCitationWithinWindow: proximityFailures,
     targetResolutionFailures,
     mappingResults,
@@ -1726,6 +1780,16 @@ function expectedCitationMappingRequirement(mapping) {
   return String(mapping?.require ?? mapping?.expectedCitationMode ?? '').trim().toLowerCase() === 'all' ? 'all' : 'any'
 }
 
+function expectedCitationMappingOccurrenceMode(mapping) {
+  const mode = String(
+    mapping?.occurrenceMode
+    ?? mapping?.claimOccurrenceMode
+    ?? mapping?.expectedClaimOccurrenceMode
+    ?? '',
+  ).trim().toLowerCase()
+  return ['every', 'each', 'all'].includes(mode) ? 'every' : 'any'
+}
+
 function expectedCitationMappingGate(mapping, defaultGate) {
   const normalizedDefaultGate = defaultGate === 'report-only' ? 'report-only' : 'strict'
   if (normalizedDefaultGate === 'report-only') return 'report-only'
@@ -1793,6 +1857,8 @@ function evaluateExpectedCitationMappingOccurrences({
     }
   })
   const satisfiedOccurrence = occurrences.find((occurrence) => occurrence.satisfied) || null
+  const satisfiedOccurrences = occurrences.filter((occurrence) => occurrence.satisfied)
+  const unsatisfiedOccurrences = occurrences.filter((occurrence) => !occurrence.satisfied)
   const nearbyAnchors = validAnchorOffsets.filter((anchor) => (
     occurrences.some((occurrence) => anchor.end >= occurrence.windowStart && anchor.start <= occurrence.windowEnd)
   ))
@@ -1800,7 +1866,10 @@ function evaluateExpectedCitationMappingOccurrences({
   return {
     occurrences,
     satisfied: Boolean(satisfiedOccurrence),
+    everyOccurrenceSatisfied: occurrences.length > 0 && unsatisfiedOccurrences.length === 0,
     satisfiedOccurrence,
+    satisfiedOccurrences,
+    unsatisfiedOccurrences,
     nearbyAnchors,
   }
 }
@@ -1867,11 +1936,15 @@ function evaluateAnswerOracle(text, oracle = null) {
   const requiredRelations = Array.isArray(oracle.requiredRelations) ? oracle.requiredRelations : []
   const forbiddenTerms = Array.isArray(oracle.forbiddenTerms) ? oracle.forbiddenTerms.filter(Boolean) : []
   const forbiddenClaims = Array.isArray(oracle.forbiddenClaims) ? oracle.forbiddenClaims.filter(Boolean) : []
+  const unsupportedClaims = Array.isArray(oracle.unsupportedClaims) ? oracle.unsupportedClaims.filter(Boolean) : []
+  const contradictoryClaims = Array.isArray(oracle.contradictoryClaims) ? oracle.contradictoryClaims.filter(Boolean) : []
   const missingTerms = requiredTerms.filter((term) => !answerContainsAnyOf(text, term))
   const missingPhrases = requiredPhrases.filter((phrase) => !answerContainsAnyOf(text, phrase))
   const missingRelations = requiredRelations.filter((relation) => !answerContainsRelation(text, relation))
   const forbiddenFound = forbiddenTerms.filter((term) => answerContainsAnyOf(text, term))
   const forbiddenClaimFound = forbiddenClaims.filter((claim) => answerContainsAllOf(text, claim))
+  const unsupportedClaimFound = unsupportedClaims.filter((claim) => answerContainsAllOf(text, claim))
+  const contradictoryClaimFound = contradictoryClaims.filter((claim) => answerContainsAllOf(text, claim))
   const requiredTermCoveragePct = requiredTerms.length
     ? Number((((requiredTerms.length - missingTerms.length) / requiredTerms.length) * 100).toFixed(2))
     : 100
@@ -1900,6 +1973,12 @@ function evaluateAnswerOracle(text, oracle = null) {
   if (forbiddenClaimFound.length) {
     failures.push(`forbidden claims present: ${forbiddenClaimFound.slice(0, 5).map(formatOracleItem).join(', ')}`)
   }
+  if (unsupportedClaimFound.length) {
+    failures.push(`unsupported claims present: ${unsupportedClaimFound.slice(0, 5).map(formatOracleItem).join(', ')}`)
+  }
+  if (contradictoryClaimFound.length) {
+    failures.push(`contradictory claims present: ${contradictoryClaimFound.slice(0, 5).map(formatOracleItem).join(', ')}`)
+  }
 
   return {
     enabled: true,
@@ -1920,13 +1999,22 @@ function evaluateAnswerOracle(text, oracle = null) {
       forbiddenTermHitCount: forbiddenFound.length,
       forbiddenClaimCount: forbiddenClaims.length,
       forbiddenClaimHitCount: forbiddenClaimFound.length,
-      distortionCount: forbiddenFound.length + forbiddenClaimFound.length,
+      unsupportedClaimCount: unsupportedClaims.length,
+      unsupportedClaimHitCount: unsupportedClaimFound.length,
+      contradictoryClaimCount: contradictoryClaims.length,
+      contradictoryClaimHitCount: contradictoryClaimFound.length,
+      distortionCount: forbiddenFound.length
+        + forbiddenClaimFound.length
+        + unsupportedClaimFound.length
+        + contradictoryClaimFound.length,
     },
     missingTerms: missingTerms.map(formatOracleItem),
     missingPhrases: missingPhrases.map(formatOracleItem),
     missingRelations: missingRelations.map(formatRequiredRelation),
     forbiddenFound: forbiddenFound.map(formatOracleItem),
     forbiddenClaimFound: forbiddenClaimFound.map(formatOracleItem),
+    unsupportedClaimFound: unsupportedClaimFound.map(formatOracleItem),
+    contradictoryClaimFound: contradictoryClaimFound.map(formatOracleItem),
     failures,
   }
 }
@@ -1948,6 +2036,9 @@ function answerContainsAnyOf(text, item) {
 function answerContainsAllOf(text, item) {
   if (item && typeof item === 'object' && Array.isArray(item.allOf)) {
     return item.allOf.every((value) => textContainsPhrase(text, value))
+  }
+  if (item && typeof item === 'object' && Array.isArray(item.anyOf)) {
+    return item.anyOf.some((value) => textContainsPhrase(text, value))
   }
   return textContainsPhrase(text, item)
 }
@@ -2831,6 +2922,12 @@ function buildEvidenceBundleFixtures() {
           'production default is approved',
           'citations are optional',
         ],
+        unsupportedClaims: [
+          { allOf: ['Prompt Codec Implementation', 'is the production default'] },
+        ],
+        contradictoryClaims: [
+          { allOf: ['Runtime Prompt Decision', 'does not require', 'Prompt Codec Implementation'] },
+        ],
         expectedCitationMappings: [
           {
             claim: 'Runtime Prompt Decision requires Prompt Codec Implementation',
@@ -3042,5 +3139,6 @@ export {
   analyzeCitationAnchors,
   classifyLiveRunFailureBuckets,
   classifyLiveRunFailureCodes,
+  evaluateAnswerOracle,
   evaluateExpectedCitationMappings,
 }

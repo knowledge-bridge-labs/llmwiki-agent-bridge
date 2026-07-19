@@ -13,6 +13,7 @@ import { DefaultAgentCardResolver } from '@a2a-js/sdk/client'
 import {
   classifyLiveRunFailureBuckets,
   classifyLiveRunFailureCodes,
+  evaluateAnswerOracle,
   evaluateExpectedCitationMappings,
 } from '../scripts/benchmark-runtime-prompt.mjs'
 import { agentBridgeOpenApi, startAgentBridge, startHermesA2aBridge } from '../src/index.mjs'
@@ -4017,6 +4018,219 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(runtime.requests.length, 2)
   })
 
+  it('classifies unsupported answer-oracle claims distinctly', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: [
+                'Runtime Prompt Decision requires Prompt Codec Implementation [2](#citation-2),',
+                'and Prompt Codec Implementation measured by Prompt renderer benchmark [3](#citation-3) before Runtime Prompt Validation [1](#citation-1).',
+                'Prompt Codec Implementation is the production default [2](#citation-2).',
+              ].join(' '),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 28,
+          total_tokens: 48,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'graph-linear-chain',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '128',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /unsupported claims present/)
+    assert.match(error.stderr, /oracle_unsupported_claim/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+
+    assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
+    assert.equal(rendererReport.expectedCitationMappings.ok, true)
+    assert.equal(rendererReport.answerOracle.ok, false)
+    assert.equal(rendererReport.answerOracle.metrics.unsupportedClaimCount, 1)
+    assert.equal(rendererReport.answerOracle.metrics.unsupportedClaimHitCount, 1)
+    assert.equal(rendererReport.answerOracle.metrics.contradictoryClaimHitCount, 0)
+    assert.equal(rendererReport.answerOracle.metrics.distortionCount, 1)
+    assert.deepEqual(rendererReport.failureBuckets, ['answer-oracle-distortion', 'answer-oracle-unsupported'])
+    assert.deepEqual(rendererReport.failureCodes, ['oracle_distortion', 'oracle_unsupported_claim'])
+    assert.equal(rendererReport.aggregate.failureBucketCounts['answer-oracle-distortion'], 1)
+    assert.equal(rendererReport.aggregate.failureBucketCounts['answer-oracle-unsupported'], 1)
+    assert.equal(rendererReport.aggregate.failureCodeCounts.oracle_distortion, 1)
+    assert.equal(rendererReport.aggregate.failureCodeCounts.oracle_unsupported_claim, 1)
+    assert.equal(rendererTotals.failureBucketCounts['answer-oracle-distortion'], 1)
+    assert.equal(rendererTotals.failureBucketCounts['answer-oracle-unsupported'], 1)
+    assert.equal(rendererTotals.failureCodeCounts.oracle_distortion, 1)
+    assert.equal(rendererTotals.failureCodeCounts.oracle_unsupported_claim, 1)
+  })
+
+  it('classifies contradictory answer-oracle claims distinctly', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: [
+                'Runtime Prompt Decision requires Prompt Codec Implementation [2](#citation-2),',
+                'and Prompt Codec Implementation measured by Prompt renderer benchmark [3](#citation-3) before Runtime Prompt Validation [1](#citation-1).',
+                'Runtime Prompt Decision does not require Prompt Codec Implementation [2](#citation-2).',
+              ].join(' '),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 28,
+          total_tokens: 48,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'graph-linear-chain',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '128',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /contradictory claims present/)
+    assert.match(error.stderr, /oracle_contradiction/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+
+    assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
+    assert.equal(rendererReport.expectedCitationMappings.ok, true)
+    assert.equal(rendererReport.answerOracle.ok, false)
+    assert.equal(rendererReport.answerOracle.metrics.unsupportedClaimHitCount, 0)
+    assert.equal(rendererReport.answerOracle.metrics.contradictoryClaimCount, 1)
+    assert.equal(rendererReport.answerOracle.metrics.contradictoryClaimHitCount, 1)
+    assert.equal(rendererReport.answerOracle.metrics.distortionCount, 1)
+    assert.deepEqual(rendererReport.failureBuckets, ['answer-oracle-distortion', 'answer-oracle-contradiction'])
+    assert.deepEqual(rendererReport.failureCodes, ['oracle_distortion', 'oracle_contradiction'])
+    assert.equal(rendererReport.aggregate.failureBucketCounts['answer-oracle-distortion'], 1)
+    assert.equal(rendererReport.aggregate.failureBucketCounts['answer-oracle-contradiction'], 1)
+    assert.equal(rendererReport.aggregate.failureCodeCounts.oracle_distortion, 1)
+    assert.equal(rendererReport.aggregate.failureCodeCounts.oracle_contradiction, 1)
+    assert.equal(rendererTotals.failureBucketCounts['answer-oracle-distortion'], 1)
+    assert.equal(rendererTotals.failureBucketCounts['answer-oracle-contradiction'], 1)
+    assert.equal(rendererTotals.failureCodeCounts.oracle_distortion, 1)
+    assert.equal(rendererTotals.failureCodeCounts.oracle_contradiction, 1)
+  })
+
+  it('keeps report-only unsupported and contradictory answer-oracle claims out of strict failure classification', () => {
+    const oracleReport = evaluateAnswerOracle(
+      'A report-only answer says Alpha claim is unsupported and Beta claim contradicts the fixture.',
+      {
+        gate: 'report-only',
+        unsupportedClaims: [{ allOf: ['Alpha claim', 'unsupported'] }],
+        contradictoryClaims: [{ allOf: ['Beta claim', 'contradicts'] }],
+      },
+    )
+
+    assert.equal(oracleReport.enabled, true)
+    assert.equal(oracleReport.gate, 'report-only')
+    assert.equal(oracleReport.ok, false)
+    assert.equal(oracleReport.metrics.unsupportedClaimHitCount, 1)
+    assert.equal(oracleReport.metrics.contradictoryClaimHitCount, 1)
+    assert.equal(oracleReport.metrics.distortionCount, 2)
+    assert.match(oracleReport.failures.join('; '), /unsupported claims present/)
+    assert.match(oracleReport.failures.join('; '), /contradictory claims present/)
+    assert.deepEqual(classifyLiveRunFailureBuckets({
+      status: 'ok',
+      answerOracle: oracleReport,
+    }), [])
+    assert.deepEqual(classifyLiveRunFailureCodes({
+      status: 'ok',
+      answerOracle: oracleReport,
+    }), [])
+  })
+
+  it('preserves oracle distortion classification for forbidden configured patterns', () => {
+    const oracleReport = evaluateAnswerOracle(
+      'The answer says citations are optional and the production default is approved despite the fixture gate.',
+      {
+        forbiddenTerms: ['citations are optional'],
+        forbiddenClaims: [{ allOf: ['production default', 'approved'] }],
+      },
+    )
+
+    assert.equal(oracleReport.enabled, true)
+    assert.equal(oracleReport.gate, 'strict')
+    assert.equal(oracleReport.ok, false)
+    assert.equal(oracleReport.metrics.forbiddenTermHitCount, 1)
+    assert.equal(oracleReport.metrics.forbiddenClaimHitCount, 1)
+    assert.equal(oracleReport.metrics.distortionCount, 2)
+    assert.equal(oracleReport.metrics.unsupportedClaimHitCount, 0)
+    assert.equal(oracleReport.metrics.contradictoryClaimHitCount, 0)
+    assert.deepEqual(classifyLiveRunFailureBuckets({
+      status: 'ok',
+      answerOracle: oracleReport,
+    }), ['answer-oracle-distortion'])
+    assert.deepEqual(classifyLiveRunFailureCodes({
+      status: 'ok',
+      answerOracle: oracleReport,
+    }), ['oracle_distortion'])
+  })
+
   it('reports repeated live runtime pass variance and fails on any strict failed run', async (t) => {
     let callCount = 0
     const runtime = await startFixtureServer(async ({ response }) => {
@@ -4701,10 +4915,135 @@ describe('llmwiki-agent-bridge', () => {
 
     assert.equal(report.ok, true)
     assert.equal(report.metrics.satisfiedMappingCount, 1)
+    assert.equal(report.metrics.anyOccurrenceMappingCount, 1)
+    assert.equal(report.metrics.everyOccurrenceMappingCount, 0)
+    assert.equal(report.metrics.claimOccurrenceCount, 2)
+    assert.equal(report.metrics.satisfiedOccurrenceCount, 1)
+    assert.equal(report.metrics.unsatisfiedOccurrenceCount, 1)
+    assert.equal(report.metrics.occurrenceCoveragePct, 50)
+    assert.equal(report.mappingResults[0].occurrenceMode, 'any')
     assert.equal(report.mappingResults[0].occurrenceCount, 2)
     assert.equal(report.mappingResults[0].occurrences[0].satisfied, false)
     assert.equal(report.mappingResults[0].occurrences[1].satisfied, true)
     assert.deepEqual(report.mappingResults[0].satisfiedOccurrence.matchedCitationIndexes, [2])
+  })
+
+  it('requires every repeated claim occurrence when occurrenceMode is every', () => {
+    const report = evaluateExpectedCitationMappings(
+      [
+        'Repeated mapped claim is supported first [2](#citation-2).',
+        'x'.repeat(140),
+        'Repeated mapped claim is supported again [2](#citation-2).',
+      ].join(' '),
+      [
+        {
+          claim: 'Repeated mapped claim',
+          expectedCitationIds: ['fixture:beta'],
+          occurrenceMode: 'every',
+          windowChars: 35,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+    )
+
+    assert.equal(report.ok, true)
+    assert.equal(report.metrics.everyOccurrenceMappingCount, 1)
+    assert.equal(report.metrics.anyOccurrenceMappingCount, 0)
+    assert.equal(report.metrics.satisfiedMappingCount, 1)
+    assert.equal(report.metrics.everyOccurrenceFailureCount, 0)
+    assert.equal(report.metrics.claimOccurrenceCount, 2)
+    assert.equal(report.metrics.satisfiedOccurrenceCount, 2)
+    assert.equal(report.metrics.unsatisfiedOccurrenceCount, 0)
+    assert.equal(report.metrics.occurrenceCoveragePct, 100)
+    assert.equal(report.mappingResults[0].occurrenceMode, 'every')
+    assert.equal(report.mappingResults[0].occurrenceCount, 2)
+    assert.equal(report.mappingResults[0].everyOccurrenceSatisfied, true)
+    assert.deepEqual(report.mappingResults[0].occurrences.map((occurrence) => occurrence.satisfied), [true, true])
+  })
+
+  it('fails every-occurrence expected citation mappings when one repeated claim is uncited', () => {
+    const report = evaluateExpectedCitationMappings(
+      [
+        'Repeated mapped claim is initially uncited.',
+        'x'.repeat(140),
+        'Repeated mapped claim is supported here [2](#citation-2).',
+      ].join(' '),
+      [
+        {
+          claim: 'Repeated mapped claim',
+          expectedCitationIds: ['fixture:beta'],
+          occurrenceMode: 'every',
+          windowChars: 35,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+    )
+
+    assert.equal(report.ok, false)
+    assert.equal(report.metrics.everyOccurrenceMappingCount, 1)
+    assert.equal(report.metrics.satisfiedMappingCount, 0)
+    assert.equal(report.metrics.everyOccurrenceFailureCount, 1)
+    assert.equal(report.metrics.strictEveryOccurrenceFailureCount, 1)
+    assert.equal(report.metrics.proximityFailureCount, 0)
+    assert.equal(report.metrics.claimOccurrenceCount, 2)
+    assert.equal(report.metrics.satisfiedOccurrenceCount, 1)
+    assert.equal(report.metrics.unsatisfiedOccurrenceCount, 1)
+    assert.equal(report.metrics.occurrenceCoveragePct, 50)
+    assert.equal(report.mappingResults[0].occurrenceMode, 'every')
+    assert.equal(report.mappingResults[0].satisfied, false)
+    assert.equal(report.mappingResults[0].anyOccurrenceSatisfied, true)
+    assert.equal(report.mappingResults[0].everyOccurrenceSatisfied, false)
+    assert.equal(report.mappingResults[0].unsatisfiedOccurrenceCount, 1)
+    assert.equal(report.mappingResults[0].failureCode, 'expected_citation_every_occurrence_failed')
+    assert.match(report.failures[0], /occurrenceMode=every/)
+    assert.deepEqual(classifyLiveRunFailureBuckets({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), ['expected-citation-every-occurrence'])
+    assert.deepEqual(classifyLiveRunFailureCodes({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), ['expected_citation_every_occurrence_failed'])
+  })
+
+  it('keeps report-only every-occurrence mapping failures out of strict classification', () => {
+    const report = evaluateExpectedCitationMappings(
+      [
+        'Report-only repeated mapped claim is initially uncited.',
+        'x'.repeat(140),
+        'Report-only repeated mapped claim is supported here [1](#citation-1).',
+      ].join(' '),
+      [
+        {
+          claim: 'Report-only repeated mapped claim',
+          expectedCitationIds: ['fixture:alpha'],
+          occurrenceMode: 'every',
+          gate: 'report-only',
+          windowChars: 35,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+    )
+
+    assert.equal(report.ok, true)
+    assert.deepEqual(report.failures, [])
+    assert.equal(report.metrics.everyOccurrenceFailureCount, 1)
+    assert.equal(report.metrics.strictEveryOccurrenceFailureCount, 0)
+    assert.equal(report.metrics.reportOnlyFailureCount, 1)
+    assert.equal(report.metrics.claimOccurrenceCount, 2)
+    assert.equal(report.metrics.satisfiedOccurrenceCount, 1)
+    assert.equal(report.metrics.unsatisfiedOccurrenceCount, 1)
+    assert.equal(report.metrics.occurrenceCoveragePct, 50)
+    assert.equal(report.mappingResults[0].failureCode, 'expected_citation_every_occurrence_failed')
+    assert.match(report.reportOnlyFailures[0], /occurrenceMode=every/)
+    assert.deepEqual(classifyLiveRunFailureBuckets({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), [])
+    assert.deepEqual(classifyLiveRunFailureCodes({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), [])
   })
 
   it('dry packs the npm tarball with expected files', async () => {

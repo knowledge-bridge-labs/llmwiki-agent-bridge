@@ -17,12 +17,27 @@ quality gates pass.
 | Runtime completion | Live responses report `finishReason`, `truncation`, and aggregate truncation counts | `finish_reason=length` and inferred max-token exhaustion fail strict runs |
 | Lossy renderer isolation | Lossy projections are labeled and cannot silently become the production contract | Must be explicit candidate/eval-only |
 | Reproducibility | Offline benchmark does not call provider/runtime/network | Required |
-| Answer oracle | Live outputs cover configured required terms/relations and avoid forbidden terms | Required when a fixture defines an oracle |
-| Expected citation mappings | Configured claims resolve to expected citation anchors within `windowChars` | Required when a strict fixture defines mappings |
+| Answer oracle | Live outputs cover configured required terms/relations and avoid explicitly configured forbidden, unsupported, and contradictory patterns | Required when a fixture defines a strict oracle |
+| Expected citation mappings | Configured claims resolve to expected citation anchors within `windowChars`, with opt-in every-occurrence mode for repeated claims | Required when a strict fixture defines mappings |
 | Failure taxonomy | Live reports include `failureCodes` and aggregate `failureCodeCounts` | Required for failure attribution |
 
 Fixtures may set an answer oracle to `report-only` while a new oracle is being
-calibrated. Production-quality fixture gates should remain strict.
+calibrated. Production-quality fixture gates should remain strict. Report-only
+answer-oracle diagnostics remain in the report, but strict live
+`failureCodes`/`failureBuckets` are not emitted for answer-oracle failures when
+`answerOracle.gate` is `report-only`.
+
+Answer oracles are deterministic configured-pattern checks, not general
+semantic judges. `unsupportedClaims` and `contradictoryClaims` use the same
+literal/string, `anyOf`, and `allOf` matching style as existing oracle fields.
+They fail strict runs even when all required citation anchors are present.
+Reports include `unsupportedClaimHitCount` and
+`contradictoryClaimHitCount`. `distortionCount` is the aggregate count of
+configured negative-pattern hits across `forbiddenTerms`, `forbiddenClaims`,
+`unsupportedClaims`, and `contradictoryClaims`; strict failure classification
+emits the broad `oracle_distortion` code plus the distinct
+`oracle_unsupported_claim` or `oracle_contradiction` code when those categories
+are hit.
 
 Expected citation mappings are calibrated independently from the rest of the
 answer oracle. Fixtures may set `answerOracle.expectedCitationMappingsGate` to
@@ -34,16 +49,20 @@ individual mapping cannot opt back into strict mode with `gate: "strict"` or
 report-only. If omitted, expected citation mappings are strict even when the
 broader answer oracle is report-only.
 
-Each mapping supports `require: "any" | "all"` over
-`expectedCitationIds`/`citationIndexes`; the default is `any` to preserve the
-Loop 5 behavior where one matching target satisfied a multi-target mapping.
-`all` requires every resolved unique citation index in the same claim window.
+Each mapping supports two independent modes. `require: "any" | "all"` controls
+target semantics over `expectedCitationIds`/`citationIndexes`; the default is
+`any` to preserve the Loop 5 behavior where one matching target satisfied a
+multi-target mapping. `all` requires every resolved unique citation index in
+the same claim window. `occurrenceMode: "any" | "every"` controls repeated
+claim semantics; the default is `any` to preserve Loop 6 pass-if-any occurrence
+behavior. `every` requires each found claim occurrence to satisfy the mapping.
+Reports include `claimOccurrenceCount`, `satisfiedOccurrenceCount`,
+`unsatisfiedOccurrenceCount`, `occurrenceCoveragePct`, and
+`expected_citation_every_occurrence_failed` for strict every-occurrence
+failures.
 Unknown `expectedCitationIds` and out-of-range citation indexes are reported as
 target-resolution failures with `expected_citation_target_unresolved`, not as
-wrong-nearby-citation mismatches. The current Loop 6 repeated-claim behavior
-checks every occurrence and passes a mapping if any occurrence satisfies the
-target condition; stricter "every occurrence must satisfy" semantics remain a
-future hardening option.
+wrong-nearby-citation mismatches.
 
 ## Scored Loop Rubric
 
@@ -183,7 +202,25 @@ These metrics can evolve as fixtures improve:
   per-mapping `require`, unresolved target metrics/details, distinct
   `expected_citation_target_unresolved` failure code, and all-occurrence
   scanning with current pass-if-any-occurrence semantics.
-- Retrospective: Loop 6 keeps the minimal pass-if-any repeated-claim behavior
-  requested for this implementation. A future stricter mode can require every
-  occurrence to satisfy the mapping once fixtures are calibrated for repeated
-  introductory/restated claims.
+- Retrospective: Loop 6 kept the minimal pass-if-any repeated-claim behavior
+  requested for that implementation and left stricter repeated-claim
+  enforcement for a later opt-in mode.
+
+### Loop 7: Every-occurrence mappings and configured claim failures
+
+- Research/analysis: repeated claim support needed an opt-in stricter mode
+  without changing Loop 6 defaults, and answer-oracle failures needed distinct
+  configured unsupported/contradictory claim categories instead of treating all
+  disallowed text as generic distortion.
+- TDD target: deterministic tests cover default-any repeated-claim
+  compatibility, `occurrenceMode: "every"` pass/fail behavior, report-only
+  every-occurrence diagnostics, unsupported claim failures, contradictory claim
+  failures, preserved forbidden-pattern distortion classification, and
+  report-only answer-oracle classification suppression.
+- Quality gates added: per-mapping `occurrenceMode`, aggregate occurrence
+  metrics, `expected_citation_every_occurrence_failed`, configured
+  `unsupportedClaims`, configured `contradictoryClaims`,
+  `oracle_unsupported_claim`, and `oracle_contradiction`.
+- Retrospective: these checks are explicit fixture-pattern gates, not semantic
+  judging. They increase attribution fidelity for local deterministic evals
+  while keeping public artifacts and OpenAPI unchanged.

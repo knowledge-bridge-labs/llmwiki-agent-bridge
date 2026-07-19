@@ -35,7 +35,27 @@
   per-mapping `gate: "strict"` or `reportOnly: false` settings and do not emit
   strict failure buckets/codes.
 - Repeated claim phrases are all evaluated, and current Loop 6 behavior passes
-  when any occurrence satisfies the expected citation target condition.
+  when omitted `occurrenceMode` defaults to `any` and any occurrence satisfies
+  the expected citation target condition.
+- Expected citation mappings with `occurrenceMode: "every"` pass only when
+  every repeated claim occurrence satisfies the configured target condition.
+- Strict every-occurrence mapping failures report occurrence coverage metrics
+  and emit `expected_citation_every_occurrence_failed`.
+- Report-only every-occurrence mapping failures remain diagnostic and do not
+  emit strict failure buckets/codes.
+- Unsupported answer-oracle claims fail strict live mock validation even when
+  all citations and expected mappings pass, report `unsupportedClaimHitCount`,
+  increment `distortionCount`, and emit `oracle_distortion` plus
+  `oracle_unsupported_claim`.
+- Contradictory answer-oracle claims fail strict live mock validation even when
+  all citations and expected mappings pass, report
+  `contradictoryClaimHitCount`, increment `distortionCount`, and emit
+  `oracle_distortion` plus `oracle_contradiction`.
+- Report-only answer-oracle unsupported/contradictory diagnostics do not emit
+  strict failure buckets/codes.
+- Existing forbidden-pattern oracle distortion checks still emit
+  `oracle_distortion` and include forbidden term plus forbidden claim hits in
+  `distortionCount`.
 - Live renderer and totals reports include
   `averageExpectedCitationMappingCoveragePct`.
 
@@ -43,7 +63,7 @@
 
 ```sh
 npm run bench:runtime-prompt
-npm test -- --test-name-pattern "Graphify graph fixture|exact citation anchors|answer oracle|repeated live|finish reason|inferred live runtime truncation|citation stuffing|expected citation mapping"
+npm test -- --test-name-pattern "Graphify graph fixture|exact citation anchors|answer oracle|unsupported|contradictory|oracle distortion|repeated live|finish reason|inferred live runtime truncation|citation stuffing|expected citation mapping|every-occurrence|occurrenceMode"
 node --check scripts/benchmark-runtime-prompt.mjs
 node --check test/agent-bridge.test.mjs
 npm run check
