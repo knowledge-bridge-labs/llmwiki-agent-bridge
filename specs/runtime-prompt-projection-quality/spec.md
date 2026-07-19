@@ -216,3 +216,19 @@ quality gates.
   This remains benchmark-only/live-eval-only behavior and must not change or
   loosen answer-oracle, expected-citation mapping, occurrence, distortion,
   unsupported, contradictory, truncation, or citation-anchor validation.
+- `REQ-035`: The benchmark-only strict answer-format skeleton includes an
+  allowed exact citation-anchor set derived from the fixture's top-level
+  citations, such as `[1](#citation-1)` through `[N](#citation-N)`, and tells
+  the runtime not to invent or use any other citation anchor. It also tells the
+  runtime to omit unsupported factual claims instead of creating a new anchor
+  when no allowed anchor supports the claim. Fixtures that omit the strict
+  skeleton also omit this allowed-anchor guidance. This remains
+  benchmark-only/live-eval-only behavior and must not change or loosen
+  `citation_anchor_invalid` validation.
+- `REQ-036`: Live diagnostic summaries and the private-safe live wrapper
+  preserve invalid exact citation-anchor diagnostics as exact anchor tokens and
+  aggregate counts only, for example `invalidCitationAnchors` and
+  `invalidCitationAnchorCounts`. They must not expose raw answer output,
+  offsets, surrounding text, private endpoints, configured model names, keys,
+  temp paths, or local absolute paths. Invalid anchors still fail strict live
+  validation with `citation_anchor_invalid`.

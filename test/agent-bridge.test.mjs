@@ -4431,7 +4431,7 @@ describe('llmwiki-agent-bridge', () => {
     }
   })
 
-  it('sends claim-preserving live prompt contract, strict claim checklist, and strict answer format to the mock runtime', async (t) => {
+  it('sends claim-preserving live prompt contract, strict claim checklist, allowed citation anchor guidance, and strict answer format to the mock runtime', async (t) => {
     const runtime = await startFixtureServer(async ({ response }) => {
       writeJson(response, 200, {
         choices: [
@@ -4494,6 +4494,12 @@ describe('llmwiki-agent-bridge', () => {
 
     assert.match(userMessage.content, /# Benchmark-only strict answer format/)
     assert.match(userMessage.content, /row-shaped skeleton only for this live benchmark run/i)
+    assert.match(
+      userMessage.content,
+      /Allowed exact citation anchors are only \[1\]\(#citation-1\) \[2\]\(#citation-2\) \[3\]\(#citation-3\) \[4\]\(#citation-4\) \[5\]\(#citation-5\)\./,
+    )
+    assert.match(userMessage.content, /do not invent or use any other citation anchor/i)
+    assert.match(userMessage.content, /omit that unsupported claim rather than creating a new anchor/i)
     assert.match(userMessage.content, /every Expected claim row exactly once/)
     assert.match(userMessage.content, /Expected claim rows are not optional/)
     assert.match(userMessage.content, /must not be omitted, split, merged, or rephrased/)
@@ -4694,6 +4700,7 @@ describe('llmwiki-agent-bridge', () => {
     assert(userMessage)
     assert.doesNotMatch(userMessage.content, /# Benchmark-only strict claim checklist/)
     assert.doesNotMatch(userMessage.content, /# Benchmark-only strict answer format/)
+    assert.doesNotMatch(userMessage.content, /Allowed exact citation anchors are only/)
     assert.doesNotMatch(userMessage.content, /Expected claim phrase:/)
     assert.doesNotMatch(userMessage.content, /Mandatory completeness checklist:/)
     assert.doesNotMatch(userMessage.content, /Expected claim row:/)
@@ -4804,6 +4811,104 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(serialized, /\/(?:Users|home)\//)
   })
 
+  it('reports private-safe invalid anchor diagnostics without weakening strict validation', async (t) => {
+    const invalidAnchorToken = '[6](#citation-6)'
+    const rawAnswerCanary = 'loop-19-invalid-anchor-raw-answer-canary'
+    const syntheticPrivateModelName = 'loop-19-invalid-anchor-model-canary'
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: [
+                strictEvidenceFidelityRowAnswer(),
+                `${rawAnswerCanary} ${invalidAnchorToken}.`,
+              ].join('\n'),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 48,
+          completion_tokens: 82,
+          total_tokens: 130,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await runRuntimePromptBenchmark([
+        '--live',
+        '--fixture',
+        'graph-strict-evidence-fidelity',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '384',
+        '--timeout-ms',
+        '10000',
+      ], {
+        env: {
+          ...mockRuntimeEnv(runtime),
+          LLMWIKI_AGENT_BRIDGE_MODEL: syntheticPrivateModelName,
+        },
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+    const diagnostic = rendererReport.diagnosticSummary
+    const totalsDiagnostic = rendererTotals.diagnosticSummary
+
+    assert.equal(report.live.validation.ok, false)
+    assert.equal(rendererReport.pass, false)
+    assert.deepEqual(rendererReport.failureCodes, ['citation_anchor_invalid'])
+    assert.equal(rendererReport.requiredCitationAnchors.coveragePct, 100)
+    assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
+    assert.equal(rendererReport.answerOracle.ok, true)
+    assert.equal(rendererReport.expectedCitationMappings.ok, true)
+    assert.equal(rendererReport.invalidCitationAnchorCount, 1)
+    assert.deepEqual(rendererReport.invalidCitationAnchors, [invalidAnchorToken])
+    assert.deepEqual(rendererReport.invalidCitationAnchorCounts, { [invalidAnchorToken]: 1 })
+
+    assert.equal(diagnostic.citationCoverage.invalidCitationAnchorCount, 1)
+    assert.deepEqual(diagnostic.citationCoverage.invalidCitationAnchors, [invalidAnchorToken])
+    assert.deepEqual(diagnostic.citationCoverage.invalidCitationAnchorCounts, { [invalidAnchorToken]: 1 })
+    assert.equal(diagnostic.failingRuns.length, 1)
+    assert.deepEqual(diagnostic.failingRuns[0].failureCodes, ['citation_anchor_invalid'])
+    assert.equal(diagnostic.failingRuns[0].citationCoverage.coveragePct, 100)
+    assert.deepEqual(diagnostic.failingRuns[0].citationCoverage.invalidCitationAnchors, [invalidAnchorToken])
+    assert.deepEqual(diagnostic.failingRuns[0].citationCoverage.invalidCitationAnchorCounts, { [invalidAnchorToken]: 1 })
+    assert.equal(totalsDiagnostic.citationCoverage.invalidCitationAnchorCount, 1)
+    assert.deepEqual(totalsDiagnostic.citationCoverage.invalidCitationAnchors, [invalidAnchorToken])
+    assert.deepEqual(totalsDiagnostic.citationCoverage.invalidCitationAnchorCounts, { [invalidAnchorToken]: 1 })
+
+    const diagnosticSerialized = JSON.stringify(diagnostic)
+    assert.doesNotMatch(diagnosticSerialized, new RegExp(escapeRegExp(rawAnswerCanary)))
+    assert.doesNotMatch(diagnosticSerialized, /"outputText"\s*:/)
+    assert.doesNotMatch(diagnosticSerialized, /"start"\s*:/)
+    assert.doesNotMatch(diagnosticSerialized, /"end"\s*:/)
+
+    assert.equal(runtime.requests[0].body.model, syntheticPrivateModelName)
+    const serialized = JSON.stringify(report)
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(rawAnswerCanary)))
+    assert.doesNotMatch(serialized, /"outputText"\s*:/)
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(syntheticPrivateModelName)))
+    assert.doesNotMatch(serialized, /mock-runtime-key/)
+    assert.doesNotMatch(serialized, /sk-[A-Za-z0-9_-]{8,}/)
+    assert.doesNotMatch(serialized, /[A-Za-z]:\\\\/)
+    assert.doesNotMatch(serialized, /\/(?:Users|home)\//)
+  })
+
   it('live safe profile wrapper emits sanitized aggregate JSON without raw runtime values', async (t) => {
     const modelName = 'loop-17-live-safe-model-canary'
     const apiKey = 'sk-proj-live-safe-success-canary-1234567890'
@@ -4874,17 +4979,21 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(stdout, /\/(?:Users|home|tmp)\//)
   })
 
-  it('live safe profile wrapper propagates benchmark failure with sanitized aggregate summary', async (t) => {
+  it('live safe profile wrapper preserves invalid anchor aggregates in sanitized failure summary', async (t) => {
     const modelName = 'loop-17-live-safe-failure-model-canary'
     const apiKey = 'sk-proj-live-safe-failure-canary-1234567890'
-    const rawAnswerCanary = 'Live safe failure canary uses a bare citation [1].'
+    const invalidAnchorToken = '[6](#citation-6)'
+    const rawAnswerCanary = 'loop-19-live-safe-invalid-anchor-raw-canary'
     const runtime = await startFixtureServer(async ({ response }) => {
       writeJson(response, 200, {
         choices: [
           {
             finish_reason: 'stop',
             message: {
-              content: rawAnswerCanary,
+              content: [
+                strictEvidenceFidelityRowAnswer(),
+                `${rawAnswerCanary} ${invalidAnchorToken}.`,
+              ].join('\n'),
             },
           },
         ],
@@ -4905,11 +5014,11 @@ describe('llmwiki-agent-bridge', () => {
         '--overall-timeout-ms',
         '30000',
         '--fixture',
-        'single-source',
+        'graph-strict-evidence-fidelity',
         '--renderer',
         'compact-json',
         '--max-tokens',
-        '64',
+        '384',
         '--timeout-ms',
         '10000',
       ], {
@@ -4933,7 +5042,14 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(summary.live.totals.requestCount, 1)
     assert.equal(summary.live.totals.passCount, 0)
     assert.equal(summary.live.totals.failCount, 1)
-    assert.equal(summary.live.totals.failureCodeCounts.citation_anchor_missing, 1)
+    assert.deepEqual(summary.live.totals.failureCodeCounts, { citation_anchor_invalid: 1 })
+    assert.equal(summary.live.totals.citationCoverage.averageRequiredCitationAnchorCoveragePct, 100)
+    assert.equal(summary.live.totals.citationCoverage.invalidCitationAnchorCount, 1)
+    assert.deepEqual(summary.live.totals.citationCoverage.invalidCitationAnchors, [invalidAnchorToken])
+    assert.deepEqual(summary.live.totals.citationCoverage.invalidCitationAnchorCounts, { [invalidAnchorToken]: 1 })
+    assert.equal(summary.live.renderers['compact-json'].citationCoverage.invalidCitationAnchorCount, 1)
+    assert.deepEqual(summary.live.renderers['compact-json'].citationCoverage.invalidCitationAnchors, [invalidAnchorToken])
+    assert.deepEqual(summary.live.renderers['compact-json'].citationCoverage.invalidCitationAnchorCounts, { [invalidAnchorToken]: 1 })
     assert.equal(summary.live.recommendation.status, 'blocked')
     assert.equal(summary.live.recommendation.recommendedRendererId, null)
     assert.equal(summary.sensitiveScan.ok, true)

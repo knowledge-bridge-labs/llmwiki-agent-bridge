@@ -220,6 +220,24 @@
 - Existing negative tests still prove wrong nearby anchors fail as
   `expected_citation_mismatch` and omitted anchors fail as
   `citation_anchor_missing`; Loops 15 through 18 do not loosen validation.
+- `graph-strict-evidence-fidelity` strict answer-format prompts list the
+  allowed exact citation anchors `[1](#citation-1)` through
+  `[5](#citation-5)`, tell the runtime not to invent or use other anchors, and
+  tell it to omit unsupported factual claims rather than creating unsupported
+  anchors.
+- Fixtures without an emitted strict answer-format skeleton omit the
+  allowed-anchor guidance.
+- A live mock answer that covers every required anchor, satisfies the answer
+  oracle, and satisfies expected citation mappings still fails when it also
+  includes invalid exact anchor `[6](#citation-6)`, with `failureCodes` exactly
+  `["citation_anchor_invalid"]`.
+- Invalid-anchor live diagnostics expose only invalid exact anchor tokens and
+  aggregate counts, such as `invalidCitationAnchors` and
+  `invalidCitationAnchorCounts`; diagnostic summaries do not expose raw answer
+  text, offsets, surrounding context, endpoint/model/key values, temp paths, or
+  local absolute paths.
+- The private-safe live wrapper sanitized failure summary preserves invalid
+  exact anchor token/count aggregates while sensitive scan status remains ok.
 
 ## Commands
 
@@ -241,6 +259,7 @@ npm test -- --test-name-pattern "strict claim checklist|claim-preserving|safe di
 npm test -- --test-name-pattern "oracle coverage|strict answer format|strict claim checklist|claim-preserving|safe diagnostic|graph-strict-evidence-fidelity|expected citation mapping|runtime prompt rendering offline"
 npm test -- --test-name-pattern "runtime prompt rendering offline|graph-strict-evidence-fidelity|strict evidence-fidelity"
 npm test -- --test-name-pattern "mandatory completeness|Expected claim row|strict answer format|strict claim checklist|expected citation mapping|graph-strict-evidence-fidelity|oracle coverage|runtime prompt rendering offline"
+npm test -- --test-name-pattern "allowed citation anchor|invalid anchor|live safe profile|strict answer format|Expected claim row|graph-strict-evidence-fidelity|runtime prompt rendering offline"
 npm test -- --test-name-pattern "Graphify graph fixture|exact citation anchors|answer oracle|unsupported|contradictory|oracle distortion|repeated live|finish reason|inferred live runtime truncation|citation stuffing|expected citation mapping|every-occurrence|occurrenceMode|occurrence coverage|smaller live renderer|size-saving live renderer|every renderer fails|report-only aggregate diagnostics"
 npm test -- --test-name-pattern "live safe profile|redaction scan"
 node --check scripts/validate-runtime-prompt-live-safe.mjs

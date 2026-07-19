@@ -13,7 +13,7 @@ quality gates pass.
 | Citation mapping | `citationDigest` ids map to top-level `citations` | 100% |
 | Graph provenance | Every `graphNodes` and `graphEdges` entry has a valid citation index | 100% for graph fixtures |
 | Portable evidence | Benchmark evidence paths do not expose local roots, parent paths, URLs, or private endpoints | 0 non-portable paths |
-| Runtime citation exactness | Live responses cover every required exact `[n](#citation-n)` anchor and no invalid exact anchors | Required for live smoke pass |
+| Runtime citation exactness | Live responses cover every required exact `[n](#citation-n)` anchor and no invalid exact anchors | Required for live smoke pass; invalid anchors still fail with `citation_anchor_invalid` |
 | Live benchmark prompt contract | Runtime messages preserve configured claim phrases and graph relation phrases, keep relation verbs readable, cite exact anchors near supported claims, cite every repeated occurrence when required, and avoid evidence-free claims | Required for strict live benchmark isolation |
 | Benchmark-only strict claim checklist | Live user prompts list effective strict expected claim phrases with resolved exact markdown anchors, strict/required gate status, occurrence intent, and nearby/window intent | Required when a live fixture defines strict `expectedCitationMappings`; omitted for fixtures without strict mappings |
 | Runtime completion | Live responses report `finishReason`, `truncation`, and aggregate truncation counts | `finish_reason=length` and inferred max-token exhaustion fail strict runs |
@@ -23,9 +23,9 @@ quality gates pass.
 | Answer oracle | Live outputs cover configured required terms/relations and avoid explicitly configured forbidden, unsupported, and contradictory patterns | Required when a fixture defines a strict oracle |
 | Expected citation mappings | Configured claims resolve to expected citation anchors within `windowChars`, with opt-in every-occurrence mode for repeated claims | Required when a strict fixture defines mappings |
 | Failure taxonomy | Live reports include `failureCodes` and aggregate `failureCodeCounts` | Required for failure attribution |
-| Safe live diagnostics | Live reports summarize failure codes, missing configured oracle terms/relations, missing expected claim phrases, citation coverage, finish reason, truncation, and output length without raw model text or private runtime/local values | Required for prompt-contract versus renderer-loss isolation |
+| Safe live diagnostics | Live reports summarize failure codes, missing configured oracle terms/relations, missing expected claim phrases, citation coverage, invalid exact anchor tokens/counts, finish reason, truncation, and output length without raw model text, offsets, surrounding context, or private runtime/local values | Required for prompt-contract versus renderer-loss isolation |
 | Private-safe live wrapper | Tracked wrapper captures raw child stdout/stderr only in OS temp, enforces an overall timeout, scans raw and sanitized output for sensitive patterns, and prints sanitized aggregate JSON only | Required before copying live aggregate metrics into docs |
-| Benchmark-only strict answer format | Live user prompts provide mandatory completeness instructions, `Expected claim row` skeletons, supplemental required-anchor rows, and strict oracle coverage rows | Required when strict expected citation mappings leave top-level citation anchors or strict oracle items otherwise unforced |
+| Benchmark-only strict answer format | Live user prompts provide mandatory completeness instructions, the allowed exact citation-anchor set, `Expected claim row` skeletons, supplemental required-anchor rows, and strict oracle coverage rows | Required when strict expected citation mappings leave top-level citation anchors or strict oracle items otherwise unforced |
 | Live recommendation | `live.recommendation` ranks renderers quality-first | Size can recommend a renderer only after strict live pass rate is 100% and strict quality failures are zero |
 | Representative strict fixture coverage | Built-in strict fixtures include multi-hop citation mappings, every-occurrence repeated claims, nearby-wrong-anchor failures, unsupported/contradictory claims, and privacy/source-path claims | Required before using live recommendations as promotion evidence |
 
@@ -101,7 +101,13 @@ production bridge prompting and does not relax answer-oracle, expected-citation
 mapping, repeated-occurrence, distortion, unsupported, contradictory, or
 citation-anchor gates.
 The same effective strict mappings also feed a benchmark-only strict answer
-format skeleton. Before the skeleton rows, a mandatory completeness checklist
+format skeleton. The skeleton lists the fixture's allowed exact citation
+anchors, for example `[1](#citation-1)` through `[N](#citation-N)`, and tells
+the runtime not to invent or use any other anchor. When no allowed anchor
+supports a factual claim, the skeleton tells the runtime to omit that
+unsupported claim instead of creating a new anchor. Fixtures that omit the
+strict skeleton also omit this allowed-anchor guidance. Before the skeleton
+rows, a mandatory completeness checklist
 states that the final answer must include every `Expected claim row` exactly
 once, that these rows are not optional and must not be omitted, split, merged,
 or rephrased, and that multi-hop rows must stay intact with all shown anchors
@@ -124,6 +130,11 @@ and oracle coverage rows only, and factual limitations also require
 citations. Fixtures without effective strict mappings omit both the checklist
 and skeleton. This remains live-eval-only prompt guidance; strict validators
 are unchanged.
+Invalid-anchor diagnostics remain private-safe: live reports and the safe
+wrapper may include exact invalid anchor tokens and aggregate counts, such as
+`invalidCitationAnchors` and `invalidCitationAnchorCounts`, but not raw answer
+text, offsets, surrounding context, endpoint/model/key values, temp paths, or
+local absolute paths.
 Live renderer and totals aggregates also roll these occurrence fields up as
 totals plus `occurrenceCoveragePct` and
 `averageExpectedCitationOccurrenceCoveragePct`, so renderer comparison can
@@ -177,7 +188,8 @@ JSON parse failure, or scan failure. The emitted JSON summary contains safe
 command option names, fixture/renderer ids, live validation and recommendation
 status, renderer totals, pass/fail rates, citation coverage, oracle and
 expected-citation mapping aggregates, finish-reason counts, truncation counts,
-and `outputTextLength` summaries; it intentionally omits raw prompts, model
+invalid exact citation-anchor tokens/counts, and `outputTextLength` summaries;
+it intentionally omits raw prompts, model
 answers, endpoint values, model names, keys, temp paths, and local absolute
 paths.
 
@@ -741,3 +753,48 @@ These metrics can evolve as fixtures improve:
   remains blocked pending invalid citation-anchor stabilization or
   private-safe diagnostics that identify the malformed anchor without exposing
   raw model output.
+
+### Loop 19: Allowed-anchor guidance and private-safe invalid-anchor diagnostics
+
+- TDD target: strict live prompt inspection proves
+  `graph-strict-evidence-fidelity` emits an allowed exact citation-anchor set
+  for `[1](#citation-1)` through `[5](#citation-5)`, says not to invent or use
+  any other anchor, and says to omit unsupported claims instead of creating a
+  new anchor. The no-strict fixture path proves the allowed-anchor guidance is
+  omitted when the strict answer-format skeleton is omitted.
+- Quality gates added: live invalid-anchor diagnostics now expose exact invalid
+  anchor tokens and aggregate counts only through safe fields such as
+  `invalidCitationAnchors` and `invalidCitationAnchorCounts`. The private-safe
+  wrapper preserves the same aggregate in sanitized output.
+- Regression coverage: a strict live mock answer that covers all required
+  anchors, passes the deterministic answer oracle, and passes expected citation
+  mappings still fails when it includes `[6](#citation-6)`. Its
+  `failureCodes` are exactly `citation_anchor_invalid`, so required coverage,
+  oracle success, and expected-mapping success remain independently visible.
+- Safety result: diagnostic summaries avoid raw answer text, offsets,
+  surrounding context, private endpoint values, configured model names, keys,
+  temp paths, and local absolute paths. The safe-wrapper invalid-anchor failure
+  test keeps sensitive scan status ok while preserving only the invalid anchor
+  token/count aggregate.
+- Repeated live result: supervisor reran the private-safe `compact-json`
+  profile through the tracked wrapper for `graph-linear-chain` and
+  `graph-strict-evidence-fidelity`, with three live runs per fixture. Wrapper
+  behavior passed: `safeLiveExit=0`, child status ok, child exit code 0, no
+  timeout, benchmark JSON parsing ok, and raw plus sanitized sensitive scans
+  reported zero matches. Live quality passed for this scoped profile:
+  `validation.ok=true`, `recommendation.status=recommended`, and
+  `recommendedRendererId=compact-json`. Totals were 6 requests, 6 runs, 6
+  passes, 0 failures, `passRatePct=100`, empty failure-code counts, 6 stop
+  finish reasons, no truncation, required citation-anchor coverage 100%,
+  `invalidCitationAnchorCount=0`, no invalid citation anchors, strict
+  answer-oracle failures 0, required item/term/phrase/relation coverage 100%,
+  expected-citation mapping strict failures 0, average coverage 100%, no
+  missing claims, no expected-citation mismatches, and occurrence coverage 100%.
+- Retrospective: no new ADR is needed. Loop 19 changes benchmark-only prompt
+  guidance plus private-safe diagnostics and does not change the production
+  bridge runtime contract, public API, source policy, security defaults,
+  validators, truncation handling, expected-citation mapping logic, or
+  recommendation rules. The rerun supports repeated strict `compact-json` live
+  acceptance for the configured private runtime and the two strict graph
+  fixtures only; it is not broad production default approval across all
+  renderers, models, or fixture classes.

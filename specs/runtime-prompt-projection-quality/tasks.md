@@ -157,10 +157,29 @@
       skeleton, supplemental coverage, and oracle coverage rows.
 - [x] Confirm Loop 18 omission coverage still fails with
       `expected_claim_missing` without weakening validators.
-- [ ] Achieve repeated compact JSON live quality acceptance for the two strict
-      graph fixtures; Loop 18 cleared the strict expected-claim failure but
-      still had one `citation_anchor_invalid` failure and no
-      recommendation-eligible renderer.
-- [ ] Add private-safe diagnostics or prompt stabilization for invalid citation
-      anchors so repeated live reports can identify and eliminate malformed
-      anchors without exposing raw model output.
+- [x] Achieve repeated compact JSON live quality acceptance for the two strict
+      graph fixtures on the configured private runtime: Loop 19 supervisor
+      rerun passed 6/6 live runs with 100% pass rate, recommended
+      `compact-json`, zero invalid citation anchors, zero strict oracle
+      failures, zero expected-citation mapping failures, and clean raw plus
+      sanitized sensitive scans. This is scoped evidence for those two strict
+      graph fixtures only, not broad production default approval across all
+      renderers, models, or fixture classes.
+- [x] Add Loop 19 allowed exact citation-anchor guidance to the
+      benchmark-only strict answer-format skeleton, listing only
+      `[1](#citation-1)` through `[N](#citation-N)`, telling the runtime not to
+      invent other anchors, and telling it to omit unsupported factual claims
+      instead of creating unsupported anchors.
+- [x] Keep Loop 19 fixtures without the strict answer-format skeleton free of
+      allowed-anchor guidance.
+- [x] Add Loop 19 private-safe diagnostics for invalid citation anchors so live
+      reports identify malformed exact anchor tokens and aggregate counts
+      without raw model output, offsets, surrounding context, endpoints, model
+      names, keys, temp paths, or local absolute paths.
+- [x] Preserve Loop 19 strict invalid-anchor validation unchanged:
+      invalid anchors still fail with `citation_anchor_invalid`; required
+      coverage, answer-oracle, and expected-mapping pass states are reported
+      independently.
+- [x] Extend the Loop 19 private-safe live wrapper sanitized summary to retain
+      invalid exact anchor token/count aggregates while keeping sensitive scans
+      clean.

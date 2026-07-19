@@ -199,3 +199,18 @@
     - preserve strict answer-oracle, expected-citation mapping, occurrence,
       unsupported/contradictory, distortion, truncation, and citation-anchor
       validation unchanged.
+25. Loop 19 allowed-anchor stabilization and private-safe invalid-anchor
+    diagnostics:
+    - add benchmark-only strict answer-format guidance listing the only allowed
+      exact citation anchors `[1](#citation-1)` through `[N](#citation-N)`;
+    - tell the runtime not to invent or use other anchors and to omit an
+      unsupported factual claim rather than creating a new anchor;
+    - omit allowed-anchor guidance whenever the strict skeleton is omitted;
+    - preserve strict invalid-anchor validation and the
+      `citation_anchor_invalid` failure code unchanged;
+    - expose invalid exact anchor tokens and aggregate counts in live
+      diagnostic summaries only, without raw answer text, offsets, surrounding
+      context, endpoints, model names, keys, temp paths, or local absolute
+      paths;
+    - carry the same invalid-anchor token/count aggregate through the
+      private-safe live wrapper sanitized summary.

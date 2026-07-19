@@ -383,10 +383,18 @@ function renderStrictAnswerFormatSkeleton(fixture) {
       `- Required citation coverage row: write one evidence-supported sentence for this otherwise-unforced top-level citation and end it with ${citationAnchor(index)}`
     ))
   const oracleCoverageRows = strictOracleCoverageRows(fixture, rows)
+  const allowedAnchorGuidance = citationCount > 0
+    ? [
+        `Allowed exact citation anchors are only ${allowedCitationAnchorSet(citationCount)}.`,
+        'Do not invent or use any other citation anchor.',
+        'If no allowed anchor supports a factual claim, omit that unsupported claim rather than creating a new anchor.',
+      ].join(' ')
+    : ''
 
   return [
     '# Benchmark-only strict answer format',
     'Use this row-shaped skeleton only for this live benchmark run. Copy each Expected claim row exactly and end it with the exact markdown citation anchor(s) shown. Include required citation coverage rows for top-level anchors not already present in claim rows, then oracle coverage rows for strict required terms, phrases, or relations not already present in claim rows. Add the limitations row after claim, citation coverage, and oracle coverage rows only; factual limitations also need citations.',
+    ...(allowedAnchorGuidance ? [allowedAnchorGuidance] : []),
     '',
     'Mandatory completeness checklist:',
     '- Include every Expected claim row exactly once in the final answer.',
@@ -398,6 +406,10 @@ function renderStrictAnswerFormatSkeleton(fixture) {
     ...oracleCoverageRows,
     '- Limitations: state only evidence-supported limitations; factual limitations also need exact markdown citation anchors.',
   ].join('\n')
+}
+
+function allowedCitationAnchorSet(citationCount) {
+  return Array.from({ length: citationCount }, (_, index) => citationAnchor(index + 1)).join(' ')
 }
 
 function strictOracleCoverageRows(fixture, strictClaimRows = []) {
@@ -1286,6 +1298,8 @@ async function evaluateLiveRenderer({ args, config, fixture, renderer }) {
     representativeRunIndex,
     pass: aggregate.runCount > 0 && aggregate.passCount === aggregate.runCount,
     invalidCitationAnchorCount: aggregate.invalidCitationAnchorCount,
+    invalidCitationAnchors: aggregate.invalidCitationAnchors,
+    invalidCitationAnchorCounts: aggregate.invalidCitationAnchorCounts,
     allRequiredCitationAnchorsCovered: aggregate.runCount > 0
       && aggregate.allRequiredCitationAnchorsCoveredCount === aggregate.runCount,
     aggregate,
@@ -1323,6 +1337,8 @@ async function evaluateLiveRendererRun({ args, config, fixture, runtimeUserPromp
         latencyMs,
         outputTextLength: 0,
         citationAnchorsFound: [],
+        invalidCitationAnchors: [],
+        invalidCitationAnchorCounts: {},
         requiredCitationAnchors: citationCoverage([], fixture.evidenceBundle.citationCount),
         expectedCitationMappings: evaluateExpectedCitationMappings(
           '',
@@ -1361,6 +1377,8 @@ async function evaluateLiveRendererRun({ args, config, fixture, runtimeUserPromp
       latencyMs,
       outputTextLength: Array.from(outputText).length,
       citationAnchorsFound: citationAnchors.found,
+      invalidCitationAnchors: citationAnchors.invalidAnchors,
+      invalidCitationAnchorCounts: citationAnchors.invalidAnchorCounts,
       requiredCitationAnchors: citationAnchors.coverage,
       answerOracle,
       expectedCitationMappings,
@@ -1385,6 +1403,8 @@ async function evaluateLiveRendererRun({ args, config, fixture, runtimeUserPromp
       latencyMs,
       outputTextLength: 0,
       citationAnchorsFound: [],
+      invalidCitationAnchors: [],
+      invalidCitationAnchorCounts: {},
       requiredCitationAnchors: citationCoverage([], fixture.evidenceBundle.citationCount),
       expectedCitationMappings: evaluateExpectedCitationMappings(
         '',
@@ -1546,6 +1566,8 @@ function summarizeLiveRendererRuns(runs) {
   const failureBucketCounts = countBy(runs.flatMap((run) => run.failureBuckets || []))
   const failureCodeCounts = countBy(runs.flatMap((run) => run.failureCodes || []))
   const invalidCitationAnchorCount = sumNumbers(runs.map((run) => run.invalidCitationAnchorCount))
+  const invalidCitationAnchorCounts = mergeCountMaps(runs.map((run) => run.invalidCitationAnchorCounts))
+  const invalidCitationAnchors = Object.keys(invalidCitationAnchorCounts)
   const allRequiredCitationAnchorsCoveredCount = runs.filter((run) => run.allRequiredCitationAnchorsCovered).length
   const truncatedCount = runs.filter((run) => run.truncation?.detected || run.truncated).length
   const inferredTruncatedCount = runs.filter((run) => run.truncation?.inferred).length
@@ -1590,6 +1612,8 @@ function summarizeLiveRendererRuns(runs) {
     expectedCitationSatisfiedOccurrenceCount: expectedCitationMappings.satisfiedOccurrenceCount,
     expectedCitationUnsatisfiedOccurrenceCount: expectedCitationMappings.unsatisfiedOccurrenceCount,
     invalidCitationAnchorCount,
+    invalidCitationAnchors,
+    invalidCitationAnchorCounts,
     allRequiredCitationAnchorsCoveredCount,
     variance: {
       mixedPassStatus: passCount > 0 && passCount < runCount,
@@ -1701,6 +1725,17 @@ function countBy(values) {
     counts[value] = (counts[value] || 0) + 1
   }
   return counts
+}
+
+function mergeCountMaps(countMaps) {
+  const merged = {}
+  for (const countMap of countMaps || []) {
+    for (const [key, value] of Object.entries(countMap || {})) {
+      if (!Number.isFinite(value) || value <= 0) continue
+      merged[key] = (merged[key] || 0) + value
+    }
+  }
+  return merged
 }
 
 function sumNumbers(values) {
@@ -1833,7 +1868,7 @@ function firstChatCompletionChoice(payload) {
 function analyzeCitationAnchors(text, citationCount) {
   const found = []
   const validIndexes = new Set()
-  let invalidCount = 0
+  const invalidAnchorTokens = []
   const anchorPattern = /\[(\d+)\]\(#citation-(\d+)\)/g
   let match
   while ((match = anchorPattern.exec(text)) !== null) {
@@ -1847,11 +1882,14 @@ function analyzeCitationAnchors(text, citationCount) {
     const anchor = `[${match[1]}](#citation-${match[2]})`
     found.push({ anchor, index: citationIndex, valid, start: match.index, end: match.index + anchor.length })
     if (valid) validIndexes.add(citationIndex)
-    else invalidCount += 1
+    else invalidAnchorTokens.push(anchor)
   }
+  const invalidAnchorCounts = countBy(invalidAnchorTokens)
   return {
     found,
-    invalidCount,
+    invalidCount: invalidAnchorTokens.length,
+    invalidAnchors: Object.keys(invalidAnchorCounts),
+    invalidAnchorCounts,
     coverage: citationCoverage([...validIndexes], citationCount),
   }
 }
@@ -2596,6 +2634,8 @@ function summarizeLiveFixtureReports(fixtureReports, renderers) {
     const truncatedCount = runs.filter((run) => run.truncation?.detected || run.truncated).length
     const inferredTruncatedCount = runs.filter((run) => run.truncation?.inferred).length
     const invalidCitationAnchorCount = sumNumbers(runs.map((run) => run.invalidCitationAnchorCount))
+    const invalidCitationAnchorCounts = mergeCountMaps(runs.map((run) => run.invalidCitationAnchorCounts))
+    const invalidCitationAnchors = Object.keys(invalidCitationAnchorCounts)
     const allRequiredCitationAnchorsCoveredCount = runs.filter((run) => run.allRequiredCitationAnchorsCovered).length
     const citationCoveragePct = summarizeNumbers(
       runs.map((run) => run.requiredCitationAnchors?.coveragePct),
@@ -2622,6 +2662,8 @@ function summarizeLiveFixtureReports(fixtureReports, renderers) {
       usage,
       averageRequiredCitationAnchorCoveragePct: citationCoveragePct.average,
       invalidCitationAnchorCount,
+      invalidCitationAnchors,
+      invalidCitationAnchorCounts,
       allRequiredCitationAnchorsCoveredCount,
       answerOracle,
       averageAnswerOracleRequiredTermCoveragePct: answerOracle.averageRequiredTermCoveragePct,
@@ -2663,6 +2705,8 @@ function summarizeLiveFixtureReports(fixtureReports, renderers) {
           outputTextLength,
           averageRequiredCitationAnchorCoveragePct: citationCoveragePct.average,
           invalidCitationAnchorCount,
+          invalidCitationAnchors,
+          invalidCitationAnchorCounts,
           allRequiredCitationAnchorsCoveredCount,
           answerOracle,
           expectedCitationMappings,
@@ -2712,6 +2756,12 @@ function buildLiveDiagnosticSummary({ fixtureId = null, rendererId = null, aggre
     citationCoverage: {
       averageRequiredCitationAnchorCoveragePct: aggregate.averageRequiredCitationAnchorCoveragePct ?? null,
       invalidCitationAnchorCount: aggregate.invalidCitationAnchorCount || 0,
+      invalidCitationAnchors: aggregate.invalidCitationAnchors || Object.keys(
+        mergeCountMaps(runs.map((run) => run.invalidCitationAnchorCounts)),
+      ),
+      invalidCitationAnchorCounts: aggregate.invalidCitationAnchorCounts || mergeCountMaps(
+        runs.map((run) => run.invalidCitationAnchorCounts),
+      ),
       allRequiredCitationAnchorsCoveredCount: aggregate.allRequiredCitationAnchorsCoveredCount || 0,
       missingRequiredAnchors: uniqueReportStrings(runs.flatMap((run) => run.requiredCitationAnchors?.missing || [])),
     },
@@ -2743,6 +2793,8 @@ function buildLiveRunDiagnosticSummary(run) {
       coveragePct: run.requiredCitationAnchors?.coveragePct ?? null,
       missingRequiredAnchors: [...(run.requiredCitationAnchors?.missing || [])],
       invalidCitationAnchorCount: run.invalidCitationAnchorCount || 0,
+      invalidCitationAnchors: [...(run.invalidCitationAnchors || [])],
+      invalidCitationAnchorCounts: { ...(run.invalidCitationAnchorCounts || {}) },
     },
     answerOracle: buildLiveAnswerOracleRunDiagnosticSummary(run.answerOracle),
     expectedCitationMappings: buildLiveExpectedCitationMappingRunDiagnosticSummary(run.expectedCitationMappings),

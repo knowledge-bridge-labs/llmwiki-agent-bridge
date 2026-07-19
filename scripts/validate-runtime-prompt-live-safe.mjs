@@ -450,6 +450,13 @@ function sanitizeLiveTotals(totals = {}, rendererSummaries = {}) {
   const runCount = sumNumbers(rendererValues.map((renderer) => renderer.runCount))
   const passCount = sumNumbers(rendererValues.map((renderer) => renderer.passCount))
   const failCount = sumNumbers(rendererValues.map((renderer) => renderer.failCount))
+  const invalidCitationAnchorCounts = mergeCountMaps(
+    rendererValues.map((renderer) => renderer.citationCoverage.invalidCitationAnchorCounts),
+  )
+  const invalidCitationAnchors = mergeExactCitationAnchorTokens([
+    ...rendererValues.map((renderer) => renderer.citationCoverage.invalidCitationAnchors),
+    Object.keys(invalidCitationAnchorCounts),
+  ])
   return {
     fixtureCount: numberOrNull(totals.fixtureCount),
     requestCount: numberOrNull(totals.requestCount),
@@ -469,6 +476,8 @@ function sanitizeLiveTotals(totals = {}, rendererSummaries = {}) {
         rendererValues.map((renderer) => renderer.runCount),
       ),
       invalidCitationAnchorCount: sumNumbers(rendererValues.map((renderer) => renderer.citationCoverage.invalidCitationAnchorCount)),
+      invalidCitationAnchors,
+      invalidCitationAnchorCounts,
       allRequiredCitationAnchorsCoveredCount: sumNumbers(rendererValues.map((renderer) => renderer.citationCoverage.allRequiredCitationAnchorsCoveredCount)),
     },
     answerOracle: pickAnswerOracleMetrics(totals.answerOracle),
@@ -481,6 +490,11 @@ function sanitizeLiveTotals(totals = {}, rendererSummaries = {}) {
 }
 
 function sanitizeLiveRendererTotal(renderer = {}) {
+  const invalidCitationAnchorCounts = sanitizeExactCitationAnchorCountMap(renderer.invalidCitationAnchorCounts)
+  const invalidCitationAnchors = sanitizeExactCitationAnchorTokens([
+    ...(renderer.invalidCitationAnchors || []),
+    ...Object.keys(invalidCitationAnchorCounts),
+  ])
   return {
     fixtureCount: numberOrNull(renderer.fixtureCount),
     requestCount: numberOrNull(renderer.requestCount),
@@ -500,6 +514,8 @@ function sanitizeLiveRendererTotal(renderer = {}) {
     citationCoverage: {
       averageRequiredCitationAnchorCoveragePct: numberOrNull(renderer.averageRequiredCitationAnchorCoveragePct),
       invalidCitationAnchorCount: numberOrZero(renderer.invalidCitationAnchorCount),
+      invalidCitationAnchors,
+      invalidCitationAnchorCounts,
       allRequiredCitationAnchorsCoveredCount: numberOrZero(renderer.allRequiredCitationAnchorsCoveredCount),
     },
     answerOracle: pickAnswerOracleMetrics(renderer.answerOracle),
@@ -889,6 +905,37 @@ function sanitizeCountMap(counts = {}) {
     sanitized[safeString(key)] = value
   }
   return sanitized
+}
+
+function sanitizeExactCitationAnchorTokens(tokens = []) {
+  const unique = []
+  const seen = new Set()
+  for (const token of tokens || []) {
+    const sanitized = exactCitationAnchorToken(token)
+    if (!sanitized || seen.has(sanitized)) continue
+    seen.add(sanitized)
+    unique.push(sanitized)
+  }
+  return unique
+}
+
+function sanitizeExactCitationAnchorCountMap(counts = {}) {
+  const sanitized = {}
+  for (const [key, value] of Object.entries(counts || {})) {
+    const token = exactCitationAnchorToken(key)
+    if (!token || !Number.isFinite(value) || value <= 0) continue
+    sanitized[token] = (sanitized[token] || 0) + value
+  }
+  return sanitized
+}
+
+function mergeExactCitationAnchorTokens(tokenLists) {
+  return sanitizeExactCitationAnchorTokens((tokenLists || []).flatMap((tokens) => tokens || []))
+}
+
+function exactCitationAnchorToken(value) {
+  const token = String(value || '').trim()
+  return /^\[\d+\]\(#citation-\d+\)$/.test(token) ? token : null
 }
 
 function mergeCountMaps(countMaps) {
