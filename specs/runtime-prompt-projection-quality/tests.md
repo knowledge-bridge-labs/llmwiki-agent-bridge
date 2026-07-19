@@ -58,12 +58,33 @@
   `distortionCount`.
 - Live renderer and totals reports include
   `averageExpectedCitationMappingCoveragePct`.
+- Live renderer and totals reports include expected-citation occurrence
+  rollups: average occurrence coverage plus total claim, satisfied, and
+  unsatisfied occurrence counts, and total occurrence coverage across repeated
+  live runs.
+- Live renderer and totals reports include answer-oracle rollups for
+  unsupported claim hits, contradictory claim hits, distortion counts, average
+  omission rate, and average required-item coverage, with strict unsupported,
+  contradictory, and distortion hit counts separated from report-only
+  diagnostics.
+- Offline renderer comparisons remain byte/char/estimated-token measurements
+  and are explicitly marked `basis: "size-only"`.
+- Live recommendation ranking is quality-first: a smaller renderer with strict
+  live quality failures is not recommended.
+- A renderer with strict live `passRatePct` of 100 and zero strict quality
+  failures becomes eligible, and the smallest eligible renderer is recommended.
+- If no renderer is eligible, `live.recommendation.status` is blocked with
+  renderer-specific reasons and `recommendedRendererId` is `null`.
+- Report-only oracle and expected-citation diagnostics aggregate separately and
+  remain visible, but they do not block recommendation eligibility.
+- Fixture-authoring guidance documents compact, deterministic, private-data-safe
+  oracle and expected-citation mapping patterns.
 
 ## Commands
 
 ```sh
 npm run bench:runtime-prompt
-npm test -- --test-name-pattern "Graphify graph fixture|exact citation anchors|answer oracle|unsupported|contradictory|oracle distortion|repeated live|finish reason|inferred live runtime truncation|citation stuffing|expected citation mapping|every-occurrence|occurrenceMode"
+npm test -- --test-name-pattern "Graphify graph fixture|exact citation anchors|answer oracle|unsupported|contradictory|oracle distortion|repeated live|finish reason|inferred live runtime truncation|citation stuffing|expected citation mapping|every-occurrence|occurrenceMode|occurrence coverage|smaller live renderer|size-saving live renderer|every renderer fails|report-only aggregate diagnostics"
 node --check scripts/benchmark-runtime-prompt.mjs
 node --check test/agent-bridge.test.mjs
 npm run check

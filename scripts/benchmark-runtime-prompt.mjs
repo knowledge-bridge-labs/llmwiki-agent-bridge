@@ -261,6 +261,7 @@ function buildBenchmarkReport(fixtures, renderers, args) {
     rendererDebug: ['pretty-json'],
     renderers: renderers.map(({ id, label, mediaType }) => ({ id, label, mediaType })),
     tokenEstimate: TOKEN_ESTIMATE_DESCRIPTION,
+    offlineComparisonBasis: 'size-only',
     note: 'Synthetic local fixtures only. Offline measurements never use provider credentials, network, or runtime calls. markdown-summary is a lossy prompt projection; compare it separately from lossless JSON/TOON codecs.',
     fixtures: fixtureReports,
     totals,
@@ -386,6 +387,7 @@ function compareMeasurements(baseline, candidate, baselineId = 'pretty-json', ca
   const estimatedTokensSaved = baseline.estimatedTokens - candidate.estimatedTokens
 
   return {
+    basis: 'size-only',
     baseline: baselineId,
     candidate: candidateId,
     utf8BytesSaved,
@@ -842,6 +844,11 @@ async function evaluateLiveRuntime(fixtures, renderers, args) {
         fixtureCount: fixtures.length,
         requestCount: 0,
       },
+      recommendation: buildLiveRendererRecommendation({
+        renderers,
+        totals: null,
+        unavailableReasons: failures,
+      }),
       validation: {
         ok: false,
         checks: ['live runtime requires explicit --live plus configured base URL and model'],
@@ -869,11 +876,13 @@ async function evaluateLiveRuntime(fixtures, renderers, args) {
   }
 
   const validation = validateLiveFixtureReports(fixtureReports)
+  const totals = summarizeLiveFixtureReports(fixtureReports, renderers)
   return {
     ...baseReport,
     status: validation.ok ? 'ok' : 'failed',
     fixtures: fixtureReports,
-    totals: summarizeLiveFixtureReports(fixtureReports, renderers),
+    totals,
+    recommendation: buildLiveRendererRecommendation({ renderers, totals }),
     validation,
   }
 }
@@ -943,8 +952,22 @@ async function evaluateLiveRenderer({ args, config, fixture, renderer }) {
     passRatePct: aggregate.passRatePct,
     averageRequiredCitationAnchorCoveragePct: aggregate.averageRequiredCitationAnchorCoveragePct,
     averageAnswerOracleRequiredTermCoveragePct: aggregate.averageAnswerOracleRequiredTermCoveragePct,
+    averageAnswerOracleRequiredPhraseCoveragePct: aggregate.averageAnswerOracleRequiredPhraseCoveragePct,
     averageAnswerOracleRequiredRelationCoveragePct: aggregate.averageAnswerOracleRequiredRelationCoveragePct,
+    averageAnswerOracleRequiredItemCoveragePct: aggregate.averageAnswerOracleRequiredItemCoveragePct,
+    averageAnswerOracleOmissionRate: aggregate.averageAnswerOracleOmissionRate,
+    answerOracleUnsupportedClaimHitCount: aggregate.answerOracleUnsupportedClaimHitCount,
+    answerOracleContradictoryClaimHitCount: aggregate.answerOracleContradictoryClaimHitCount,
+    answerOracleDistortionCount: aggregate.answerOracleDistortionCount,
+    strictAnswerOracleUnsupportedClaimHitCount: aggregate.strictAnswerOracleUnsupportedClaimHitCount,
+    strictAnswerOracleContradictoryClaimHitCount: aggregate.strictAnswerOracleContradictoryClaimHitCount,
+    strictAnswerOracleDistortionCount: aggregate.strictAnswerOracleDistortionCount,
     averageExpectedCitationMappingCoveragePct: aggregate.averageExpectedCitationMappingCoveragePct,
+    expectedCitationOccurrenceCoveragePct: aggregate.expectedCitationOccurrenceCoveragePct,
+    averageExpectedCitationOccurrenceCoveragePct: aggregate.averageExpectedCitationOccurrenceCoveragePct,
+    expectedCitationClaimOccurrenceCount: aggregate.expectedCitationClaimOccurrenceCount,
+    expectedCitationSatisfiedOccurrenceCount: aggregate.expectedCitationSatisfiedOccurrenceCount,
+    expectedCitationUnsatisfiedOccurrenceCount: aggregate.expectedCitationUnsatisfiedOccurrenceCount,
     representativeRunIndex,
     pass: aggregate.runCount > 0 && aggregate.passCount === aggregate.runCount,
     invalidCitationAnchorCount: aggregate.invalidCitationAnchorCount,
@@ -1204,6 +1227,9 @@ function summarizeLiveRendererRuns(runs) {
   const invalidCitationAnchorCount = sumNumbers(runs.map((run) => run.invalidCitationAnchorCount))
   const allRequiredCitationAnchorsCoveredCount = runs.filter((run) => run.allRequiredCitationAnchorsCovered).length
   const truncatedCount = runs.filter((run) => run.truncation?.detected || run.truncated).length
+  const inferredTruncatedCount = runs.filter((run) => run.truncation?.inferred).length
+  const answerOracle = summarizeAnswerOracleRunMetrics(runs)
+  const expectedCitationMappings = summarizeExpectedCitationMappingRunMetrics(runs)
 
   return {
     runCount,
@@ -1218,19 +1244,30 @@ function summarizeLiveRendererRuns(runs) {
     failureCodeCounts,
     errorCount: runCount - okCount,
     truncatedCount,
+    inferredTruncatedCount,
     latencyMs,
     outputTextLength,
     usage,
     averageRequiredCitationAnchorCoveragePct: citationCoveragePct.average,
-    averageAnswerOracleRequiredTermCoveragePct: average(
-      runs.map((run) => run.answerOracle?.metrics?.requiredTermCoveragePct),
-    ),
-    averageAnswerOracleRequiredRelationCoveragePct: average(
-      runs.map((run) => run.answerOracle?.metrics?.requiredRelationCoveragePct),
-    ),
-    averageExpectedCitationMappingCoveragePct: average(
-      runs.map((run) => run.expectedCitationMappings?.metrics?.coveragePct),
-    ),
+    answerOracle,
+    averageAnswerOracleRequiredTermCoveragePct: answerOracle.averageRequiredTermCoveragePct,
+    averageAnswerOracleRequiredPhraseCoveragePct: answerOracle.averageRequiredPhraseCoveragePct,
+    averageAnswerOracleRequiredRelationCoveragePct: answerOracle.averageRequiredRelationCoveragePct,
+    averageAnswerOracleRequiredItemCoveragePct: answerOracle.averageRequiredItemCoveragePct,
+    averageAnswerOracleOmissionRate: answerOracle.averageOmissionRate,
+    answerOracleUnsupportedClaimHitCount: answerOracle.unsupportedClaimHitCount,
+    answerOracleContradictoryClaimHitCount: answerOracle.contradictoryClaimHitCount,
+    answerOracleDistortionCount: answerOracle.distortionCount,
+    strictAnswerOracleUnsupportedClaimHitCount: answerOracle.strictUnsupportedClaimHitCount,
+    strictAnswerOracleContradictoryClaimHitCount: answerOracle.strictContradictoryClaimHitCount,
+    strictAnswerOracleDistortionCount: answerOracle.strictDistortionCount,
+    expectedCitationMappings,
+    averageExpectedCitationMappingCoveragePct: expectedCitationMappings.averageCoveragePct,
+    expectedCitationOccurrenceCoveragePct: expectedCitationMappings.occurrenceCoveragePct,
+    averageExpectedCitationOccurrenceCoveragePct: expectedCitationMappings.averageOccurrenceCoveragePct,
+    expectedCitationClaimOccurrenceCount: expectedCitationMappings.claimOccurrenceCount,
+    expectedCitationSatisfiedOccurrenceCount: expectedCitationMappings.satisfiedOccurrenceCount,
+    expectedCitationUnsatisfiedOccurrenceCount: expectedCitationMappings.unsatisfiedOccurrenceCount,
     invalidCitationAnchorCount,
     allRequiredCitationAnchorsCoveredCount,
     variance: {
@@ -1239,6 +1276,77 @@ function summarizeLiveRendererRuns(runs) {
       outputTextLengthRange: numericRange(outputTextLength),
       requiredCitationAnchorCoverageRangePct: numericRange(citationCoveragePct),
     },
+  }
+}
+
+function summarizeAnswerOracleRunMetrics(runs) {
+  const oracleRuns = runs.filter((run) => run.answerOracle?.enabled)
+  const metrics = oracleRuns.map((run) => run.answerOracle.metrics || {})
+  const strictMetrics = oracleRuns
+    .filter((run) => run.answerOracle.gate !== 'report-only')
+    .map((run) => run.answerOracle.metrics || {})
+  const reportOnlyMetrics = oracleRuns
+    .filter((run) => run.answerOracle.gate === 'report-only')
+    .map((run) => run.answerOracle.metrics || {})
+  return {
+    enabledRunCount: oracleRuns.length,
+    strictFailureCount: oracleRuns.filter((run) => run.answerOracle.gate !== 'report-only' && !run.answerOracle.ok).length,
+    reportOnlyFailureCount: oracleRuns.filter((run) => run.answerOracle.gate === 'report-only' && !run.answerOracle.ok).length,
+    missingRequiredTermCount: sumNumbers(metrics.map((metric) => metric.missingRequiredTermCount)),
+    missingRequiredPhraseCount: sumNumbers(metrics.map((metric) => metric.missingRequiredPhraseCount)),
+    missingRequiredRelationCount: sumNumbers(metrics.map((metric) => metric.missingRequiredRelationCount)),
+    unsupportedClaimHitCount: sumNumbers(metrics.map((metric) => metric.unsupportedClaimHitCount)),
+    contradictoryClaimHitCount: sumNumbers(metrics.map((metric) => metric.contradictoryClaimHitCount)),
+    distortionCount: sumNumbers(metrics.map((metric) => metric.distortionCount)),
+    strictUnsupportedClaimHitCount: sumNumbers(strictMetrics.map((metric) => metric.unsupportedClaimHitCount)),
+    strictContradictoryClaimHitCount: sumNumbers(strictMetrics.map((metric) => metric.contradictoryClaimHitCount)),
+    strictDistortionCount: sumNumbers(strictMetrics.map((metric) => metric.distortionCount)),
+    reportOnlyUnsupportedClaimHitCount: sumNumbers(reportOnlyMetrics.map((metric) => metric.unsupportedClaimHitCount)),
+    reportOnlyContradictoryClaimHitCount: sumNumbers(reportOnlyMetrics.map((metric) => metric.contradictoryClaimHitCount)),
+    reportOnlyDistortionCount: sumNumbers(reportOnlyMetrics.map((metric) => metric.distortionCount)),
+    averageOmissionRate: average(metrics.map((metric) => metric.omissionRate)),
+    averageRequiredItemCoveragePct: average(metrics.map((metric) => (
+      Number.isFinite(metric.omissionRate) ? Number(((1 - metric.omissionRate) * 100).toFixed(2)) : undefined
+    ))),
+    averageRequiredTermCoveragePct: average(metrics.map((metric) => metric.requiredTermCoveragePct)),
+    averageRequiredPhraseCoveragePct: average(metrics.map((metric) => metric.requiredPhraseCoveragePct)),
+    averageRequiredRelationCoveragePct: average(metrics.map((metric) => metric.requiredRelationCoveragePct)),
+  }
+}
+
+function summarizeExpectedCitationMappingRunMetrics(runs) {
+  const mappingRuns = runs.filter((run) => run.expectedCitationMappings?.enabled)
+  const metrics = mappingRuns.map((run) => run.expectedCitationMappings.metrics || {})
+  const claimOccurrenceCount = sumNumbers(metrics.map((metric) => metric.claimOccurrenceCount))
+  const satisfiedOccurrenceCount = sumNumbers(metrics.map((metric) => metric.satisfiedOccurrenceCount))
+  const unsatisfiedOccurrenceCount = sumNumbers(metrics.map((metric) => metric.unsatisfiedOccurrenceCount))
+  return {
+    enabledRunCount: mappingRuns.length,
+    strictFailureCount: mappingRuns.filter((run) => (
+      run.expectedCitationMappings.gate !== 'report-only' && !run.expectedCitationMappings.ok
+    )).length,
+    expectedMappingCount: sumNumbers(metrics.map((metric) => metric.expectedMappingCount)),
+    strictMappingCount: sumNumbers(metrics.map((metric) => metric.strictMappingCount)),
+    reportOnlyMappingCount: sumNumbers(metrics.map((metric) => metric.reportOnlyMappingCount)),
+    satisfiedMappingCount: sumNumbers(metrics.map((metric) => metric.satisfiedMappingCount)),
+    averageCoveragePct: average(metrics.map((metric) => metric.coveragePct)),
+    claimOccurrenceCount,
+    satisfiedOccurrenceCount,
+    unsatisfiedOccurrenceCount,
+    occurrenceCoveragePct: percentage(satisfiedOccurrenceCount, claimOccurrenceCount),
+    averageOccurrenceCoveragePct: average(metrics.map((metric) => metric.occurrenceCoveragePct)),
+    missingClaimCount: sumNumbers(metrics.map((metric) => metric.missingClaimCount)),
+    expectedCitationMismatchCount: sumNumbers(metrics.map((metric) => metric.expectedCitationMismatchCount)),
+    everyOccurrenceFailureCount: sumNumbers(metrics.map((metric) => metric.everyOccurrenceFailureCount)),
+    proximityFailureCount: sumNumbers(metrics.map((metric) => metric.proximityFailureCount)),
+    targetResolutionFailureCount: sumNumbers(metrics.map((metric) => metric.targetResolutionFailureCount)),
+    strictMappingFailureCount: sumNumbers(metrics.map((metric) => metric.strictFailureCount)),
+    reportOnlyFailureCount: sumNumbers(metrics.map((metric) => metric.reportOnlyFailureCount)),
+    strictMissingClaimCount: sumNumbers(metrics.map((metric) => metric.strictMissingClaimCount)),
+    strictExpectedCitationMismatchCount: sumNumbers(metrics.map((metric) => metric.strictExpectedCitationMismatchCount)),
+    strictEveryOccurrenceFailureCount: sumNumbers(metrics.map((metric) => metric.strictEveryOccurrenceFailureCount)),
+    strictProximityFailureCount: sumNumbers(metrics.map((metric) => metric.strictProximityFailureCount)),
+    strictTargetResolutionFailureCount: sumNumbers(metrics.map((metric) => metric.strictTargetResolutionFailureCount)),
   }
 }
 
@@ -2141,13 +2249,16 @@ function summarizeLiveFixtureReports(fixtureReports, renderers) {
     requestCount: 0,
     renderers: {},
   }
+  const allRuns = []
 
   for (const renderer of renderers) {
     const results = fixtureReports.map((fixture) => fixture.renderers[renderer.id]).filter(Boolean)
     const runs = results.flatMap((result) => (
       Array.isArray(result.runs) && result.runs.length ? result.runs : [result]
     ))
+    allRuns.push(...runs)
     totals.requestCount += runs.length
+    const promptMeasurements = results.map((result) => result.prompt).filter(Boolean)
     const latencyMs = summarizeNumbers(runs.map((run) => run.latencyMs))
     const outputTextLength = summarizeNumbers(runs.map((run) => run.outputTextLength))
     const usage = summarizeLiveRunUsage(runs)
@@ -2157,19 +2268,26 @@ function summarizeLiveFixtureReports(fixtureReports, renderers) {
     const passCount = runs.filter((run) => run.pass).length
     const okCount = runs.filter((run) => run.status === 'ok').length
     const truncatedCount = runs.filter((run) => run.truncation?.detected || run.truncated).length
+    const inferredTruncatedCount = runs.filter((run) => run.truncation?.inferred).length
+    const invalidCitationAnchorCount = sumNumbers(runs.map((run) => run.invalidCitationAnchorCount))
+    const allRequiredCitationAnchorsCoveredCount = runs.filter((run) => run.allRequiredCitationAnchorsCovered).length
     const citationCoveragePct = summarizeNumbers(
       runs.map((run) => run.requiredCitationAnchors?.coveragePct),
     )
+    const answerOracle = summarizeAnswerOracleRunMetrics(runs)
+    const expectedCitationMappings = summarizeExpectedCitationMappingRunMetrics(runs)
     totals.renderers[renderer.id] = {
       fixtureCount: results.length,
       requestCount: runs.length,
       runCount: runs.length,
+      runtimeUserPrompt: promptMeasurements.length === results.length ? sumMeasurements(promptMeasurements) : null,
       okCount,
       passCount,
       failCount: runs.length - passCount,
       passRatePct: percentage(passCount, runs.length),
       errorCount: runs.length - okCount,
       truncatedCount,
+      inferredTruncatedCount,
       finishReasonCounts,
       failureBucketCounts,
       failureCodeCounts,
@@ -2177,15 +2295,27 @@ function summarizeLiveFixtureReports(fixtureReports, renderers) {
       outputTextLength,
       usage,
       averageRequiredCitationAnchorCoveragePct: citationCoveragePct.average,
-      averageAnswerOracleRequiredTermCoveragePct: average(
-        runs.map((run) => run.answerOracle?.metrics?.requiredTermCoveragePct),
-      ),
-      averageAnswerOracleRequiredRelationCoveragePct: average(
-        runs.map((run) => run.answerOracle?.metrics?.requiredRelationCoveragePct),
-      ),
-      averageExpectedCitationMappingCoveragePct: average(
-        runs.map((run) => run.expectedCitationMappings?.metrics?.coveragePct),
-      ),
+      invalidCitationAnchorCount,
+      allRequiredCitationAnchorsCoveredCount,
+      answerOracle,
+      averageAnswerOracleRequiredTermCoveragePct: answerOracle.averageRequiredTermCoveragePct,
+      averageAnswerOracleRequiredPhraseCoveragePct: answerOracle.averageRequiredPhraseCoveragePct,
+      averageAnswerOracleRequiredRelationCoveragePct: answerOracle.averageRequiredRelationCoveragePct,
+      averageAnswerOracleRequiredItemCoveragePct: answerOracle.averageRequiredItemCoveragePct,
+      averageAnswerOracleOmissionRate: answerOracle.averageOmissionRate,
+      answerOracleUnsupportedClaimHitCount: answerOracle.unsupportedClaimHitCount,
+      answerOracleContradictoryClaimHitCount: answerOracle.contradictoryClaimHitCount,
+      answerOracleDistortionCount: answerOracle.distortionCount,
+      strictAnswerOracleUnsupportedClaimHitCount: answerOracle.strictUnsupportedClaimHitCount,
+      strictAnswerOracleContradictoryClaimHitCount: answerOracle.strictContradictoryClaimHitCount,
+      strictAnswerOracleDistortionCount: answerOracle.strictDistortionCount,
+      expectedCitationMappings,
+      averageExpectedCitationMappingCoveragePct: expectedCitationMappings.averageCoveragePct,
+      expectedCitationOccurrenceCoveragePct: expectedCitationMappings.occurrenceCoveragePct,
+      averageExpectedCitationOccurrenceCoveragePct: expectedCitationMappings.averageOccurrenceCoveragePct,
+      expectedCitationClaimOccurrenceCount: expectedCitationMappings.claimOccurrenceCount,
+      expectedCitationSatisfiedOccurrenceCount: expectedCitationMappings.satisfiedOccurrenceCount,
+      expectedCitationUnsatisfiedOccurrenceCount: expectedCitationMappings.unsatisfiedOccurrenceCount,
       variance: {
         mixedPassStatus: passCount > 0 && passCount < runs.length,
         latencyRangeMs: numericRange(latencyMs),
@@ -2195,7 +2325,225 @@ function summarizeLiveFixtureReports(fixtureReports, renderers) {
     }
   }
 
+  const answerOracle = summarizeAnswerOracleRunMetrics(allRuns)
+  const expectedCitationMappings = summarizeExpectedCitationMappingRunMetrics(allRuns)
+  totals.answerOracle = answerOracle
+  totals.answerOracleUnsupportedClaimHitCount = answerOracle.unsupportedClaimHitCount
+  totals.answerOracleContradictoryClaimHitCount = answerOracle.contradictoryClaimHitCount
+  totals.answerOracleDistortionCount = answerOracle.distortionCount
+  totals.strictAnswerOracleUnsupportedClaimHitCount = answerOracle.strictUnsupportedClaimHitCount
+  totals.strictAnswerOracleContradictoryClaimHitCount = answerOracle.strictContradictoryClaimHitCount
+  totals.strictAnswerOracleDistortionCount = answerOracle.strictDistortionCount
+  totals.averageAnswerOracleOmissionRate = answerOracle.averageOmissionRate
+  totals.averageAnswerOracleRequiredItemCoveragePct = answerOracle.averageRequiredItemCoveragePct
+  totals.expectedCitationMappings = expectedCitationMappings
+  totals.expectedCitationOccurrenceCoveragePct = expectedCitationMappings.occurrenceCoveragePct
+  totals.averageExpectedCitationOccurrenceCoveragePct = expectedCitationMappings.averageOccurrenceCoveragePct
+
   return totals
+}
+
+function buildLiveRendererRecommendation({ renderers, totals, unavailableReasons = [] }) {
+  const entries = renderers.map((renderer) => (
+    buildLiveRendererRecommendationEntry(renderer, totals?.renderers?.[renderer.id], unavailableReasons)
+  ))
+  const sizeRanked = [...entries].sort(compareLiveRecommendationEntrySize)
+  for (const [index, entry] of sizeRanked.entries()) {
+    entry.sizeRank = index + 1
+  }
+  const eligibleEntries = entries.filter((entry) => entry.eligible).sort(compareLiveRecommendationEntrySize)
+  const blockedEntries = entries.filter((entry) => !entry.eligible).sort(compareLiveRecommendationEntrySize)
+  const ranking = [...eligibleEntries, ...blockedEntries].map((entry, index) => ({
+    ...entry,
+    rank: index + 1,
+  }))
+  const recommended = eligibleEntries[0] || null
+  const blockedReasons = recommended
+    ? []
+    : [...new Set(ranking.flatMap((entry) => entry.blockingReasons.map((reason) => `${entry.id}: ${reason}`)))]
+
+  return {
+    basis: 'quality-first-live',
+    sizeMetric: 'runtimeUserPrompt.estimatedTokens',
+    requires: {
+      strictPassRatePct: 100,
+      strictQualityFailureCount: 0,
+    },
+    status: recommended ? 'recommended' : 'blocked',
+    recommendedRendererId: recommended?.id || null,
+    blockedReasons,
+    ranking,
+  }
+}
+
+function buildLiveRendererRecommendationEntry(renderer, summary, unavailableReasons) {
+  const failureCodeCount = countMapTotal(summary?.failureCodeCounts)
+  const strictOracleHitCount = strictAnswerOracleHitCount(summary?.answerOracle)
+  const strictCitationMappingFailureCount = strictExpectedCitationMappingFailureCount(summary?.expectedCitationMappings)
+  const strictMetricFailureCount = strictOracleHitCount + strictCitationMappingFailureCount
+  const strictQualityFailureCount = failureCodeCount
+    + (summary?.truncatedCount || 0)
+    + (summary?.inferredTruncatedCount || 0)
+    + strictMetricFailureCount
+  const blockingReasons = liveRendererBlockingReasons({
+    summary,
+    unavailableReasons,
+    failureCodeCount,
+    strictOracleHitCount,
+    strictCitationMappingFailureCount,
+  })
+
+  return {
+    id: renderer.id,
+    label: renderer.label,
+    mediaType: renderer.mediaType,
+    status: blockingReasons.length ? 'blocked' : 'eligible',
+    eligible: blockingReasons.length === 0,
+    blockingReasons,
+    sizeRank: null,
+    runtimeUserPrompt: summary?.runtimeUserPrompt || null,
+    strictLive: {
+      runCount: summary?.runCount || 0,
+      passCount: summary?.passCount || 0,
+      failCount: summary?.failCount || 0,
+      passRatePct: summary?.passRatePct ?? null,
+      failureCodeCount,
+      truncatedCount: summary?.truncatedCount || 0,
+      inferredTruncatedCount: summary?.inferredTruncatedCount || 0,
+      strictOracleHitCount,
+      strictCitationMappingFailureCount,
+      strictMetricFailureCount,
+      strictQualityFailureCount,
+    },
+    quality: {
+      truncatedCount: summary?.truncatedCount || 0,
+      inferredTruncatedCount: summary?.inferredTruncatedCount || 0,
+      invalidCitationAnchorCount: summary?.invalidCitationAnchorCount || 0,
+      allRequiredCitationAnchorsCoveredCount: summary?.allRequiredCitationAnchorsCoveredCount || 0,
+      answerOracle: summary?.answerOracle || summarizeAnswerOracleRunMetrics([]),
+      expectedCitationMappings: summary?.expectedCitationMappings || summarizeExpectedCitationMappingRunMetrics([]),
+    },
+  }
+}
+
+function liveRendererBlockingReasons({
+  summary,
+  unavailableReasons,
+  failureCodeCount,
+  strictOracleHitCount,
+  strictCitationMappingFailureCount,
+}) {
+  const reasons = []
+  for (const reason of unavailableReasons) {
+    reasons.push(`live runtime unavailable: ${reason}`)
+  }
+  if (!summary) {
+    reasons.push('no live totals were produced for renderer')
+    return reasons
+  }
+  if (!summary.runCount) {
+    reasons.push('no live runs were recorded')
+  }
+  if (summary.passRatePct !== 100) {
+    reasons.push(`strict live passRate is ${formatPct(summary.passRatePct)}, not 100%`)
+  }
+  if (failureCodeCount > 0) {
+    reasons.push(`strict failure codes present: ${formatCountMap(summary.failureCodeCounts)}`)
+  }
+  if (summary.truncatedCount > 0) {
+    reasons.push(`strict truncation detected: ${summary.truncatedCount}`)
+  }
+  if (summary.inferredTruncatedCount > 0) {
+    reasons.push(`strict inferred truncation detected: ${summary.inferredTruncatedCount}`)
+  }
+  if (summary.answerOracle?.strictUnsupportedClaimHitCount > 0) {
+    reasons.push(`strict unsupported claim hits: ${summary.answerOracle.strictUnsupportedClaimHitCount}`)
+  }
+  if (summary.answerOracle?.strictContradictoryClaimHitCount > 0) {
+    reasons.push(`strict contradictory claim hits: ${summary.answerOracle.strictContradictoryClaimHitCount}`)
+  }
+  if (summary.answerOracle?.strictDistortionCount > 0) {
+    reasons.push(`strict distortion hits: ${summary.answerOracle.strictDistortionCount}`)
+  }
+  if (summary.expectedCitationMappings?.strictMissingClaimCount > 0) {
+    reasons.push(`strict expected-claim missing failures: ${summary.expectedCitationMappings.strictMissingClaimCount}`)
+  }
+  if (summary.expectedCitationMappings?.strictEveryOccurrenceFailureCount > 0) {
+    reasons.push(`strict every-occurrence citation failures: ${summary.expectedCitationMappings.strictEveryOccurrenceFailureCount}`)
+  }
+  if (summary.expectedCitationMappings?.strictTargetResolutionFailureCount > 0) {
+    reasons.push(`strict target-resolution failures: ${summary.expectedCitationMappings.strictTargetResolutionFailureCount}`)
+  }
+  if (summary.expectedCitationMappings?.strictExpectedCitationMismatchCount > 0) {
+    reasons.push(`strict expected-citation mismatch failures: ${summary.expectedCitationMappings.strictExpectedCitationMismatchCount}`)
+  }
+  if (summary.expectedCitationMappings?.strictProximityFailureCount > 0) {
+    reasons.push(`strict claim-citation proximity failures: ${summary.expectedCitationMappings.strictProximityFailureCount}`)
+  }
+  if (strictOracleHitCount > 0 && !reasons.some((reason) => reason.startsWith('strict unsupported')
+    || reason.startsWith('strict contradictory')
+    || reason.startsWith('strict distortion'))) {
+    reasons.push(`strict answer-oracle quality hits: ${strictOracleHitCount}`)
+  }
+  if (strictCitationMappingFailureCount > 0 && !reasons.some((reason) => reason.startsWith('strict expected')
+    || reason.startsWith('strict every')
+    || reason.startsWith('strict target')
+    || reason.startsWith('strict claim'))) {
+    reasons.push(`strict expected-citation quality failures: ${strictCitationMappingFailureCount}`)
+  }
+  if (!Number.isFinite(summary.runtimeUserPrompt?.estimatedTokens)) {
+    reasons.push('runtime prompt size measurement unavailable')
+  }
+  return reasons
+}
+
+function strictAnswerOracleHitCount(answerOracle = null) {
+  return (answerOracle?.strictUnsupportedClaimHitCount || 0)
+    + (answerOracle?.strictContradictoryClaimHitCount || 0)
+    + (answerOracle?.strictDistortionCount || 0)
+}
+
+function strictExpectedCitationMappingFailureCount(expectedCitationMappings = null) {
+  return (expectedCitationMappings?.strictMissingClaimCount || 0)
+    + (expectedCitationMappings?.strictEveryOccurrenceFailureCount || 0)
+    + (expectedCitationMappings?.strictTargetResolutionFailureCount || 0)
+    + (expectedCitationMappings?.strictExpectedCitationMismatchCount || 0)
+    + (expectedCitationMappings?.strictProximityFailureCount || 0)
+}
+
+function compareLiveRecommendationEntrySize(left, right) {
+  const leftTokens = Number.isFinite(left.runtimeUserPrompt?.estimatedTokens)
+    ? left.runtimeUserPrompt.estimatedTokens
+    : Number.POSITIVE_INFINITY
+  const rightTokens = Number.isFinite(right.runtimeUserPrompt?.estimatedTokens)
+    ? right.runtimeUserPrompt.estimatedTokens
+    : Number.POSITIVE_INFINITY
+  if (leftTokens !== rightTokens) return leftTokens - rightTokens
+
+  const leftBytes = Number.isFinite(left.runtimeUserPrompt?.utf8Bytes)
+    ? left.runtimeUserPrompt.utf8Bytes
+    : Number.POSITIVE_INFINITY
+  const rightBytes = Number.isFinite(right.runtimeUserPrompt?.utf8Bytes)
+    ? right.runtimeUserPrompt.utf8Bytes
+    : Number.POSITIVE_INFINITY
+  if (leftBytes !== rightBytes) return leftBytes - rightBytes
+
+  return left.id.localeCompare(right.id)
+}
+
+function countMapTotal(counts) {
+  return sumNumbers(Object.values(counts || {}))
+}
+
+function formatPct(value) {
+  return Number.isFinite(value) ? `${value}%` : 'unmeasured'
+}
+
+function formatCountMap(counts) {
+  return Object.entries(counts || {})
+    .filter(([, count]) => count > 0)
+    .map(([name, count]) => `${name}=${count}`)
+    .join(', ') || 'none'
 }
 
 function summarizeNumbers(values) {
@@ -3137,8 +3485,11 @@ if (isCliEntrypoint()) {
 
 export {
   analyzeCitationAnchors,
+  buildLiveRendererRecommendation,
   classifyLiveRunFailureBuckets,
   classifyLiveRunFailureCodes,
   evaluateAnswerOracle,
   evaluateExpectedCitationMappings,
+  summarizeAnswerOracleRunMetrics,
+  summarizeExpectedCitationMappingRunMetrics,
 }

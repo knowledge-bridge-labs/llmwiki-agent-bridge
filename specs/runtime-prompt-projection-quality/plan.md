@@ -44,3 +44,20 @@
       buckets/codes.
 11. Verify targeted deterministic local mock tests, `node --check`, and
     whitespace diff checks.
+12. Promote live metrics to decision-ready aggregates:
+    - roll expected-citation occurrence coverage and occurrence counts up to
+      renderer and totals reports;
+    - roll answer-oracle unsupported/contradictory hits, distortion counts,
+      omission rate, and required-item coverage up to renderer and totals
+      reports.
+13. Add a live quality-first recommendation object:
+    - mark offline byte/char/estimated-token comparisons as size-only;
+    - compute renderer eligibility from strict live pass rate, empty
+      failure-code counts, no truncation or inferred truncation, zero strict
+      answer-oracle quality hits, and satisfied strict expected-citation
+      mapping gates;
+    - apply prompt-size ranking only among eligible renderers;
+    - include blocked reasons when smaller renderers fail quality or when no
+      renderer is eligible.
+14. Document compact fixture-authoring guidance so future live fixtures remain
+    private-data-safe and promotion-relevant.

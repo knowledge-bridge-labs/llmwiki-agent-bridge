@@ -65,6 +65,29 @@ should remain optional evaluation input rather than a runtime dependency.
     `expected_citation_mismatch`.
   - every-occurrence mapping failures use occurrence metrics and the distinct
     `expected_citation_every_occurrence_failed` failure code.
+  - live renderer and totals reports aggregate expected-citation occurrence
+    coverage and total claim occurrence counts so repeated-claim citation
+    discipline can be compared across renderers.
+  - live renderer and totals reports aggregate answer-oracle unsupported claim
+    hits, contradictory claim hits, aggregate distortion counts, omission rate,
+    and required-item coverage so quality comparisons do not depend on reading
+    individual run records.
+  - strict and report-only diagnostics are split in aggregate reports; strict
+    unsupported, contradictory, distortion, and expected-citation failure
+    counts participate in recommendation eligibility, while report-only counts
+    remain visible for fixture calibration.
+- Mark offline byte/char/estimated-token comparisons as `size-only`; offline
+  size comparisons are never readiness recommendations.
+- Add a live `quality-first` recommendation object:
+  - each renderer is eligible only when strict live pass rate is 100% and
+    strict quality failures are zero;
+  - strict quality failures include failure-code counts, truncation or inferred
+    truncation, strict unsupported/contradictory/distortion hits, and strict
+    expected-citation occurrence, target-resolution, mismatch, or proximity
+    failures;
+  - size ranking is applied only among eligible renderers;
+  - when no renderer is eligible, recommendation is blocked with
+    renderer-specific reasons.
 - Keep Graphify support eval-only by reading a pre-generated `graph.json`.
 - Do not install, import, execute, or depend on Graphify from the Node package.
 - Keep lossy renderers, including markdown summary projections, explicit and
@@ -101,6 +124,11 @@ should remain optional evaluation input rather than a runtime dependency.
   configured-pattern detectors; they improve deterministic attribution but do
   not replace a semantic judge. They are counted in aggregate distortion
   metrics while also retaining distinct category metrics and failure codes.
+- Live renderer comparison can now be read from aggregate report fields instead
+  of manually inspecting each run, but the aggregate metrics remain only as
+  good as the checked-in oracle fixtures.
+- Smaller prompt renderers can be measured offline but cannot be recommended
+  by the live report unless strict live quality gates pass first.
 - The first real-runtime calibration smoke failed all strict runs, so current
   renderer readiness is blocked by answer-quality and evaluation-attribution
   gaps rather than by token-size comparison.
@@ -116,6 +144,9 @@ should remain optional evaluation input rather than a runtime dependency.
   before treating live pass rates as renderer rankings.
 - Calibrate every-occurrence expected citation mapping usage so fixtures
   distinguish introductory repeated claims from repeated supported claims.
+- Keep fixture patterns compact and promotion-relevant; prefer
+  `expectedCitationIds` and avoid private endpoints, model names, credentials,
+  raw live answers, or absolute local paths in checked-in material.
 - Consider model-specific tokenizer counts when tokenizer access is available.
 
 ## Links

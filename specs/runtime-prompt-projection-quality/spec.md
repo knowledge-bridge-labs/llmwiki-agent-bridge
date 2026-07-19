@@ -93,3 +93,30 @@ quality gates.
 - `REQ-021`: `answerOracle.metrics.distortionCount` aggregates all configured
   negative-pattern hits: forbidden terms, forbidden claims, unsupported claims,
   and contradictory claims.
+- `REQ-022`: Live renderer and totals reports aggregate expected-citation
+  occurrence metrics, including average occurrence coverage and total claim,
+  satisfied, and unsatisfied occurrence counts. The aggregate
+  `expectedCitationMappings` shape includes `enabledRunCount`,
+  `expectedMappingCount`, `satisfiedMappingCount`, `averageCoveragePct`,
+  `claimOccurrenceCount`, `satisfiedOccurrenceCount`,
+  `unsatisfiedOccurrenceCount`, `occurrenceCoveragePct`,
+  `averageOccurrenceCoveragePct`, `strictEveryOccurrenceFailureCount`,
+  `strictTargetResolutionFailureCount`,
+  `strictExpectedCitationMismatchCount`, and `strictProximityFailureCount`.
+- `REQ-023`: Live renderer and totals reports aggregate answer-oracle quality
+  metrics needed for renderer comparison: unsupported claim hits,
+  contradictory claim hits, aggregate distortion counts, average omission rate,
+  and average required-item coverage. Aggregate reports split strict and
+  report-only diagnostics, including `strictUnsupportedClaimHitCount`,
+  `strictContradictoryClaimHitCount`, and `strictDistortionCount`.
+- `REQ-024`: Offline renderer comparisons are explicitly marked size-only and
+  must not be interpreted as recommendations or readiness decisions.
+- `REQ-025`: Live reports include a quality-first recommendation object that
+  ranks renderers by size only after strict live `passRatePct` is 100,
+  failure-code counts are empty, no truncation or inferred truncation is
+  detected, strict unsupported/contradictory/distortion hits are zero, and all
+  strict expected-citation occurrence, target-resolution, mismatch, and
+  proximity gates are satisfied.
+- `REQ-026`: When no live renderer satisfies the strict quality-first
+  eligibility gate, the recommendation is blocked with renderer-specific
+  reasons instead of selecting the smallest renderer.

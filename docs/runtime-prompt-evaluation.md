@@ -20,6 +20,7 @@ quality gates pass.
 | Answer oracle | Live outputs cover configured required terms/relations and avoid explicitly configured forbidden, unsupported, and contradictory patterns | Required when a fixture defines a strict oracle |
 | Expected citation mappings | Configured claims resolve to expected citation anchors within `windowChars`, with opt-in every-occurrence mode for repeated claims | Required when a strict fixture defines mappings |
 | Failure taxonomy | Live reports include `failureCodes` and aggregate `failureCodeCounts` | Required for failure attribution |
+| Live recommendation | `live.recommendation` ranks renderers quality-first | Size can recommend a renderer only after strict live pass rate is 100% and strict quality failures are zero |
 
 Fixtures may set an answer oracle to `report-only` while a new oracle is being
 calibrated. Production-quality fixture gates should remain strict. Report-only
@@ -38,6 +39,19 @@ configured negative-pattern hits across `forbiddenTerms`, `forbiddenClaims`,
 emits the broad `oracle_distortion` code plus the distinct
 `oracle_unsupported_claim` or `oracle_contradiction` code when those categories
 are hit.
+Renderer-level and totals-level live aggregates include the same answer-oracle
+categories for comparison: unsupported and contradictory claim hit counts,
+aggregate `distortionCount`, average omission rate, and average required-item
+coverage. Required-item coverage is derived from the configured required term,
+phrase, and relation checks; it is still a deterministic fixture-pattern
+metric, not an LLM judge.
+The aggregate `answerOracle` object also splits strict from report-only
+diagnostics with `strictUnsupportedClaimHitCount`,
+`strictContradictoryClaimHitCount`, `strictDistortionCount`,
+`reportOnlyUnsupportedClaimHitCount`, `reportOnlyContradictoryClaimHitCount`,
+and `reportOnlyDistortionCount`. Strict counts participate in recommendation
+eligibility; report-only counts remain visible for calibration but do not block
+eligibility.
 
 Expected citation mappings are calibrated independently from the rest of the
 answer oracle. Fixtures may set `answerOracle.expectedCitationMappingsGate` to
@@ -63,6 +77,48 @@ failures.
 Unknown `expectedCitationIds` and out-of-range citation indexes are reported as
 target-resolution failures with `expected_citation_target_unresolved`, not as
 wrong-nearby-citation mismatches.
+Live renderer and totals aggregates also roll these occurrence fields up as
+totals plus `occurrenceCoveragePct` and
+`averageExpectedCitationOccurrenceCoveragePct`, so renderer comparison can
+distinguish "some mapped claims passed" from "every configured claim occurrence
+stayed cited." The aggregate `expectedCitationMappings` object includes
+`enabledRunCount`, `expectedMappingCount`, `satisfiedMappingCount`,
+`averageCoveragePct`, `claimOccurrenceCount`,
+`satisfiedOccurrenceCount`, `unsatisfiedOccurrenceCount`,
+`occurrenceCoveragePct`, `averageOccurrenceCoveragePct`,
+`strictEveryOccurrenceFailureCount`, `strictTargetResolutionFailureCount`,
+`strictExpectedCitationMismatchCount`, and `strictProximityFailureCount`.
+
+Offline benchmark comparisons remain size-only. Each offline comparison keeps
+the existing byte/char/estimated-token savings fields and is marked with
+`basis: "size-only"`; offline size reports never imply renderer readiness. When
+`--live` is enabled, `live.recommendation` reports a quality-first ranking. A
+renderer is eligible only when strict live `passRatePct` is `100`, failure-code
+counts are empty, no truncation or inferred truncation was detected, strict
+unsupported/contradictory/distortion hits are zero, and all strict
+expected-citation occurrence, target-resolution, mismatch, and proximity gates
+are satisfied. Among eligible renderers, the recommendation uses
+`runtimeUserPrompt.estimatedTokens` as the size metric. If no renderer is
+eligible, the recommendation is blocked with renderer-specific reasons and
+`recommendedRendererId: null`.
+
+## Fixture Authoring Notes
+
+- Keep fixtures compact by making each oracle pattern target a decision
+  distinction that affects renderer promotion: required terms for essential
+  facts, required relations for graph shape, and negative patterns only for
+  known unsupported or contradictory claims.
+- Prefer `expectedCitationIds` over numeric indexes so fixture edits can
+  reorder citations without rewriting mapping intent.
+- Use short `claim` phrases that should appear verbatim in good answers. If a
+  fixture expects repeated claims, start with omitted `occurrenceMode` (`any`)
+  during calibration and opt into `occurrenceMode: "every"` only when every
+  repetition must be cited.
+- Use `report-only` gates only while calibrating a new fixture. A renderer
+  recommendation ignores report-only failures, but production-quality fixtures
+  should make promotion-relevant checks strict.
+- Do not include private endpoints, model names, keys, raw live answers, or
+  absolute local paths in checked-in fixtures or docs.
 
 ## Scored Loop Rubric
 
@@ -224,3 +280,24 @@ These metrics can evolve as fixtures improve:
 - Retrospective: these checks are explicit fixture-pattern gates, not semantic
   judging. They increase attribution fidelity for local deterministic evals
   while keeping public artifacts and OpenAPI unchanged.
+
+### Loop 8: Decision-ready live renderer recommendation
+
+- Research/analysis: live reports had enough per-run diagnostics to explain
+  failures but still required manual aggregation before comparing renderers.
+  Size comparisons also needed an explicit guardrail so a smaller but
+  quality-failing renderer could not be promoted.
+- TDD target: deterministic local mock runtime tests cover a smaller renderer
+  that fails strict quality gates and is blocked from recommendation, plus a
+  size-saving renderer that passes strict quality gates and becomes eligible.
+  Additional tests cover repeated-run occurrence aggregation, all renderers
+  failing with no winner, and report-only diagnostics remaining visible without
+  blocking eligibility.
+- Quality gates added: renderer-level and totals-level aggregates for expected
+  citation occurrence coverage, answer-oracle unsupported/contradictory hits,
+  distortion counts, omission rate, required-item coverage, and a
+  `live.recommendation` object with quality-first eligibility and
+  renderer-specific blocking reasons.
+- Retrospective: the report is now decision-ready for renderer comparison when
+  live fixtures are strict and representative. Offline byte/token comparisons
+  remain useful sizing inputs only, not readiness signals.

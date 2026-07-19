@@ -29,3 +29,21 @@
       classification behavior.
 - [x] Count forbidden, unsupported, and contradictory configured negative
       pattern hits in aggregate answer-oracle `distortionCount`.
+- [x] Aggregate expected-citation occurrence coverage and claim occurrence
+      counts at live renderer and totals levels.
+- [x] Aggregate answer-oracle unsupported/contradictory hits, distortion
+      counts, omission rate, and required-item coverage at live renderer and
+      totals levels.
+- [x] Mark offline renderer savings as size-only and keep them separate from
+      readiness recommendation semantics.
+- [x] Add a live quality-first recommendation object that blocks strict
+      quality failures before applying prompt-size ranking.
+- [x] Add deterministic local mock runtime tests for a smaller renderer blocked
+      by quality and a quality-passing renderer becoming recommendation
+      eligible.
+- [x] Add deterministic coverage for all live renderers failing strict quality
+      gates so no recommendation winner is emitted.
+- [x] Aggregate report-only oracle and expected-citation diagnostics separately
+      from strict quality failures and verify they do not block eligibility.
+- [x] Document compact fixture-authoring notes for promotion-relevant, private
+      data-safe live fixtures.
