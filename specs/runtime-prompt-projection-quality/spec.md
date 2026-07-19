@@ -37,3 +37,5 @@ quality gates.
   portable evidence paths.
 - `REQ-005`: Live smoke fails responses that omit any required exact citation
   anchor or include invalid exact anchors.
+- `REQ-006`: Live smoke fails responses that violate a fixture's deterministic
+  answer oracle.

@@ -3941,6 +3941,73 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(runtime.requests.length, 2)
   })
 
+  it('rejects live runtime prompt benchmark responses that omit answer oracle relations', async (t) => {
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      const userPrompt = body.messages.find((message) => message.role === 'user')?.content || ''
+      const isMarkdownSummary = userPrompt.includes('## Graph edges')
+      writeJson(response, 200, {
+        choices: [
+          {
+            message: {
+              content: isMarkdownSummary
+                ? 'Runtime Prompt Decision and Runtime Prompt Validation are mentioned with all citations [1](#citation-1) [2](#citation-2) [3](#citation-3).'
+                : 'Runtime Prompt Decision requires Prompt Codec Implementation, and Prompt Codec Implementation measured by Prompt renderer benchmark before Runtime Prompt Validation [1](#citation-1) [2](#citation-2) [3](#citation-3).',
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 10,
+          total_tokens: 30,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'graph-linear-chain',
+        '--renderer',
+        'compact-json,markdown-summary',
+        '--max-tokens',
+        '64',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /answer oracle failed/)
+
+    const report = JSON.parse(error.stdout)
+    const liveFixture = report.live.fixtures[0]
+
+    assert.equal(report.live.validation.ok, false)
+    assert.equal(liveFixture.renderers['compact-json'].pass, true)
+    assert.equal(liveFixture.renderers['compact-json'].answerOracle.ok, true)
+    assert.equal(liveFixture.renderers['markdown-summary'].pass, false)
+    assert.equal(liveFixture.renderers['markdown-summary'].allRequiredCitationAnchorsCovered, true)
+    assert.equal(liveFixture.renderers['markdown-summary'].answerOracle.ok, false)
+    assert(liveFixture.renderers['markdown-summary'].answerOracle.metrics.missingRequiredRelationCount > 0)
+    assert.equal(runtime.requests.length, 2)
+  })
+
   it('dry packs the npm tarball with expected files', async () => {
     const npm = npmPackCommand()
     const { stdout } = await execFileAsync(npm.file, npm.args, {

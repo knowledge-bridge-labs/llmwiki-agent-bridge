@@ -26,10 +26,14 @@ should remain optional evaluation input rather than a runtime dependency.
   - benchmark evidence paths must be portable and must not expose local roots;
   - live runtime smoke must require full required-anchor coverage with exact
     `[n](#citation-n)` anchors.
+  - live runtime smoke must satisfy deterministic answer oracles when fixtures
+    define required terms, required relations, or forbidden terms.
 - Keep Graphify support eval-only by reading a pre-generated `graph.json`.
 - Do not install, import, execute, or depend on Graphify from the Node package.
 - Keep lossy renderers, including markdown summary projections, explicit and
   non-default until omission/distortion evals pass.
+- Allow `report-only` answer oracles only for calibration; strict gates are the
+  default for production-quality fixtures.
 
 ## Consequences
 
@@ -39,10 +43,12 @@ should remain optional evaluation input rather than a runtime dependency.
 - Some answer-quality metrics still require stronger oracle fixtures and live
   runtime evaluation.
 - A renderer can fail live smoke even when it wins token-size comparisons.
+- Deterministic answer oracles are conservative: they catch known omissions and
+  obvious distortions but do not replace semantic claim/citation judging.
 
 ## Follow-ups
 
-- Add answer-level oracle fixtures for required facts, required relations,
+- Expand answer-level oracle fixtures for required facts, required relations,
   forbidden claims, and expected citation mappings.
 - Add repeated live eval runs and per-fixture variance reporting.
 - Consider model-specific tokenizer counts when tokenizer access is available.

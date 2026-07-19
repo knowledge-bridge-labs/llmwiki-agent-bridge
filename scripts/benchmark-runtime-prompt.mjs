@@ -929,6 +929,7 @@ async function evaluateLiveRenderer({ args, config, fixture, renderer }) {
 
     const outputText = extractChatCompletionText(response.payload)
     const citationAnchors = analyzeCitationAnchors(outputText, fixture.evidenceBundle.citationCount)
+    const answerOracle = evaluateAnswerOracle(outputText, fixture.answerOracle)
 
     return {
       status: 'ok',
@@ -938,7 +939,10 @@ async function evaluateLiveRenderer({ args, config, fixture, renderer }) {
       outputTextLength: Array.from(outputText).length,
       citationAnchorsFound: citationAnchors.found,
       requiredCitationAnchors: citationAnchors.coverage,
-      pass: citationAnchors.coverage.coveredCount === citationAnchors.coverage.requiredCount && citationAnchors.invalidCount === 0,
+      answerOracle,
+      pass: citationAnchors.coverage.coveredCount === citationAnchors.coverage.requiredCount
+        && citationAnchors.invalidCount === 0
+        && (answerOracle.gate === 'report-only' || answerOracle.ok),
       invalidCitationAnchorCount: citationAnchors.invalidCount,
       allRequiredCitationAnchorsCovered: citationAnchors.coverage.coveredCount === citationAnchors.coverage.requiredCount,
       usage: summarizeUsage(response.payload?.usage),
@@ -1098,6 +1102,131 @@ function citationCoverage(coveredIndexes, citationCount) {
   }
 }
 
+function evaluateAnswerOracle(text, oracle = null) {
+  if (!oracle || typeof oracle !== 'object') {
+    return {
+      enabled: false,
+      ok: true,
+      failures: [],
+    }
+  }
+
+  const requiredTerms = Array.isArray(oracle.requiredTerms) ? oracle.requiredTerms.filter(Boolean) : []
+  const requiredPhrases = Array.isArray(oracle.requiredPhrases) ? oracle.requiredPhrases.filter(Boolean) : []
+  const requiredRelations = Array.isArray(oracle.requiredRelations) ? oracle.requiredRelations : []
+  const forbiddenTerms = Array.isArray(oracle.forbiddenTerms) ? oracle.forbiddenTerms.filter(Boolean) : []
+  const forbiddenClaims = Array.isArray(oracle.forbiddenClaims) ? oracle.forbiddenClaims.filter(Boolean) : []
+  const missingTerms = requiredTerms.filter((term) => !answerContainsAnyOf(text, term))
+  const missingPhrases = requiredPhrases.filter((phrase) => !answerContainsAnyOf(text, phrase))
+  const missingRelations = requiredRelations.filter((relation) => !answerContainsRelation(text, relation))
+  const forbiddenFound = forbiddenTerms.filter((term) => answerContainsAnyOf(text, term))
+  const forbiddenClaimFound = forbiddenClaims.filter((claim) => answerContainsAllOf(text, claim))
+  const requiredTermCoveragePct = requiredTerms.length
+    ? Number((((requiredTerms.length - missingTerms.length) / requiredTerms.length) * 100).toFixed(2))
+    : 100
+  const requiredPhraseCoveragePct = requiredPhrases.length
+    ? Number((((requiredPhrases.length - missingPhrases.length) / requiredPhrases.length) * 100).toFixed(2))
+    : 100
+  const requiredRelationCoveragePct = requiredRelations.length
+    ? Number((((requiredRelations.length - missingRelations.length) / requiredRelations.length) * 100).toFixed(2))
+    : 100
+  const requiredItemCount = requiredTerms.length + requiredPhrases.length + requiredRelations.length
+  const missingRequiredItemCount = missingTerms.length + missingPhrases.length + missingRelations.length
+  const failures = []
+
+  if (missingTerms.length) {
+    failures.push(`missing required terms: ${missingTerms.slice(0, 5).map(formatOracleItem).join(', ')}`)
+  }
+  if (missingPhrases.length) {
+    failures.push(`missing required phrases: ${missingPhrases.slice(0, 5).map(formatOracleItem).join(', ')}`)
+  }
+  if (missingRelations.length) {
+    failures.push(`missing required relations: ${missingRelations.slice(0, 5).map(formatRequiredRelation).join('; ')}`)
+  }
+  if (forbiddenFound.length) {
+    failures.push(`forbidden terms present: ${forbiddenFound.slice(0, 5).map(formatOracleItem).join(', ')}`)
+  }
+  if (forbiddenClaimFound.length) {
+    failures.push(`forbidden claims present: ${forbiddenClaimFound.slice(0, 5).map(formatOracleItem).join(', ')}`)
+  }
+
+  return {
+    enabled: true,
+    gate: oracle.gate === 'report-only' ? 'report-only' : 'strict',
+    ok: failures.length === 0,
+    metrics: {
+      requiredTermCount: requiredTerms.length,
+      requiredTermCoveragePct,
+      missingRequiredTermCount: missingTerms.length,
+      requiredPhraseCount: requiredPhrases.length,
+      requiredPhraseCoveragePct,
+      missingRequiredPhraseCount: missingPhrases.length,
+      requiredRelationCount: requiredRelations.length,
+      requiredRelationCoveragePct,
+      missingRequiredRelationCount: missingRelations.length,
+      omissionRate: requiredItemCount ? Number((missingRequiredItemCount / requiredItemCount).toFixed(4)) : 0,
+      forbiddenTermCount: forbiddenTerms.length,
+      forbiddenTermHitCount: forbiddenFound.length,
+      forbiddenClaimCount: forbiddenClaims.length,
+      forbiddenClaimHitCount: forbiddenClaimFound.length,
+      distortionCount: forbiddenFound.length + forbiddenClaimFound.length,
+    },
+    missingTerms: missingTerms.map(formatOracleItem),
+    missingPhrases: missingPhrases.map(formatOracleItem),
+    missingRelations: missingRelations.map(formatRequiredRelation),
+    forbiddenFound: forbiddenFound.map(formatOracleItem),
+    forbiddenClaimFound: forbiddenClaimFound.map(formatOracleItem),
+    failures,
+  }
+}
+
+function answerContainsRelation(text, relation) {
+  const requiredPhrases = Array.isArray(relation?.terms) && relation.terms.length
+    ? relation.terms
+    : [relation?.from, relation?.relation, relation?.to]
+  return requiredPhrases.filter(Boolean).every((phrase) => answerContainsAnyOf(text, phrase))
+}
+
+function answerContainsAnyOf(text, item) {
+  if (item && typeof item === 'object' && Array.isArray(item.anyOf)) {
+    return item.anyOf.some((value) => textContainsPhrase(text, value))
+  }
+  return textContainsPhrase(text, item)
+}
+
+function answerContainsAllOf(text, item) {
+  if (item && typeof item === 'object' && Array.isArray(item.allOf)) {
+    return item.allOf.every((value) => textContainsPhrase(text, value))
+  }
+  return textContainsPhrase(text, item)
+}
+
+function textContainsPhrase(text, phrase) {
+  const normalizedText = normalizeOracleText(text)
+  const normalizedPhrase = normalizeOracleText(phrase)
+  return Boolean(normalizedPhrase) && normalizedText.includes(normalizedPhrase)
+}
+
+function normalizeOracleText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+}
+
+function formatRequiredRelation(relation) {
+  if (!relation || typeof relation !== 'object') return String(relation)
+  if (Array.isArray(relation.terms) && relation.terms.length) return relation.terms.map(formatOracleItem).join(' + ')
+  return [relation.from, relation.relation, relation.to].map(formatOracleItem).filter(Boolean).join(' ')
+}
+
+function formatOracleItem(item) {
+  if (item && typeof item === 'object' && Array.isArray(item.anyOf)) return `anyOf(${item.anyOf.join('|')})`
+  if (item && typeof item === 'object' && Array.isArray(item.allOf)) return `allOf(${item.allOf.join('+')})`
+  return String(item || '').trim()
+}
+
 function summarizeUsage(usage) {
   if (!usage || typeof usage !== 'object') return undefined
   return {
@@ -1116,18 +1245,26 @@ function validateLiveFixtureReports(fixtureReports) {
   for (const fixture of fixtureReports) {
     for (const [rendererId, result] of Object.entries(fixture.renderers)) {
       if (!result.pass) {
-        const reason = result.invalidCitationAnchorCount > 0
-          ? `invalid exact citation anchors: ${result.invalidCitationAnchorCount}`
-          : `required citation anchors missing: ${result.requiredCitationAnchors.missing.join(', ') || 'unknown'}`
+        const reasons = []
+        if (result.status !== 'ok') reasons.push(`runtime status: ${result.status}`)
+        if (result.invalidCitationAnchorCount > 0) {
+          reasons.push(`invalid exact citation anchors: ${result.invalidCitationAnchorCount}`)
+        }
+        if (result.requiredCitationAnchors.missing.length) {
+          reasons.push(`required citation anchors missing: ${result.requiredCitationAnchors.missing.join(', ')}`)
+        }
+        if (result.answerOracle?.enabled && !result.answerOracle.ok) {
+          reasons.push(`answer oracle failed: ${result.answerOracle.failures.join('; ')}`)
+        }
         failures.push(
-          `${fixture.id}/${rendererId}: live response must complete, cover every required exact [n](#citation-n) anchor, and include no invalid exact anchors (${reason})`,
+          `${fixture.id}/${rendererId}: live response must complete, cover every required exact [n](#citation-n) anchor, include no invalid exact anchors, and satisfy answer oracle checks (${reasons.join('; ') || 'unknown'})`,
         )
       }
     }
   }
   return {
     ok: failures.length === 0,
-    checks: ['every live renderer response completes, covers every required exact [n](#citation-n) anchor, and includes no invalid exact anchors'],
+    checks: ['every live renderer response completes, covers every required exact [n](#citation-n) anchor, includes no invalid exact anchors, and satisfies answer oracle checks when configured'],
     failures,
   }
 }
@@ -1153,6 +1290,12 @@ function summarizeLiveFixtureReports(fixtureReports, renderers) {
       outputTextLength: summarizeNumbers(outputLengths),
       averageRequiredCitationAnchorCoveragePct: average(
         results.map((result) => result.requiredCitationAnchors.coveragePct),
+      ),
+      averageAnswerOracleRequiredTermCoveragePct: average(
+        results.map((result) => result.answerOracle?.metrics?.requiredTermCoveragePct),
+      ),
+      averageAnswerOracleRequiredRelationCoveragePct: average(
+        results.map((result) => result.answerOracle?.metrics?.requiredRelationCoveragePct),
       ),
     }
   }
@@ -1859,6 +2002,31 @@ function buildEvidenceBundleFixtures() {
         ['benchmark', 'gates', 'rollout', 3, 0.88],
       ],
       limitations: ['Synthetic linear CKG fixture; validates graph row rendering only.'],
+      answerOracle: {
+        schema: 'llmwiki-agent-bridge.answer-oracle.v1',
+        gate: 'strict',
+        requiredTerms: [
+          { anyOf: ['Runtime Prompt Decision', 'runtime prompt decision'] },
+          { anyOf: ['Prompt Codec Implementation', 'compact JSON renderer'] },
+          { anyOf: ['Runtime Prompt Validation', 'validation'] },
+        ],
+        requiredRelations: [
+          {
+            from: { anyOf: ['Runtime Prompt Decision', 'decision'] },
+            relation: { anyOf: ['requires', 'requires implementation'] },
+            to: { anyOf: ['Prompt Codec Implementation', 'implementation'] },
+          },
+          {
+            from: { anyOf: ['Prompt Codec Implementation', 'implementation'] },
+            relation: { anyOf: ['measured by', 'measured'] },
+            to: { anyOf: ['Prompt renderer benchmark', 'benchmark'] },
+          },
+        ],
+        forbiddenTerms: [
+          'production default is approved',
+          'citations are optional',
+        ],
+      },
     }),
     graphFixture({
       id: 'graph-dense-crossrefs',
@@ -1937,7 +2105,7 @@ function buildEvidenceBundleFixtures() {
   ]
 }
 
-function graphFixture({ id, description, query, sourceId, sourceName, citationPrefix, citations, graphNodes, graphEdges, limitations, extraMetadata = undefined }) {
+function graphFixture({ id, description, query, sourceId, sourceName, citationPrefix, citations, graphNodes, graphEdges, limitations, extraMetadata = undefined, answerOracle = undefined }) {
   const normalizedCitations = citations.map(([slug, title, path, snippet], index) => ({
     id: `${sourceId}:${citationPrefix}-${slug}`,
     sourceId,
@@ -1968,6 +2136,7 @@ function graphFixture({ id, description, query, sourceId, sourceName, citationPr
     id,
     description,
     query,
+    ...(answerOracle ? { answerOracle } : {}),
     evidenceBundle: {
       schema: 'llmwiki-agent-bridge.answer-evidence.v1',
       runtimeContract: {

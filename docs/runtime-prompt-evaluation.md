@@ -16,13 +16,17 @@ quality gates pass.
 | Runtime citation exactness | Live responses cover every required exact `[n](#citation-n)` anchor and no invalid exact anchors | Required for live smoke pass |
 | Lossy renderer isolation | Lossy projections are labeled and cannot silently become the production contract | Must be explicit candidate/eval-only |
 | Reproducibility | Offline benchmark does not call provider/runtime/network | Required |
+| Answer oracle | Live outputs cover configured required terms/relations and avoid forbidden terms | Required when a fixture defines an oracle |
+
+Fixtures may set an answer oracle to `report-only` while a new oracle is being
+calibrated. Production-quality fixture gates should remain strict.
 
 ## Flexible Rubric
 
 These metrics can evolve as fixtures improve:
 
-- Required fact recall.
-- Required relation preservation.
+- Required fact recall beyond exact term matching.
+- Required relation preservation beyond exact relation phrase matching.
 - Unsupported claim rate.
 - Contradiction or distorted relation count.
 - Source/citation proximity around claims.
@@ -52,3 +56,16 @@ These metrics can evolve as fixtures improve:
 - Retrospective: this is still mostly an evidence-shape gate. The live citation
   smoke was tightened to require full required-anchor coverage, but semantic
   answer-level omission/distortion remains the next loop.
+
+### Loop 2: Deterministic answer oracle
+
+- Research/analysis: answer-level omission and distortion can be partially
+  checked without an LLM judge by giving fixtures explicit required terms,
+  required relations, and forbidden terms.
+- TDD target: live mock responses that cover all citation anchors but omit a
+  required relation must fail.
+- Quality gates added: per-renderer answer-oracle term coverage, relation
+  coverage, and forbidden-term hit counts.
+- Retrospective: this catches deterministic omissions and obvious distortions.
+  It does not prove semantic support between each claim and citation; that
+  remains future work.
