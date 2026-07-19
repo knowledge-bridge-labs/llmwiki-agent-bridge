@@ -22,6 +22,7 @@ quality gates pass.
 | Expected citation mappings | Configured claims resolve to expected citation anchors within `windowChars`, with opt-in every-occurrence mode for repeated claims | Required when a strict fixture defines mappings |
 | Failure taxonomy | Live reports include `failureCodes` and aggregate `failureCodeCounts` | Required for failure attribution |
 | Live recommendation | `live.recommendation` ranks renderers quality-first | Size can recommend a renderer only after strict live pass rate is 100% and strict quality failures are zero |
+| Representative strict fixture coverage | Built-in strict fixtures include multi-hop citation mappings, every-occurrence repeated claims, nearby-wrong-anchor failures, unsupported/contradictory claims, and privacy/source-path claims | Required before using live recommendations as promotion evidence |
 
 Fixtures may set an answer oracle to `report-only` while a new oracle is being
 calibrated. Production-quality fixture gates should remain strict. Report-only
@@ -123,6 +124,11 @@ eligible, the recommendation is blocked with renderer-specific reasons and
 - Use `report-only` gates only while calibrating a new fixture. A renderer
   recommendation ignores report-only failures, but production-quality fixtures
   should make promotion-relevant checks strict.
+- Use `graph-strict-evidence-fidelity` as the representative built-in pattern
+  for strict fixture authoring. It combines a `require: "all"` multi-hop
+  mapping, an `occurrenceMode: "every"` repeated claim, exact-anchor mismatch
+  coverage, unsupported/contradictory claim checks, and a privacy/source-path
+  claim without private paths or endpoints.
 - Do not include private endpoints, model names, keys, raw live answers, or
   absolute local paths in checked-in fixtures or docs.
 
@@ -162,6 +168,7 @@ These metrics can evolve as fixtures improve:
 | TOON | Lossless structured codec candidate | Useful mainly when repeated row structure dominates |
 | Markdown summary | Lossy prompt projection | Must be evaluated separately for omission/distortion |
 | Graphify/CKG-like fixture | External graph evidence candidate | Eval-only; loaded from pre-generated `graph.json`, not a runtime dependency |
+| `graph-strict-evidence-fidelity` | Built-in strict synthetic graph fixture | Promotion-relevant evidence-fidelity stress case for live oracle and expected-citation gates |
 
 ## Iteration Log
 
@@ -322,3 +329,29 @@ These metrics can evolve as fixtures improve:
 - Retrospective: no benchmark implementation change was needed; this loop
   turned the existing size-only semantics into executable acceptance checks so
   token savings cannot be mistaken for renderer promotion.
+
+### Loop 10: Representative strict evidence-fidelity fixture
+
+- Research/analysis: strict fixture coverage was still too simple because the
+  main strict graph fixture was a short linear chain. Renderer promotion needed
+  a built-in fixture that directly stresses omission, distortion, repeated
+  citation discipline, exact claim-anchor mapping, and privacy/source-path
+  fidelity before token savings.
+- TDD target: the default offline benchmark includes
+  `graph-strict-evidence-fidelity` with 100% graph node/edge citation coverage,
+  zero non-portable source paths, and no private-looking serialized path,
+  endpoint, or key patterns. Live mock tests cover a passing answer that is
+  recommendation-eligible, a multi-hop relation omission, a wrong nearby
+  citation anchor while global anchors are covered, a repeated claim cited only
+  once under `occurrenceMode: "every"`, and unsupported plus contradictory
+  claims.
+- Quality gates added: a compact synthetic built-in fixture with five
+  citations and five key graph edges: Promotion Decision requires Citation
+  Fidelity Gate; Citation Fidelity Gate is measured by Live Prompt Evaluation;
+  Live Prompt Evaluation checks Exact Citation Anchor; Citation Fidelity Gate
+  enforces Repeated Citation Gate; Privacy Redaction Gate blocks Source Path
+  Leak.
+- Retrospective: this completes the representative strict-fixture follow-up
+  without changing public contracts or architecture. The checks remain
+  deterministic configured-pattern gates; future real-runtime calibration
+  should use this fixture alongside `graph-linear-chain`.

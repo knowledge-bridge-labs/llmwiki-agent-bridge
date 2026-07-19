@@ -3291,6 +3291,111 @@ function buildEvidenceBundleFixtures() {
       },
     }),
     graphFixture({
+      id: 'graph-strict-evidence-fidelity',
+      description: 'Strict graph-shaped evidence fixture covering citation fidelity, repeated citation, and privacy-redaction gates.',
+      query: 'Which promotion, citation-fidelity, repeated-citation, and privacy-redaction gates must be cited before recommending a runtime prompt renderer?',
+      sourceId: 'graph-strict-fidelity',
+      sourceName: 'Synthetic Strict Evidence Fidelity Wiki',
+      citationPrefix: 'strict',
+      citations: [
+        ['promotion-decision', 'Promotion Decision', 'docs/runtime-prompt/promotion-decision.md', 'Promotion Decision requires Citation Fidelity Gate before a renderer can be eligible; omission, distortion, and citation fidelity outrank token savings.'],
+        ['citation-fidelity-gate', 'Citation Fidelity Gate', 'specs/runtime-prompt-projection-quality/citation-fidelity-gate.md', 'Citation Fidelity Gate is measured by Live Prompt Evaluation using strict quality failures rather than size-only offline byte savings.'],
+        ['exact-citation-anchor', 'Exact Citation Anchor', 'docs/runtime-prompt/exact-citation-anchor.md', 'Live Prompt Evaluation checks Exact Citation Anchor proximity: cite exact markdown anchors near the supported claim, not nearby unrelated anchors.'],
+        ['repeated-citation-gate', 'Repeated Citation Gate', 'specs/runtime-prompt-projection-quality/repeated-citation-gate.md', 'Citation Fidelity Gate enforces Repeated Citation Gate; repeated supported claims must cite every occurrence when occurrenceMode is every.'],
+        ['privacy-redaction-gate', 'Privacy Redaction Gate', 'docs/runtime-prompt/privacy-redaction-gate.md', 'Privacy Redaction Gate blocks Source Path Leak; reports must use portable synthetic paths and must not cite raw local source paths.'],
+      ],
+      graphNodes: [
+        ['promotion-decision', 'Promotion Decision', 'decision', 1],
+        ['citation-fidelity-gate', 'Citation Fidelity Gate', 'quality-gate', 2],
+        ['live-prompt-evaluation', 'Live Prompt Evaluation', 'evaluation', 2],
+        ['exact-citation-anchor', 'Exact Citation Anchor', 'citation-check', 3],
+        ['repeated-citation-gate', 'Repeated Citation Gate', 'citation-check', 4],
+        ['privacy-redaction-gate', 'Privacy Redaction Gate', 'privacy-gate', 5],
+        ['source-path-leak', 'Source Path Leak', 'privacy-risk', 5],
+      ],
+      graphEdges: [
+        ['promotion-decision', 'requires', 'citation-fidelity-gate', 1, 0.97],
+        ['citation-fidelity-gate', 'measured_by', 'live-prompt-evaluation', 2, 0.94],
+        ['live-prompt-evaluation', 'checks', 'exact-citation-anchor', 3, 0.93],
+        ['citation-fidelity-gate', 'enforces', 'repeated-citation-gate', 4, 0.92],
+        ['privacy-redaction-gate', 'blocks', 'source-path-leak', 5, 0.96],
+      ],
+      limitations: ['Synthetic strict evidence-fidelity fixture; paths and claims are portable and private-data-safe.'],
+      answerOracle: {
+        schema: 'llmwiki-agent-bridge.answer-oracle.v1',
+        gate: 'strict',
+        requiredTerms: [
+          'Promotion Decision',
+          'Citation Fidelity Gate',
+          'Live Prompt Evaluation',
+          'Repeated Citation Gate',
+          'Privacy Redaction Gate',
+        ],
+        requiredRelations: [
+          {
+            from: 'Promotion Decision',
+            relation: 'requires',
+            to: 'Citation Fidelity Gate',
+          },
+          {
+            from: 'Citation Fidelity Gate',
+            relation: { anyOf: ['measured by', 'measured'] },
+            to: 'Live Prompt Evaluation',
+          },
+          {
+            from: 'Live Prompt Evaluation',
+            relation: 'checks',
+            to: 'Exact Citation Anchor',
+          },
+          {
+            from: 'Citation Fidelity Gate',
+            relation: 'enforces',
+            to: 'Repeated Citation Gate',
+          },
+          {
+            from: 'Privacy Redaction Gate',
+            relation: 'blocks',
+            to: 'Source Path Leak',
+          },
+        ],
+        unsupportedClaims: [
+          { allOf: ['token savings alone', 'promote renderer'] },
+          { allOf: ['raw source paths', 'should be cited'] },
+        ],
+        contradictoryClaims: [
+          { allOf: ['Promotion Decision', 'does not require', 'Citation Fidelity Gate'] },
+          { allOf: ['Privacy Redaction Gate', 'allows', 'Source Path Leak'] },
+        ],
+        expectedCitationMappings: [
+          {
+            claim: 'Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation',
+            expectedCitationIds: [
+              'graph-strict-fidelity:strict-promotion-decision',
+              'graph-strict-fidelity:strict-citation-fidelity-gate',
+            ],
+            require: 'all',
+            windowChars: 120,
+          },
+          {
+            claim: 'Citation Fidelity Gate enforces Repeated Citation Gate',
+            expectedCitationIds: ['graph-strict-fidelity:strict-repeated-citation-gate'],
+            occurrenceMode: 'every',
+            windowChars: 90,
+          },
+          {
+            claim: 'Privacy Redaction Gate blocks Source Path Leak',
+            expectedCitationIds: ['graph-strict-fidelity:strict-privacy-redaction-gate'],
+            windowChars: 90,
+          },
+          {
+            claim: 'Live Prompt Evaluation checks Exact Citation Anchor',
+            expectedCitationIds: ['graph-strict-fidelity:strict-exact-citation-anchor'],
+            windowChars: 90,
+          },
+        ],
+      },
+    }),
+    graphFixture({
       id: 'graph-dense-crossrefs',
       description: 'Dense CKG-style cross-reference fixture with repeated edge rows across decisions, specs, tests, and docs.',
       query: 'Which specs and tests should be cited when deciding whether TOON can replace compact JSON?',

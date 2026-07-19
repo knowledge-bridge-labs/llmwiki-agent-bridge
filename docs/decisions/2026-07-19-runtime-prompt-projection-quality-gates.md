@@ -135,6 +135,10 @@ should remain optional evaluation input rather than a runtime dependency.
   good as the checked-in oracle fixtures.
 - Smaller prompt renderers can be measured offline but cannot be recommended
   by the live report unless strict live quality gates pass first.
+- The representative strict-fixture follow-up is addressed by the built-in
+  `graph-strict-evidence-fidelity` evaluation fixture. This is an eval-only
+  fixture and documentation/test consistency update, so it does not require a
+  new ADR and introduces no public contract or API change.
 - The first real-runtime calibration smoke failed all strict runs, so current
   renderer readiness is blocked by answer-quality and evaluation-attribution
   gaps rather than by token-size comparison.

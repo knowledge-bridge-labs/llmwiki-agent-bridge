@@ -6,6 +6,23 @@
 - A temporary Graphify-like `graph.json` fixture is added to the report.
 - The Graphify fixture reports graph node/edge counts and citation coverage.
 - Absolute local source paths in the input graph do not appear in the report.
+- The default offline benchmark includes the built-in strict fixture
+  `graph-strict-evidence-fidelity`, reports 100% graph node/edge citation
+  coverage for it, reports `nonPortableSourcePathCount` as 0, and keeps the
+  serialized report free of private-looking path, endpoint, or key patterns.
+- A good live mock answer for `graph-strict-evidence-fidelity` passes strict
+  required-anchor, answer-oracle, and expected-citation mapping gates and is
+  eligible for the quality-first live recommendation.
+- Omitting the fixture's multi-hop required relation fails strict live mock
+  validation with `oracle_omission`.
+- Citing a wrong nearby anchor while still covering global required anchors
+  fails strict live mock validation with `expected_citation_mismatch`.
+- Leaving one repeated claim occurrence uncited under
+  `occurrenceMode: "every"` fails strict live mock validation with
+  `expected_citation_every_occurrence_failed`.
+- Unsupported and contradictory claims in the fixture fail strict live mock
+  validation with broad `oracle_distortion` plus distinct
+  `oracle_unsupported_claim` and `oracle_contradiction` failure codes.
 - Live mock validation still rejects bare citation references and requires full
   required-anchor coverage.
 - Live mock validation rejects responses that cover citations but omit required
@@ -91,6 +108,7 @@
 ```sh
 npm run bench:runtime-prompt
 npm test -- --test-name-pattern "offline.*size-only|runtime prompt rendering offline|quality-first|recommendation"
+npm test -- --test-name-pattern "runtime prompt rendering offline|graph-strict-evidence-fidelity|strict evidence-fidelity"
 npm test -- --test-name-pattern "Graphify graph fixture|exact citation anchors|answer oracle|unsupported|contradictory|oracle distortion|repeated live|finish reason|inferred live runtime truncation|citation stuffing|expected citation mapping|every-occurrence|occurrenceMode|occurrence coverage|smaller live renderer|size-saving live renderer|every renderer fails|report-only aggregate diagnostics"
 node --check scripts/benchmark-runtime-prompt.mjs
 node --check test/agent-bridge.test.mjs

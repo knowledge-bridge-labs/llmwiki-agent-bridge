@@ -49,3 +49,14 @@
       data-safe live fixtures.
 - [x] Add explicit offline size-only regression assertions and docs so offline
       byte/token savings cannot be mistaken for recommendations.
+- [x] Add built-in `graph-strict-evidence-fidelity` fixture with
+      promotion-gate, citation-fidelity, live-evaluation, repeated-citation,
+      and privacy-redaction graph edges.
+- [x] Add strict fixture oracle mappings for a `require: "all"` multi-hop
+      claim, an `occurrenceMode: "every"` repeated claim, a privacy/source-path
+      claim, and an exact-anchor claim that detects nearby wrong anchors.
+- [x] Add deterministic tests proving the new fixture passes with a good live
+      mock answer, fails relation omissions as `oracle_omission`, fails nearby
+      wrong anchors as `expected_citation_mismatch`, fails one uncited repeated
+      occurrence as `expected_citation_every_occurrence_failed`, and classifies
+      unsupported plus contradictory claims as strict oracle distortion.

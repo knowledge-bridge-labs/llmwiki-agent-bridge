@@ -67,3 +67,15 @@
       `basis: "size-only"`;
     - assert offline reports do not emit `recommendation` or
       `recommendedRendererId` fields when `--live` is omitted.
+16. Add representative built-in strict fixture coverage:
+    - add `graph-strict-evidence-fidelity` with portable synthetic evidence,
+      five citations, and graph edges for promotion, citation fidelity, live
+      prompt evaluation, repeated citation, and privacy redaction gates;
+    - require strict oracle terms/relations, unsupported and contradictory
+      claim patterns, `require: "all"` multi-hop citation mapping,
+      `occurrenceMode: "every"` repeated citation mapping, privacy/source-path
+      mapping, and exact-anchor mismatch coverage;
+    - assert default offline fixture inclusion, citation/path quality, private
+      data safety, live good-answer eligibility, relation omission failure,
+      wrong-nearby-anchor failure, repeated-occurrence failure, and
+      unsupported/contradictory distortion classification.

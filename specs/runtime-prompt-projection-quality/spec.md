@@ -20,6 +20,8 @@ quality gates.
 - Separate lossless codecs from lossy prompt projections in reports.
 - Attribute live-runtime failures with stable local report codes before ranking
   prompt renderers.
+- Maintain representative built-in strict fixtures that stress citation
+  fidelity, relation preservation, repeated claims, and privacy-source safety.
 
 ## Non-Goals
 
@@ -124,3 +126,10 @@ quality gates.
 - `REQ-026`: When no live renderer satisfies the strict quality-first
   eligibility gate, the recommendation is blocked with renderer-specific
   reasons instead of selecting the smallest renderer.
+- `REQ-027`: The default built-in benchmark fixture set includes a private-data
+  safe strict fixture `graph-strict-evidence-fidelity` that covers a
+  promotion-gate multi-hop citation mapping, relation omission detection,
+  exact-anchor mismatch detection, every-occurrence repeated citation
+  enforcement, unsupported/contradictory claim distortion checks, and a
+  privacy/source-path claim. The fixture must keep graph node and edge citation
+  coverage at 100% and `nonPortableSourcePathCount` at 0.
