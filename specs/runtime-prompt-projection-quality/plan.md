@@ -90,3 +90,18 @@
     - record only sanitized aggregate live/recommendation metrics in docs;
     - verify raw-report redaction before copying aggregates into tracked
       files.
+18. Loop 12 prompt-contract and safe-diagnostic isolation:
+    - add local TDD coverage that inspects live benchmark runtime messages for
+      a strict claim-preserving contract;
+    - tell the live benchmark runtime to preserve configured claim phrases and
+      graph relation phrases, keep underscored relation verbs readable, cite
+      exact anchors near supported claims, cite every repeated occurrence when
+      strict repeated-citation gates ask for it, and avoid evidence-free
+      claims;
+    - add safe fixture/renderer/run diagnostics that summarize failure codes,
+      missing configured oracle relations, missing expected claim phrases,
+      citation coverage, finish reason, truncation, and output length without
+      raw model output, endpoints, model names, keys, temp paths, or local
+      absolute paths;
+    - keep oracle checks strict and defer synonym/tolerance changes until
+      prompt-contract versus renderer-loss causes are isolated.

@@ -22,6 +22,8 @@ quality gates.
   prompt renderers.
 - Maintain representative built-in strict fixtures that stress citation
   fidelity, relation preservation, repeated claims, and privacy-source safety.
+- Isolate prompt-contract failures from renderer-specific information loss
+  before changing oracle tolerance.
 
 ## Non-Goals
 
@@ -30,6 +32,8 @@ quality gates.
 - Do not change runtime synthesis defaults based only on token reduction.
 - Do not expose local paths, private endpoints, credentials, or raw sensitive
   logs in reports or fixtures.
+- Do not add synonym tolerance or weaken strict oracle checks before live
+  prompt-contract versus renderer-loss causes are isolated.
 
 ## Requirements
 
@@ -133,3 +137,18 @@ quality gates.
   enforcement, unsupported/contradictory claim distortion checks, and a
   privacy/source-path claim. The fixture must keep graph node and edge citation
   coverage at 100% and `nonPortableSourcePathCount` at 0.
+- `REQ-028`: Live benchmark runtime messages include a strict
+  claim-preserving prompt contract that tells the runtime to preserve
+  configured claim phrases and graph relation phrases, keep relation verbs
+  readable such as `measured_by` as "measured by", place exact markdown
+  citation anchors `[n](#citation-n)` near each supported claim, cite every
+  occurrence when strict repeated-citation gates ask for it, and avoid
+  evidence-free claims. This is benchmark behavior and does not change the
+  production bridge runtime contract.
+- `REQ-029`: Live reports include a safe diagnostic summary for cause
+  isolation at fixture/renderer/run or aggregate scope. The summary may include
+  fixture id, renderer id, failure codes, missing configured oracle
+  terms/relations, missing configured expected claim phrases, citation
+  coverage, finish reason, truncation, and `outputTextLength`; it must not
+  include raw `outputText`, private endpoints, model names, keys, temp paths,
+  or local absolute paths.

@@ -64,3 +64,14 @@
       the configured legacy `HERMES_*` environment, keep raw stdout/stderr
       outside the repo, pass redaction checks, and document only sanitized
       aggregate live/recommendation results plus the fallback rationale.
+- [x] Add Loop 12 local TDD for the live benchmark claim-preserving prompt
+      contract and a safe failing-run diagnostic summary.
+- [x] Strengthen live benchmark runtime messages to preserve configured claim
+      phrases, graph relation phrases, readable relation verbs, exact nearby
+      citation anchors, every-occurrence repeated-citation gates, and
+      evidence-only claims.
+- [x] Add safe live diagnostic summaries for fixture/renderer and totals
+      renderer reports without raw `outputText`, endpoints, model names, keys,
+      temp paths, or local absolute paths.
+- [x] Document that oracle tolerance and synonym matching remain deferred until
+      prompt-contract versus renderer-information-loss causes are isolated.

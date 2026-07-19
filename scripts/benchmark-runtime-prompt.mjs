@@ -974,6 +974,12 @@ async function evaluateLiveRenderer({ args, config, fixture, renderer }) {
     allRequiredCitationAnchorsCovered: aggregate.runCount > 0
       && aggregate.allRequiredCitationAnchorsCoveredCount === aggregate.runCount,
     aggregate,
+    diagnosticSummary: buildLiveDiagnosticSummary({
+      fixtureId: fixture.id,
+      rendererId: renderer.id,
+      aggregate,
+      runs,
+    }),
     runs,
   }
 }
@@ -1402,8 +1408,13 @@ function liveRuntimeMessages(runtimeUserPrompt) {
       role: 'system',
       content: [
         'You are evaluating LLMWiki evidence prompt formats.',
+        'This is a strict live benchmark run; preserve configured claim phrases and graph relation phrases from the evidence instead of paraphrasing them when answering strict benchmark queries.',
+        'Keep graph relation verbs readable, for example render measured_by as "measured by".',
         'Answer using only the provided evidence.',
         'Every factual claim that relies on evidence must include markdown citation anchors near the claim, formatted exactly as [n](#citation-n).',
+        'Place exact markdown citation anchors [n](#citation-n) near each supported claim.',
+        'For strict repeated-claim evidence, cite every occurrence when the prompt asks for repeated-citation gates.',
+        'Do not use evidence-free claims.',
         'Use n as the 1-based index of the matching evidence citation.',
         'If evidence is insufficient, state the limitation and cite the closest available evidence.',
       ].join(' '),
@@ -2322,6 +2333,27 @@ function summarizeLiveFixtureReports(fixtureReports, renderers) {
         outputTextLengthRange: numericRange(outputTextLength),
         requiredCitationAnchorCoverageRangePct: numericRange(citationCoveragePct),
       },
+      diagnosticSummary: buildLiveDiagnosticSummary({
+        fixtureId: null,
+        rendererId: renderer.id,
+        aggregate: {
+          runCount: runs.length,
+          passCount,
+          failCount: runs.length - passCount,
+          finishReasonCounts,
+          failureBucketCounts,
+          failureCodeCounts,
+          truncatedCount,
+          inferredTruncatedCount,
+          outputTextLength,
+          averageRequiredCitationAnchorCoveragePct: citationCoveragePct.average,
+          invalidCitationAnchorCount,
+          allRequiredCitationAnchorsCoveredCount,
+          answerOracle,
+          expectedCitationMappings,
+        },
+        runs,
+      }),
     }
   }
 
@@ -2341,6 +2373,224 @@ function summarizeLiveFixtureReports(fixtureReports, renderers) {
   totals.averageExpectedCitationOccurrenceCoveragePct = expectedCitationMappings.averageOccurrenceCoveragePct
 
   return totals
+}
+
+function buildLiveDiagnosticSummary({ fixtureId = null, rendererId = null, aggregate = {}, runs = [] }) {
+  const failureCodeCounts = aggregate.failureCodeCounts || {}
+  const failureBucketCounts = aggregate.failureBucketCounts || {}
+  return {
+    fixtureId,
+    rendererId,
+    runCount: aggregate.runCount || runs.length,
+    passCount: aggregate.passCount || 0,
+    failCount: aggregate.failCount || 0,
+    failureCodes: Object.keys(failureCodeCounts),
+    failureCodeCounts,
+    failureBuckets: Object.keys(failureBucketCounts),
+    failureBucketCounts,
+    finishReasonCounts: aggregate.finishReasonCounts || {},
+    truncation: {
+      truncatedCount: aggregate.truncatedCount || 0,
+      inferredTruncatedCount: aggregate.inferredTruncatedCount || 0,
+    },
+    outputTextLength: aggregate.outputTextLength || summarizeNumbers([]),
+    citationCoverage: {
+      averageRequiredCitationAnchorCoveragePct: aggregate.averageRequiredCitationAnchorCoveragePct ?? null,
+      invalidCitationAnchorCount: aggregate.invalidCitationAnchorCount || 0,
+      allRequiredCitationAnchorsCoveredCount: aggregate.allRequiredCitationAnchorsCoveredCount || 0,
+      missingRequiredAnchors: uniqueReportStrings(runs.flatMap((run) => run.requiredCitationAnchors?.missing || [])),
+    },
+    answerOracle: buildLiveAnswerOracleDiagnosticSummary(aggregate.answerOracle, runs),
+    expectedCitationMappings: buildLiveExpectedCitationMappingDiagnosticSummary(
+      aggregate.expectedCitationMappings,
+      runs,
+    ),
+    failingRuns: runs
+      .filter((run) => !run.pass)
+      .map((run) => buildLiveRunDiagnosticSummary(run)),
+  }
+}
+
+function buildLiveRunDiagnosticSummary(run) {
+  return {
+    runIndex: run.runIndex ?? null,
+    pass: Boolean(run.pass),
+    status: run.status || 'unknown',
+    failureCodes: [...(run.failureCodes || [])],
+    failureBuckets: [...(run.failureBuckets || [])],
+    finishReason: run.finishReason ?? null,
+    truncation: safeTruncationSummary(run.truncation),
+    outputTextLength: Number.isFinite(run.outputTextLength) ? run.outputTextLength : 0,
+    citationCoverage: {
+      requiredCount: run.requiredCitationAnchors?.requiredCount ?? null,
+      coveredCount: run.requiredCitationAnchors?.coveredCount ?? null,
+      missingCount: run.requiredCitationAnchors?.missingCount ?? null,
+      coveragePct: run.requiredCitationAnchors?.coveragePct ?? null,
+      missingRequiredAnchors: [...(run.requiredCitationAnchors?.missing || [])],
+      invalidCitationAnchorCount: run.invalidCitationAnchorCount || 0,
+    },
+    answerOracle: buildLiveAnswerOracleRunDiagnosticSummary(run.answerOracle),
+    expectedCitationMappings: buildLiveExpectedCitationMappingRunDiagnosticSummary(run.expectedCitationMappings),
+  }
+}
+
+function safeTruncationSummary(truncation = null) {
+  if (!truncation || typeof truncation !== 'object') {
+    return {
+      detected: false,
+      inferred: false,
+      reason: null,
+      finishReason: null,
+      completionTokens: null,
+      maxTokens: null,
+    }
+  }
+  return {
+    detected: Boolean(truncation.detected),
+    inferred: Boolean(truncation.inferred),
+    reason: truncation.reason || null,
+    finishReason: truncation.finishReason ?? null,
+    completionTokens: Number.isFinite(truncation.completionTokens) ? truncation.completionTokens : null,
+    maxTokens: Number.isFinite(truncation.maxTokens) ? truncation.maxTokens : null,
+  }
+}
+
+function buildLiveAnswerOracleDiagnosticSummary(answerOracle = {}, runs = []) {
+  const oracleRuns = runs.filter((run) => run.answerOracle?.enabled)
+  return {
+    enabledRunCount: answerOracle.enabledRunCount || oracleRuns.length,
+    strictFailureCount: answerOracle.strictFailureCount || 0,
+    reportOnlyFailureCount: answerOracle.reportOnlyFailureCount || 0,
+    missingRequiredTermCount: answerOracle.missingRequiredTermCount || 0,
+    missingRequiredPhraseCount: answerOracle.missingRequiredPhraseCount || 0,
+    missingRequiredRelationCount: answerOracle.missingRequiredRelationCount || 0,
+    unsupportedClaimHitCount: answerOracle.unsupportedClaimHitCount || 0,
+    contradictoryClaimHitCount: answerOracle.contradictoryClaimHitCount || 0,
+    distortionCount: answerOracle.distortionCount || 0,
+    averageOmissionRate: answerOracle.averageOmissionRate ?? null,
+    averageRequiredItemCoveragePct: answerOracle.averageRequiredItemCoveragePct ?? null,
+    missingTerms: uniqueReportStrings(oracleRuns.flatMap((run) => run.answerOracle?.missingTerms || [])),
+    missingPhrases: uniqueReportStrings(oracleRuns.flatMap((run) => run.answerOracle?.missingPhrases || [])),
+    missingRelations: uniqueReportStrings(oracleRuns.flatMap((run) => run.answerOracle?.missingRelations || [])),
+    unsupportedClaims: uniqueReportStrings(oracleRuns.flatMap((run) => run.answerOracle?.unsupportedClaimFound || [])),
+    contradictoryClaims: uniqueReportStrings(oracleRuns.flatMap((run) => run.answerOracle?.contradictoryClaimFound || [])),
+  }
+}
+
+function buildLiveAnswerOracleRunDiagnosticSummary(answerOracle = null) {
+  if (!answerOracle?.enabled) {
+    return {
+      enabled: false,
+    }
+  }
+  const metrics = answerOracle.metrics || {}
+  return {
+    enabled: true,
+    gate: answerOracle.gate,
+    ok: Boolean(answerOracle.ok),
+    missingRequiredTermCount: metrics.missingRequiredTermCount || 0,
+    missingRequiredPhraseCount: metrics.missingRequiredPhraseCount || 0,
+    missingRequiredRelationCount: metrics.missingRequiredRelationCount || 0,
+    unsupportedClaimHitCount: metrics.unsupportedClaimHitCount || 0,
+    contradictoryClaimHitCount: metrics.contradictoryClaimHitCount || 0,
+    distortionCount: metrics.distortionCount || 0,
+    omissionRate: metrics.omissionRate ?? null,
+    requiredItemCoveragePct: Number.isFinite(metrics.omissionRate)
+      ? Number(((1 - metrics.omissionRate) * 100).toFixed(2))
+      : null,
+    missingTerms: [...(answerOracle.missingTerms || [])],
+    missingPhrases: [...(answerOracle.missingPhrases || [])],
+    missingRelations: [...(answerOracle.missingRelations || [])],
+    unsupportedClaims: [...(answerOracle.unsupportedClaimFound || [])],
+    contradictoryClaims: [...(answerOracle.contradictoryClaimFound || [])],
+  }
+}
+
+function buildLiveExpectedCitationMappingDiagnosticSummary(expectedCitationMappings = {}, runs = []) {
+  const mappingRuns = runs.filter((run) => run.expectedCitationMappings?.enabled)
+  return {
+    enabledRunCount: expectedCitationMappings.enabledRunCount || mappingRuns.length,
+    strictFailureCount: expectedCitationMappings.strictFailureCount || 0,
+    reportOnlyFailureCount: expectedCitationMappings.reportOnlyFailureCount || 0,
+    expectedMappingCount: expectedCitationMappings.expectedMappingCount || 0,
+    satisfiedMappingCount: expectedCitationMappings.satisfiedMappingCount || 0,
+    averageCoveragePct: expectedCitationMappings.averageCoveragePct ?? null,
+    claimOccurrenceCount: expectedCitationMappings.claimOccurrenceCount || 0,
+    satisfiedOccurrenceCount: expectedCitationMappings.satisfiedOccurrenceCount || 0,
+    unsatisfiedOccurrenceCount: expectedCitationMappings.unsatisfiedOccurrenceCount || 0,
+    occurrenceCoveragePct: expectedCitationMappings.occurrenceCoveragePct ?? null,
+    averageOccurrenceCoveragePct: expectedCitationMappings.averageOccurrenceCoveragePct ?? null,
+    missingClaimCount: expectedCitationMappings.missingClaimCount || 0,
+    expectedCitationMismatchCount: expectedCitationMappings.expectedCitationMismatchCount || 0,
+    everyOccurrenceFailureCount: expectedCitationMappings.everyOccurrenceFailureCount || 0,
+    proximityFailureCount: expectedCitationMappings.proximityFailureCount || 0,
+    targetResolutionFailureCount: expectedCitationMappings.targetResolutionFailureCount || 0,
+    missingExpectedClaimPhrases: uniqueReportStrings(mappingRuns.flatMap((run) => (
+      missingExpectedClaimPhrases(run.expectedCitationMappings)
+    ))),
+    missingClaims: uniqueReportStrings(mappingRuns.flatMap((run) => (
+      run.expectedCitationMappings?.missingClaims || []
+    ))),
+    expectedCitationMismatches: uniqueReportStrings(mappingRuns.flatMap((run) => (
+      run.expectedCitationMappings?.expectedCitationMismatches || []
+    ))),
+    everyOccurrenceFailures: uniqueReportStrings(mappingRuns.flatMap((run) => (
+      run.expectedCitationMappings?.everyOccurrenceFailures || []
+    ))),
+    missingCitationWithinWindow: uniqueReportStrings(mappingRuns.flatMap((run) => (
+      run.expectedCitationMappings?.missingCitationWithinWindow || []
+    ))),
+  }
+}
+
+function buildLiveExpectedCitationMappingRunDiagnosticSummary(expectedCitationMappings = null) {
+  if (!expectedCitationMappings?.enabled) {
+    return {
+      enabled: false,
+    }
+  }
+  const metrics = expectedCitationMappings.metrics || {}
+  return {
+    enabled: true,
+    gate: expectedCitationMappings.gate,
+    ok: Boolean(expectedCitationMappings.ok),
+    missingClaimCount: metrics.missingClaimCount || 0,
+    expectedCitationMismatchCount: metrics.expectedCitationMismatchCount || 0,
+    everyOccurrenceFailureCount: metrics.everyOccurrenceFailureCount || 0,
+    proximityFailureCount: metrics.proximityFailureCount || 0,
+    targetResolutionFailureCount: metrics.targetResolutionFailureCount || 0,
+    claimOccurrenceCount: metrics.claimOccurrenceCount || 0,
+    satisfiedOccurrenceCount: metrics.satisfiedOccurrenceCount || 0,
+    unsatisfiedOccurrenceCount: metrics.unsatisfiedOccurrenceCount || 0,
+    occurrenceCoveragePct: metrics.occurrenceCoveragePct ?? null,
+    missingExpectedClaimPhrases: missingExpectedClaimPhrases(expectedCitationMappings),
+    missingClaims: [...(expectedCitationMappings.missingClaims || [])],
+    expectedCitationMismatches: [...(expectedCitationMappings.expectedCitationMismatches || [])],
+    everyOccurrenceFailures: [...(expectedCitationMappings.everyOccurrenceFailures || [])],
+    missingCitationWithinWindow: [...(expectedCitationMappings.missingCitationWithinWindow || [])],
+  }
+}
+
+function missingExpectedClaimPhrases(expectedCitationMappings = null) {
+  const mappingResults = Array.isArray(expectedCitationMappings?.mappingResults)
+    ? expectedCitationMappings.mappingResults
+    : []
+  return uniqueReportStrings(mappingResults
+    .filter((result) => result.failureCode === 'claim_missing')
+    .map((result) => result.claim))
+}
+
+function uniqueReportStrings(values) {
+  const seen = new Set()
+  const unique = []
+  for (const value of values) {
+    if (typeof value !== 'string' || !value.trim()) continue
+    const trimmed = value.trim()
+    if (seen.has(trimmed)) continue
+    seen.add(trimmed)
+    unique.push(trimmed)
+  }
+  return unique
 }
 
 function buildLiveRendererRecommendation({ renderers, totals, unavailableReasons = [] }) {

@@ -4369,6 +4369,129 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(runtime.requests.length, 1)
   })
 
+  it('sends claim-preserving live prompt contract to the mock runtime', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: strictEvidenceFidelityAnswer(),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 40,
+          completion_tokens: 70,
+          total_tokens: 110,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    await runRuntimePromptBenchmark([
+      '--live',
+      '--fixture',
+      'graph-strict-evidence-fidelity',
+      '--renderer',
+      'compact-json',
+      '--max-tokens',
+      '256',
+      '--timeout-ms',
+      '10000',
+    ], {
+      env: mockRuntimeEnv(runtime),
+    })
+
+    assert.equal(runtime.requests.length, 1)
+    const systemMessage = runtime.requests[0].body.messages.find((message) => message.role === 'system')
+    assert(systemMessage)
+    assert.match(systemMessage.content, /preserve configured claim phrases/i)
+    assert.match(systemMessage.content, /graph relation phrases/i)
+    assert.match(systemMessage.content, /instead of paraphrasing/i)
+    assert.match(systemMessage.content, /measured_by as "measured by"/i)
+    assert.match(systemMessage.content, /\[n\]\(#citation-n\)/)
+    assert.match(systemMessage.content, /cite every occurrence/i)
+    assert.match(systemMessage.content, /repeated-citation gates/i)
+    assert.match(systemMessage.content, /do not use evidence-free claims/i)
+  })
+
+  it('emits a safe diagnostic summary for failing live mock runs', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: strictEvidenceFidelityAnswer({ omitMultiHopRelation: true }),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 40,
+          completion_tokens: 68,
+          total_tokens: 108,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await runRuntimePromptBenchmark([
+        '--live',
+        '--fixture',
+        'graph-strict-evidence-fidelity',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '256',
+        '--timeout-ms',
+        '10000',
+      ], {
+        env: mockRuntimeEnv(runtime),
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const diagnostic = rendererReport.diagnosticSummary
+
+    assert(diagnostic)
+    assert.equal(diagnostic.fixtureId, 'graph-strict-evidence-fidelity')
+    assert.equal(diagnostic.rendererId, 'compact-json')
+    assert.deepEqual(diagnostic.failureCodes, ['oracle_omission', 'expected_claim_missing'])
+    assert.equal(diagnostic.finishReasonCounts.stop, 1)
+    assert.equal(diagnostic.truncation.truncatedCount, 0)
+    assert.equal(diagnostic.outputTextLength.average, rendererReport.outputTextLength)
+    assert.equal(diagnostic.citationCoverage.averageRequiredCitationAnchorCoveragePct, 100)
+    assert(diagnostic.answerOracle.missingRequiredRelationCount > 0)
+    assert(
+      diagnostic.answerOracle.missingRelations.some((relation) => (
+        relation.includes('Citation Fidelity Gate') && relation.includes('Live Prompt Evaluation')
+      )),
+    )
+    assert.equal(diagnostic.expectedCitationMappings.missingClaimCount, 1)
+    assert.deepEqual(diagnostic.expectedCitationMappings.missingExpectedClaimPhrases, [
+      'Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation',
+    ])
+    assert.equal(diagnostic.failingRuns.length, 1)
+    assert.equal(diagnostic.failingRuns[0].outputTextLength, rendererReport.runs[0].outputTextLength)
+
+    const serialized = JSON.stringify(report)
+    assert.doesNotMatch(serialized, /"outputText"\s*:/)
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(serialized, /mock-runtime-key/)
+    assert.doesNotMatch(serialized, /sk-[A-Za-z0-9_-]{8,}/)
+    assert.doesNotMatch(serialized, /[A-Za-z]:\\\\/)
+    assert.doesNotMatch(serialized, /\/(?:Users|home)\//)
+  })
+
   it('flags strict evidence-fidelity omissions for graph-strict-evidence-fidelity multi-hop relations', async (t) => {
     const runtime = await startFixtureServer(async ({ response }) => {
       writeJson(response, 200, {

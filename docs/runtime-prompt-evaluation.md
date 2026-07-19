@@ -14,6 +14,7 @@ quality gates pass.
 | Graph provenance | Every `graphNodes` and `graphEdges` entry has a valid citation index | 100% for graph fixtures |
 | Portable evidence | Benchmark evidence paths do not expose local roots, parent paths, URLs, or private endpoints | 0 non-portable paths |
 | Runtime citation exactness | Live responses cover every required exact `[n](#citation-n)` anchor and no invalid exact anchors | Required for live smoke pass |
+| Live benchmark prompt contract | Runtime messages preserve configured claim phrases and graph relation phrases, keep relation verbs readable, cite exact anchors near supported claims, cite every repeated occurrence when required, and avoid evidence-free claims | Required for strict live benchmark isolation |
 | Runtime completion | Live responses report `finishReason`, `truncation`, and aggregate truncation counts | `finish_reason=length` and inferred max-token exhaustion fail strict runs |
 | Lossy renderer isolation | Lossy projections are labeled and cannot silently become the production contract | Must be explicit candidate/eval-only |
 | Reproducibility | Offline benchmark does not call provider/runtime/network | Required |
@@ -21,6 +22,7 @@ quality gates pass.
 | Answer oracle | Live outputs cover configured required terms/relations and avoid explicitly configured forbidden, unsupported, and contradictory patterns | Required when a fixture defines a strict oracle |
 | Expected citation mappings | Configured claims resolve to expected citation anchors within `windowChars`, with opt-in every-occurrence mode for repeated claims | Required when a strict fixture defines mappings |
 | Failure taxonomy | Live reports include `failureCodes` and aggregate `failureCodeCounts` | Required for failure attribution |
+| Safe live diagnostics | Live reports summarize failure codes, missing configured oracle terms/relations, missing expected claim phrases, citation coverage, finish reason, truncation, and output length without raw model text or private runtime/local values | Required for prompt-contract versus renderer-loss isolation |
 | Live recommendation | `live.recommendation` ranks renderers quality-first | Size can recommend a renderer only after strict live pass rate is 100% and strict quality failures are zero |
 | Representative strict fixture coverage | Built-in strict fixtures include multi-hop citation mappings, every-occurrence repeated claims, nearby-wrong-anchor failures, unsupported/contradictory claims, and privacy/source-path claims | Required before using live recommendations as promotion evidence |
 
@@ -397,3 +399,42 @@ These metrics can evolve as fixtures improve:
   turn after previous full-run hangs; future calibration should rerun the
   three-run smoke only after the runtime responds reliably enough to avoid
   blocking.
+
+### Loop 12: Claim-preserving live prompt contract and safe diagnostics
+
+- Research/analysis: Loop 11 live failures could still come from at least two
+  causes: the live runtime may not have been told strongly enough to preserve
+  fixture claim/relation wording, or a renderer may have removed information
+  needed to answer the strict oracle. Loop 12 isolates those causes before
+  changing oracle tolerance.
+- TDD target: mock runtime request inspection proves the live benchmark system
+  message includes the claim-preserving contract, and a failing live mock run
+  emits a safe diagnostic summary with failure codes, missing configured oracle
+  relation details, missing expected claim phrases, citation coverage, finish
+  reason, truncation, and output length.
+- Quality gates added: strict live benchmark messages now ask the runtime to
+  preserve configured claim phrases and graph relation phrases instead of
+  paraphrasing, render relation verbs readably such as `measured_by` as
+  "measured by", place exact markdown citation anchors near each supported
+  claim, cite every occurrence when repeated-citation gates require it, and use
+  no evidence-free claims. Live fixture/renderer and totals renderer summaries
+  now include safe diagnostic summaries without raw `outputText`, private
+  endpoints, model names, keys, temp paths, or local absolute paths.
+- Optional live smoke: ran isolated `compact-json` one-run smokes for
+  `graph-linear-chain` and `graph-strict-evidence-fidelity` against the
+  configured private runtime. Raw stdout/stderr stayed outside the repo and
+  redaction checks found no raw `"outputText"` field, key-like token,
+  configured endpoint/model/credential value, or local absolute path.
+- Result: both strict live smokes failed with `recommendation.status:
+  blocked` and no truncation. `graph-linear-chain` had
+  `oracle_omission=1`, `expected_claim_missing=1`, 100% required citation
+  anchor coverage, 60% answer-oracle required-item coverage, and 0% expected
+  citation mapping coverage. `graph-strict-evidence-fidelity` had
+  `expected_claim_missing=1`, 100% required citation anchor coverage, 100%
+  answer-oracle required-item coverage, and 50% expected citation mapping
+  coverage.
+- Retrospective: oracle synonym tolerance is intentionally deferred. Strict
+  omission, distortion, and citation-fidelity checks stay unchanged until a
+  follow-up live calibration can compare more renderers under the stronger
+  prompt contract and determine whether remaining failures are
+  renderer-specific information loss or true oracle brittleness.

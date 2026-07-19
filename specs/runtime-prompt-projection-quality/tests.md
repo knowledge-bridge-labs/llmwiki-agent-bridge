@@ -117,6 +117,23 @@
 - Loop 11 raw-report redaction checks confirm no `"outputText"` field, no
   key-like tokens, no configured endpoint/model/credential value, and no
   absolute local paths before sanitized aggregates are copied into docs.
+- Live benchmark runtime request inspection confirms the system message carries
+  the strict claim-preserving prompt contract for configured claim phrases,
+  graph relation phrases, readable relation verbs such as `measured_by` as
+  "measured by", exact nearby markdown citation anchors, every-occurrence
+  repeated-citation gates, and no evidence-free claims.
+- Failing live mock runs include a safe diagnostic summary under live
+  fixture/renderer summaries with failure codes, missing configured oracle
+  relation details, missing expected claim phrases, citation coverage, finish
+  reason counts, truncation counts, and `outputTextLength`.
+- Serialized live reports do not include a raw `"outputText"` field, private
+  runtime endpoint values, key-like tokens, temp paths, or local absolute paths;
+  `outputTextLength` remains allowed as a safe diagnostic scalar.
+- Good live mock answers for `graph-linear-chain` and
+  `graph-strict-evidence-fidelity` still pass strict oracle and expected
+  citation gates after the prompt-contract change.
+- Oracle synonym tolerance remains intentionally deferred; strict omission,
+  distortion, and citation checks are not weakened in Loop 12.
 
 ## Commands
 
@@ -130,6 +147,7 @@ node scripts/benchmark-runtime-prompt.mjs --live --fixture graph-linear-chain,gr
 # Optional only when the fallback run completes quickly and safely:
 node scripts/benchmark-runtime-prompt.mjs --live --fixture graph-linear-chain,graph-strict-evidence-fidelity --renderer compact-json,markdown-summary,toon --live-runs 3 --temperature 0.2 --max-tokens 768 --timeout-ms 120000 > "$OS_TEMP_DIR/runtime-prompt-loop11-runs3.stdout.json" 2> "$OS_TEMP_DIR/runtime-prompt-loop11-runs3.stderr.txt"
 npm test -- --test-name-pattern "offline.*size-only|runtime prompt rendering offline|quality-first|recommendation"
+npm test -- --test-name-pattern "claim-preserving|safe diagnostic|graph-strict-evidence-fidelity|runtime prompt rendering offline"
 npm test -- --test-name-pattern "runtime prompt rendering offline|graph-strict-evidence-fidelity|strict evidence-fidelity"
 npm test -- --test-name-pattern "Graphify graph fixture|exact citation anchors|answer oracle|unsupported|contradictory|oracle distortion|repeated live|finish reason|inferred live runtime truncation|citation stuffing|expected citation mapping|every-occurrence|occurrenceMode|occurrence coverage|smaller live renderer|size-saving live renderer|every renderer fails|report-only aggregate diagnostics"
 node --check scripts/benchmark-runtime-prompt.mjs
