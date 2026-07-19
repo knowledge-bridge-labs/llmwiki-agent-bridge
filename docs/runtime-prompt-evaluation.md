@@ -438,3 +438,23 @@ These metrics can evolve as fixtures improve:
   follow-up live calibration can compare more renderers under the stronger
   prompt contract and determine whether remaining failures are
   renderer-specific information loss or true oracle brittleness.
+
+### Loop 13: Totals diagnostic and model-name privacy regression
+
+- Research/analysis: Loop 12 added safe diagnostics, but reviewer follow-up
+  asked for explicit local proof that aggregate totals diagnostics are emitted
+  at `live.totals.renderers[rendererId].diagnosticSummary` and that configured
+  runtime model names are absent from serialized live reports.
+- TDD target: extend the failing live mock diagnostic test to assert totals
+  renderer diagnostic fields for failure codes, failure-code counts, citation
+  coverage, finish reason counts, truncation counts, missing configured oracle
+  relations, missing expected claim phrases, and aggregate `outputTextLength`.
+  The same test uses a synthetic configured model-name canary, verifies the
+  mock runtime request received it, and verifies the serialized report does
+  not contain it.
+- Result: no runtime script change was needed. Existing live-report shaping
+  already emitted safe aggregate diagnostics and used boolean model
+  configuration status rather than serializing model names.
+- Retrospective: this closes the non-blocking privacy/test-hardening gap while
+  preserving strict answer-oracle, expected citation mapping, occurrence, and
+  citation-anchor checks.

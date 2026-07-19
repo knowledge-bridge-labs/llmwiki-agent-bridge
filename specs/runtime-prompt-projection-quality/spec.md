@@ -146,9 +146,10 @@ quality gates.
   evidence-free claims. This is benchmark behavior and does not change the
   production bridge runtime contract.
 - `REQ-029`: Live reports include a safe diagnostic summary for cause
-  isolation at fixture/renderer/run or aggregate scope. The summary may include
-  fixture id, renderer id, failure codes, missing configured oracle
+  isolation at fixture/renderer/run or aggregate scope, including
+  `live.totals.renderers[rendererId].diagnosticSummary`. The summary may
+  include fixture id, renderer id, failure codes, missing configured oracle
   terms/relations, missing configured expected claim phrases, citation
   coverage, finish reason, truncation, and `outputTextLength`; it must not
-  include raw `outputText`, private endpoints, model names, keys, temp paths,
-  or local absolute paths.
+  include raw `outputText`, private endpoints, configured model names, keys,
+  temp paths, or local absolute paths.

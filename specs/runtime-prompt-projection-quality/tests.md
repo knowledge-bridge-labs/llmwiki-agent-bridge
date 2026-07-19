@@ -126,9 +126,18 @@
   fixture/renderer summaries with failure codes, missing configured oracle
   relation details, missing expected claim phrases, citation coverage, finish
   reason counts, truncation counts, and `outputTextLength`.
+- Failing live mock runs include a safe aggregate diagnostic summary under
+  `live.totals.renderers[rendererId].diagnosticSummary` with failure codes,
+  failure-code counts, citation coverage, finish reason counts, truncation
+  counts, missing configured oracle relation details, missing expected claim
+  phrases, and aggregate `outputTextLength`.
 - Serialized live reports do not include a raw `"outputText"` field, private
-  runtime endpoint values, key-like tokens, temp paths, or local absolute paths;
-  `outputTextLength` remains allowed as a safe diagnostic scalar.
+  runtime endpoint values, configured model names, key-like tokens, temp paths,
+  or local absolute paths; `outputTextLength` remains allowed as a safe
+  diagnostic scalar.
+- A synthetic configured runtime model name is sent to the mock chat
+  completions request but does not appear anywhere in the serialized live
+  report.
 - Good live mock answers for `graph-linear-chain` and
   `graph-strict-evidence-fidelity` still pass strict oracle and expected
   citation gates after the prompt-contract change.

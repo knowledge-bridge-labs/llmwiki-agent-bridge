@@ -4417,6 +4417,7 @@ describe('llmwiki-agent-bridge', () => {
   })
 
   it('emits a safe diagnostic summary for failing live mock runs', async (t) => {
+    const syntheticPrivateModelName = 'loop-13-private-model-canary'
     const runtime = await startFixtureServer(async ({ response }) => {
       writeJson(response, 200, {
         choices: [
@@ -4449,7 +4450,10 @@ describe('llmwiki-agent-bridge', () => {
         '--timeout-ms',
         '10000',
       ], {
-        env: mockRuntimeEnv(runtime),
+        env: {
+          ...mockRuntimeEnv(runtime),
+          LLMWIKI_AGENT_BRIDGE_MODEL: syntheticPrivateModelName,
+        },
       })
     } catch (caught) {
       error = caught
@@ -4460,7 +4464,9 @@ describe('llmwiki-agent-bridge', () => {
 
     const report = JSON.parse(error.stdout)
     const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
     const diagnostic = rendererReport.diagnosticSummary
+    const totalsDiagnostic = rendererTotals.diagnosticSummary
 
     assert(diagnostic)
     assert.equal(diagnostic.fixtureId, 'graph-strict-evidence-fidelity')
@@ -4483,9 +4489,30 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(diagnostic.failingRuns.length, 1)
     assert.equal(diagnostic.failingRuns[0].outputTextLength, rendererReport.runs[0].outputTextLength)
 
+    assert(totalsDiagnostic)
+    assert.equal(totalsDiagnostic.fixtureId, null)
+    assert.equal(totalsDiagnostic.rendererId, 'compact-json')
+    assert.deepEqual(totalsDiagnostic.failureCodes, ['oracle_omission', 'expected_claim_missing'])
+    assert.equal(totalsDiagnostic.failureCodeCounts.oracle_omission, 1)
+    assert.equal(totalsDiagnostic.failureCodeCounts.expected_claim_missing, 1)
+    assert.equal(totalsDiagnostic.finishReasonCounts.stop, 1)
+    assert.equal(totalsDiagnostic.truncation.truncatedCount, 0)
+    assert.equal(totalsDiagnostic.outputTextLength.average, rendererTotals.outputTextLength.average)
+    assert.equal(totalsDiagnostic.citationCoverage.averageRequiredCitationAnchorCoveragePct, 100)
+    assert.equal(totalsDiagnostic.answerOracle.missingRequiredRelationCount, 1)
+    assert.deepEqual(totalsDiagnostic.expectedCitationMappings.missingExpectedClaimPhrases, [
+      'Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation',
+    ])
+    assert.equal(totalsDiagnostic.failingRuns.length, 1)
+    assert.equal(totalsDiagnostic.failingRuns[0].outputTextLength, rendererReport.runs[0].outputTextLength)
+
+    assert.equal(runtime.requests[0].body.model, syntheticPrivateModelName)
+    assert.equal(report.live.runtime.modelConfigured, true)
+
     const serialized = JSON.stringify(report)
     assert.doesNotMatch(serialized, /"outputText"\s*:/)
     assert.doesNotMatch(serialized, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(syntheticPrivateModelName)))
     assert.doesNotMatch(serialized, /mock-runtime-key/)
     assert.doesNotMatch(serialized, /sk-[A-Za-z0-9_-]{8,}/)
     assert.doesNotMatch(serialized, /[A-Za-z]:\\\\/)

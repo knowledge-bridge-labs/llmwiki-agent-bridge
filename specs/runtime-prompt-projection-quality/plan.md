@@ -105,3 +105,12 @@
       absolute paths;
     - keep oracle checks strict and defer synonym/tolerance changes until
       prompt-contract versus renderer-loss causes are isolated.
+19. Loop 13 safe-diagnostic aggregate and privacy regression hardening:
+    - add local coverage proving `live.totals.renderers[rendererId].diagnosticSummary`
+      is emitted with aggregate-only failure codes, citation coverage, finish
+      reason, truncation, missing oracle relation, missing expected claim, and
+      `outputTextLength` diagnostics;
+    - assert a synthetic configured runtime model name is sent to the mock
+      runtime but does not appear in serialized live reports;
+    - keep changes additive and preserve strict answer-oracle, expected
+      citation mapping, occurrence, and citation-anchor checks.

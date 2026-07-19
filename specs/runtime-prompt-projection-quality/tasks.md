@@ -75,3 +75,9 @@
       temp paths, or local absolute paths.
 - [x] Document that oracle tolerance and synonym matching remain deferred until
       prompt-contract versus renderer-information-loss causes are isolated.
+- [x] Add Loop 13 regression assertions proving
+      `live.totals.renderers[rendererId].diagnosticSummary` is emitted with
+      safe aggregate diagnostics.
+- [x] Add Loop 13 serialized live-report privacy coverage proving a synthetic
+      configured runtime model name is used in the mock request but omitted
+      from the report.
