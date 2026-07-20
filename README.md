@@ -25,8 +25,9 @@ its own answer synthesis.
 
 [Quick Start](#quick-start) | [Choose a Path](#choose-a-path) | [Demo](https://knowledge-bridge-labs.github.io/llmwiki-docs/demo) | [Runtime Profiles](./docs/runtime-profiles.md) | [Message Contract](./docs/message-send-contract.md) | [OpenAPI](./docs/openapi.json) | [Integrations](./integrations/README.md) | [Examples](./examples/README.md) | [Docs portal](https://knowledge-bridge-labs.github.io/llmwiki-docs/) | [Contributing](./CONTRIBUTING.md) | [Security](./SECURITY.md) | [Support](./SUPPORT.md) | [Changelog](./CHANGELOG.md)
 
-> Public-preview note: source-checkout usage is the supported first-run path.
-> Package-install commands apply after the first npm release is published.
+> Public-preview note: npm install is available for
+> `llmwiki-agent-bridge@0.1.0`; source checkout remains supported for local
+> development and release checks.
 
 For a visual first-run walkthrough, see the
 [docs demo](https://knowledge-bridge-labs.github.io/llmwiki-docs/demo). It
