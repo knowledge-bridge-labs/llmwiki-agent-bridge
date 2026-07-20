@@ -49,6 +49,8 @@ const SETTINGS_CONFIG_JSON_ROUTE = '/settings/config.json'
 const SETTINGS_SOURCES_JSON_ROUTE = '/settings/sources.json'
 const CONFIG_PATH_ENV = 'LLMWIKI_AGENT_BRIDGE_CONFIG_PATH'
 const AUDIT_LOG_ENV = 'LLMWIKI_AGENT_BRIDGE_AUDIT_LOG'
+const IO_LOG_ENV = 'LLMWIKI_AGENT_BRIDGE_IO_LOG'
+const IO_LOG_PATH_ENV = 'LLMWIKI_AGENT_BRIDGE_IO_LOG_PATH'
 const DEPRECATED_CONFIG_PATH_ENV = 'HERMES_A2A_BRIDGE_CONFIG_PATH'
 const PUBLIC_BIND_OPT_IN_ENV = 'LLMWIKI_AGENT_BRIDGE_ALLOW_PUBLIC_BIND'
 const INSECURE_PUBLIC_BIND_OPT_IN_ENV = 'LLMWIKI_AGENT_BRIDGE_ALLOW_INSECURE_PUBLIC_BIND'
@@ -56,6 +58,16 @@ const DEPRECATED_PUBLIC_BIND_OPT_IN_ENV = 'HERMES_A2A_BRIDGE_ALLOW_PUBLIC_BIND'
 const DEPRECATED_INSECURE_PUBLIC_BIND_OPT_IN_ENV = 'HERMES_A2A_BRIDGE_ALLOW_INSECURE_PUBLIC_BIND'
 const AUDIT_LOG_SCHEMA_VERSION = 'llmwiki.agent-bridge.audit.v1'
 const REQUEST_AUDIT_EVENT = 'llmwiki.agent_bridge.request'
+const IO_LOG_SCHEMA_VERSION = 'llmwiki.agent-bridge.io.v1'
+const IO_LOG_EVENT = 'llmwiki.agent_bridge.io'
+const FILE_IO_LOG_MODE = 'file'
+const LOGGER_IO_LOG_MODE = 'logger'
+const OFF_IO_LOG_MODE = 'off'
+const DEFAULT_IO_LOG_MODE = FILE_IO_LOG_MODE
+const DEFAULT_IO_LOG_FILE_PATH = join('.runtime-logs', 'llmwiki-agent-bridge-io.jsonl')
+const MAX_IO_LOG_DEPTH = 8
+const MAX_IO_LOG_ARRAY_ITEMS = 50
+const MAX_IO_LOG_STRING_CHARS = 20_000
 const MAX_CONVERSATION_MESSAGES = 12
 const MAX_CONVERSATION_MESSAGE_CONTENT_CHARS = 6000
 const MAX_CONVERSATION_DESCRIPTOR_DEPTH = 3
@@ -657,8 +669,14 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
               items: { type: 'string' },
             },
           }, ['policy', 'configuredAllowedSourceOrigins', 'allowedSourceOrigins']),
+          observability: objectSchema({
+            auditLog: { type: 'boolean' },
+            ioLog: { type: 'boolean' },
+            ioLogMode: { enum: ['logger', 'file', 'off'] },
+            ioLogPathConfigured: { type: 'boolean' },
+          }, ['auditLog', 'ioLog', 'ioLogMode', 'ioLogPathConfigured']),
           persistence: { $ref: '#/components/schemas/SettingsPersistence' },
-        }, ['bridge', 'endpoints', 'runtime', 'runtimeConnection', 'bridgeAuth', 'network', 'sourcePolicy', 'persistence']),
+        }, ['bridge', 'endpoints', 'runtime', 'runtimeConnection', 'bridgeAuth', 'network', 'sourcePolicy', 'observability', 'persistence']),
         SettingsConfigRequest: objectSchema({
           runtimeProfile: { enum: ['hermes', 'deepagents', 'generic'] },
           runtimeId: { type: 'string' },
@@ -684,6 +702,9 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
           allowPublicBind: { type: 'boolean' },
           allowInsecurePublicBind: { type: 'boolean' },
           auditLog: { type: 'boolean' },
+          ioLog: { oneOf: [{ type: 'boolean' }, { enum: ['on', 'off', 'logger', 'stdout', 'file'] }] },
+            ioLogMode: { enum: ['on', 'off', 'logger', 'stdout', 'file'] },
+          ioLogPath: { type: 'string' },
         }),
         SettingsConfigResponse: objectSchema({
           status: { const: 'saved' },
@@ -1074,6 +1095,197 @@ function emitRequestAuditLog(config, input) {
   }
 }
 
+function emitIoLog(config, input) {
+  if (!config.ioLog || config.ioLogMode === OFF_IO_LOG_MODE) return
+
+  try {
+    const event = ioLogEvent(input)
+    const line = JSON.stringify(event)
+    if (config.ioLogPath) {
+      mkdirSync(dirname(config.ioLogPath), { recursive: true })
+      writeFileSync(config.ioLogPath, `${line}\n`, { encoding: 'utf8', flag: 'a' })
+      return
+    }
+    const logger = config.logger && typeof config.logger.log === 'function' ? config.logger : console
+    logger.log(line)
+  } catch {
+    // I/O logging is diagnostic only and must never affect request handling.
+  }
+}
+
+function ioLogEvent(input) {
+  return removeUndefinedProperties({
+    schemaVersion: IO_LOG_SCHEMA_VERSION,
+    event: IO_LOG_EVENT,
+    timestamp: new Date().toISOString(),
+    phase: ioLogLabel(input.phase),
+    flow: ioLogLabel(input.flow),
+    requestId: safeRunIdentifier(input.requestId) || undefined,
+    traceId: safeRunIdentifier(input.traceId) || undefined,
+    route: auditedRoute(input.route),
+    operation: ioLogLabel(input.operation),
+    target: redactForIoLog(input.target),
+    request: redactForIoLog(input.request),
+    response: redactForIoLog(input.response),
+    error: input.error ? ioLogError(input.error) : undefined,
+    durationMs: auditedNonNegativeInteger(input.durationMs),
+    redacted: true,
+  })
+}
+
+function ioLogLabel(value) {
+  const text = readStringValue(value).trim()
+  if (!text) return undefined
+  return text.replace(/[^A-Za-z0-9_.:-]+/g, '-').slice(0, 120)
+}
+
+function ioLogError(error) {
+  return removeUndefinedProperties({
+    name: error instanceof Error ? ioLogLabel(error.name) : undefined,
+    message: redactIoString(error instanceof Error ? error.message : String(error)),
+    timeout: isTimeoutError(error) ? true : undefined,
+  })
+}
+
+function ioLogSourceContext(source, runContext = {}, operation = '') {
+  return removeUndefinedProperties({
+    flow: 'source',
+    operation,
+    requestId: runContext?.requestId,
+    traceId: runContext?.traceId,
+    source: ioLogSourceSummary(source),
+  })
+}
+
+function ioLogSourceSummary(source) {
+  return removeUndefinedProperties({
+    id: safeTraceIdentifier(source?.id),
+    name: safeTraceTitle(source?.name),
+    protocol: source?.protocol,
+  })
+}
+
+function ioLogHttpTarget(url, context = {}) {
+  const parsed = parseUrlForIoLog(url)
+  return removeUndefinedProperties({
+    kind: context.flow || 'http',
+    operation: context.operation,
+    route: parsed?.pathname || undefined,
+    queryStringRedacted: parsed ? Boolean(parsed.search) : undefined,
+    urlRedacted: true,
+    source: context.source,
+  })
+}
+
+function parseUrlForIoLog(value) {
+  try {
+    return new URL(value)
+  } catch {
+    return null
+  }
+}
+
+function redactForIoLog(value, depth = 0, seen = new WeakSet()) {
+  if (value === undefined || value === null) return value
+  if (typeof value === 'string') return redactIoString(value)
+  if (typeof value === 'number' || typeof value === 'boolean') return value
+  if (typeof value === 'bigint') return String(value)
+  if (typeof value !== 'object') return undefined
+
+  if (seen.has(value)) return '[circular]'
+  seen.add(value)
+
+  if (depth >= MAX_IO_LOG_DEPTH) return '[truncated-depth]'
+
+  if (Array.isArray(value)) {
+    const items = value
+      .slice(0, MAX_IO_LOG_ARRAY_ITEMS)
+      .map((item) => redactForIoLog(item, depth + 1, seen))
+      .filter((item) => item !== undefined)
+    if (value.length > MAX_IO_LOG_ARRAY_ITEMS) items.push(`[${value.length - MAX_IO_LOG_ARRAY_ITEMS} item(s) truncated]`)
+    return items
+  }
+
+  const output = {}
+  for (const [key, rawValue] of Object.entries(value)) {
+    if (rawValue === undefined) continue
+    if (isCredentialLikeKey(key)) {
+      output[key] = '[redacted]'
+      continue
+    }
+    if (isUrlLikeKey(key)) {
+      output[key] = rawValue ? '[redacted-url]' : rawValue
+      continue
+    }
+    const redacted = redactForIoLog(rawValue, depth + 1, seen)
+    if (redacted !== undefined) output[key] = redacted
+  }
+  return output
+}
+
+function redactIoString(value) {
+  const text = String(value)
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/\bBasic\s+[A-Za-z0-9+/=-]+/gi, 'Basic [redacted]')
+    .replace(/\b(Set-Cookie|Cookie)\s*:\s*[^\r\n]+/gi, '$1: [redacted]')
+    .replace(/\b(?:sk|sk-proj|sk-ant|hf)_[A-Za-z0-9._~+/=-]+/g, '[redacted-key]')
+    .replace(/\b(?:sk|sk-proj)-[A-Za-z0-9._~+/=-]+/g, '[redacted-key]')
+    .replace(/([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|key|secret|client[_-]?secret|password|credential|code|sig|signature)=)[^&\s"'<>]+/gi, '$1[redacted]')
+    .replace(/https?:\/\/[^\s"'<>]+/gi, '[redacted-url]')
+    .replace(/\b[A-Za-z]:\\[^\s"'<>]+/g, '[redacted-path]')
+    .replace(/\\\\[^\\\s"'<>]+\\[^\s"'<>]+/g, '[redacted-path]')
+    .replace(/\/(?:Users|home|var\/folders|var\/tmp|tmp)\/[^\s"'<>]+/g, '[redacted-path]')
+
+  if (text.length <= MAX_IO_LOG_STRING_CHARS) return text
+  return `${text.slice(0, MAX_IO_LOG_STRING_CHARS - 3)}...`
+}
+
+function isCredentialLikeKey(key) {
+  const normalized = String(key || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+  return normalized === 'authorization'
+    || normalized === 'proxyauthorization'
+    || normalized === 'cookie'
+    || normalized === 'setcookie'
+    || normalized === 'xapikey'
+    || normalized === 'apikey'
+    || normalized === 'agentapikey'
+    || normalized === 'hermesapikey'
+    || normalized === 'bridgebearertoken'
+    || normalized === 'bearertoken'
+    || normalized === 'accesstoken'
+    || normalized.endsWith('token')
+    || normalized.endsWith('secret')
+    || normalized.endsWith('password')
+    || normalized.endsWith('credential')
+    || normalized.endsWith('credentials')
+}
+
+function isUrlLikeKey(key) {
+  const normalized = String(key || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+  return normalized === 'url'
+    || normalized.endsWith('url')
+    || normalized.endsWith('uri')
+    || normalized.endsWith('endpoint')
+}
+
+function redactedHeaderSummary(headers = {}) {
+  const entries = headers instanceof Headers
+    ? [...headers.entries()]
+    : Object.entries(headers || {})
+  const output = {}
+  for (const [key, value] of entries) {
+    const normalized = String(key || '').toLowerCase()
+    output[normalized] = isSafeIoHeader(normalized)
+      ? redactForIoLog(Array.isArray(value) ? value.join(', ') : String(value || ''))
+      : '[redacted]'
+  }
+  return output
+}
+
+function isSafeIoHeader(name) {
+  return name === 'accept' || name === 'content-type'
+}
+
 function requestAuditEvent(input) {
   return removeUndefinedProperties({
     schemaVersion: AUDIT_LOG_SCHEMA_VERSION,
@@ -1297,6 +1509,19 @@ async function handleBridgeRequest(request, response, config) {
     if (request.method === 'POST' && url.pathname === MESSAGE_SEND_ROUTE) {
       messageRunContext = auditContext
       const body = await readJsonBody(request)
+      emitIoLog(config, {
+        phase: 'bridge.request',
+        flow: 'bridge',
+        requestId: messageRunContext.requestId,
+        traceId: messageRunContext.traceId,
+        route: MESSAGE_SEND_ROUTE,
+        request: {
+          method: request.method,
+          route: MESSAGE_SEND_ROUTE,
+          headers: redactedHeaderSummary(request.headers),
+          body,
+        },
+      })
       const result = await runA2aMessage(body, config, messageRunContext, auditDetails)
       writeJson(response, 200, result, config, request)
       return
@@ -1315,7 +1540,22 @@ async function handleBridgeRequest(request, response, config) {
     const httpError = error instanceof HttpError ? error : new HttpError(500, 'Bridge request failed.', 'bridge_error')
     auditDetails.errorCode = httpError.code
     config.logger.error(redactedLogLine('bridge request failed', error))
-    writeJson(response, httpError.status, errorResponseBody(httpError, messageRunContext), config, request)
+    const body = errorResponseBody(httpError, messageRunContext)
+    if (route === MESSAGE_SEND_ROUTE) {
+      emitIoLog(config, {
+        phase: 'bridge.error',
+        flow: 'bridge',
+        requestId: messageRunContext?.requestId || auditContext.requestId,
+        traceId: messageRunContext?.traceId || auditContext.traceId,
+        route,
+        response: {
+          statusCode: httpError.status,
+          body,
+        },
+        error: httpError,
+      })
+    }
+    writeJson(response, httpError.status, body, config, request)
   } finally {
     emitRequestAuditLog(config, {
       ...auditDetails,
@@ -1360,7 +1600,7 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
   const sourceOutcomes = await mapWithConcurrency(
     readySources,
     DEFAULT_SOURCE_FAN_OUT_CONCURRENCY,
-    (source) => gatherSourceEvidence(source, query, config),
+    (source) => gatherSourceEvidence(source, query, config, runContext),
   )
 
   for (const outcome of sourceOutcomes) {
@@ -1445,6 +1685,7 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
         citations,
         graph,
         config,
+        runContext,
       })
       const citationFallback = answerWithFallbackCitationAnchors(answer, citations)
       answer = citationFallback.answer
@@ -1530,10 +1771,21 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
     artifactCount: result.artifacts.length,
     diagnosticCount: diagnostics.length,
   })
+  emitIoLog(config, {
+    phase: 'bridge.response',
+    flow: 'bridge',
+    requestId: runContext.requestId,
+    traceId: runContext.traceId,
+    route: MESSAGE_SEND_ROUTE,
+    response: {
+      statusCode: 200,
+      body: result,
+    },
+  })
   return result
 }
 
-async function gatherSourceEvidence(source, query, config) {
+async function gatherSourceEvidence(source, query, config, runContext = {}) {
   const diagnostics = []
   const steps = []
   const sourceLabel = safeSourceLabel(source)
@@ -1551,8 +1803,8 @@ async function gatherSourceEvidence(source, query, config) {
   let sourceBundle = null
 
   try {
-    sourceBundle = await readSourceBundle(source, config, steps, toolStep.id, diagnostics)
-    const payload = await queryKnowledgeSource(source, query, config)
+    sourceBundle = await readSourceBundle(source, config, steps, toolStep.id, diagnostics, runContext)
+    const payload = await queryKnowledgeSource(source, query, config, runContext)
     const result = normalizeKnowledgeResult(source, payload)
     const citationRefs = traceCitationRefs(result.citations)
     replaceStep(steps, {
@@ -1565,6 +1817,18 @@ async function gatherSourceEvidence(source, query, config) {
     })
     return { source, result, sourceBundle, steps, diagnostics }
   } catch (error) {
+    emitIoLog(config, {
+      phase: 'source.error',
+      ...ioLogSourceContext(source, runContext, 'source-query'),
+      target: {
+        kind: 'source',
+        source: ioLogSourceSummary(source),
+      },
+      request: {
+        body: { query },
+      },
+      error,
+    })
     config.logger.error(redactedLogLine(`source ${safeId(source.id)} failed`, error))
     const diagnostic = sourceQueryDiagnostic(source, error, config)
     const retainedDiagnostics = diagnostics.filter((item) => !isSourceBundleDiagnosticForSource(item, source))
@@ -2280,7 +2544,7 @@ function sourceToolSupportsProtocol(toolName, protocol) {
   return ['llmwiki-http', 'mcp'].includes(protocol)
 }
 
-async function contextKnowledgeSource(source, query, limit, includeDrafts, config) {
+async function contextKnowledgeSource(source, query, limit, includeDrafts, config, runContext = {}) {
   assertAllowedKnowledgeSourceFetchUrl(source.url, config)
 
   if (source.protocol === 'llmwiki-http') {
@@ -2288,7 +2552,7 @@ async function contextKnowledgeSource(source, query, limit, includeDrafts, confi
       query,
       limit,
       include_drafts: includeDrafts,
-    }, 'llmwiki-http query', config)
+    }, 'llmwiki-http query', config, ioLogSourceContext(source, runContext, 'llmwiki-http query'))
   }
 
   if (source.protocol === 'mcp') {
@@ -2296,17 +2560,17 @@ async function contextKnowledgeSource(source, query, limit, includeDrafts, confi
       query,
       limit,
       include_drafts: includeDrafts,
-    }, config)
+    }, config, runContext)
   }
 
   if (source.protocol === 'a2a') {
-    return queryA2aSource(source, query, config)
+    return queryA2aSource(source, query, config, runContext)
   }
 
   throw new Error(`Unsupported Knowledge Source protocol: ${source.protocol}`)
 }
 
-async function searchKnowledgeSource(source, query, limit, includeDrafts, config) {
+async function searchKnowledgeSource(source, query, limit, includeDrafts, config, runContext = {}) {
   assertAllowedKnowledgeSourceFetchUrl(source.url, config)
 
   if (source.protocol === 'llmwiki-http') {
@@ -2314,7 +2578,7 @@ async function searchKnowledgeSource(source, query, limit, includeDrafts, config
       query,
       limit,
       include_drafts: includeDrafts,
-    }, 'llmwiki-http search', config)
+    }, 'llmwiki-http search', config, ioLogSourceContext(source, runContext, 'llmwiki-http search'))
   }
 
   if (source.protocol === 'mcp') {
@@ -2322,33 +2586,33 @@ async function searchKnowledgeSource(source, query, limit, includeDrafts, config
       query,
       limit,
       include_drafts: includeDrafts,
-    }, config)
+    }, config, runContext)
   }
 
   throw new Error(`Unsupported Knowledge Source protocol for search: ${source.protocol}`)
 }
 
-async function readKnowledgeSourcePage(source, pageId, includeDrafts, config) {
+async function readKnowledgeSourcePage(source, pageId, includeDrafts, config, runContext = {}) {
   assertAllowedKnowledgeSourceFetchUrl(source.url, config)
 
   if (source.protocol === 'llmwiki-http') {
     const url = urlWithQuery(joinUrl(source.url, `/read/${encodeURIComponent(pageId)}`), {
       include_drafts: includeDrafts,
     })
-    return fetchKnowledgeSourceJson(url, { method: 'GET' }, 'llmwiki-http read', config)
+    return fetchKnowledgeSourceJson(url, { method: 'GET' }, 'llmwiki-http read', config, ioLogSourceContext(source, runContext, 'llmwiki-http read'))
   }
 
   if (source.protocol === 'mcp') {
     return callMcpTool(source, 'llmwiki_read', {
       page_id: pageId,
       include_drafts: includeDrafts,
-    }, config)
+    }, config, runContext)
   }
 
   throw new Error(`Unsupported Knowledge Source protocol for read: ${source.protocol}`)
 }
 
-async function graphKnowledgeSource(source, limit, includeDrafts, config) {
+async function graphKnowledgeSource(source, limit, includeDrafts, config, runContext = {}) {
   assertAllowedKnowledgeSourceFetchUrl(source.url, config)
 
   if (source.protocol === 'llmwiki-http') {
@@ -2356,20 +2620,20 @@ async function graphKnowledgeSource(source, limit, includeDrafts, config) {
       limit,
       include_drafts: includeDrafts,
     })
-    return fetchKnowledgeSourceJson(url, { method: 'GET' }, 'llmwiki-http graph', config)
+    return fetchKnowledgeSourceJson(url, { method: 'GET' }, 'llmwiki-http graph', config, ioLogSourceContext(source, runContext, 'llmwiki-http graph'))
   }
 
   if (source.protocol === 'mcp') {
     return callMcpTool(source, 'llmwiki_graph', {
       limit,
       include_drafts: includeDrafts,
-    }, config)
+    }, config, runContext)
   }
 
   throw new Error(`Unsupported Knowledge Source protocol for graph: ${source.protocol}`)
 }
 
-async function graphNeighborhoodKnowledgeSource(source, nodeIds, { depth, direction, relations, limit, includeDrafts, config }) {
+async function graphNeighborhoodKnowledgeSource(source, nodeIds, { depth, direction, relations, limit, includeDrafts, config, runContext = {} }) {
   assertAllowedKnowledgeSourceFetchUrl(source.url, config)
 
   if (source.protocol === 'llmwiki-http') {
@@ -2381,7 +2645,7 @@ async function graphNeighborhoodKnowledgeSource(source, nodeIds, { depth, direct
       limit,
       include_drafts: includeDrafts,
     })
-    return fetchKnowledgeSourceJson(url, { method: 'GET' }, 'llmwiki-http graph neighborhood', config)
+    return fetchKnowledgeSourceJson(url, { method: 'GET' }, 'llmwiki-http graph neighborhood', config, ioLogSourceContext(source, runContext, 'llmwiki-http graph-neighborhood'))
   }
 
   if (source.protocol === 'mcp') {
@@ -2393,7 +2657,7 @@ async function graphNeighborhoodKnowledgeSource(source, nodeIds, { depth, direct
       relations,
       limit,
       include_drafts: includeDrafts,
-    }, config)
+    }, config, runContext)
   }
 
   throw new Error(`Unsupported Knowledge Source protocol for graph neighbors: ${source.protocol}`)
@@ -2555,19 +2819,19 @@ function sourceBundleSummary(result) {
   return `Source bundle from ${result.source.name}: ${title}.`
 }
 
-async function readSourceBundle(source, config, steps, parentId, diagnostics = []) {
+async function readSourceBundle(source, config, steps, parentId, diagnostics = [], runContext = {}) {
   if (source.protocol === 'llmwiki-http') {
-    return readLlmwikiHttpSourceBundle(source, config, steps, parentId, diagnostics)
+    return readLlmwikiHttpSourceBundle(source, config, steps, parentId, diagnostics, runContext)
   }
 
   if (source.protocol === 'mcp') {
-    return readMcpSourceBundle(source, config, steps, parentId, diagnostics)
+    return readMcpSourceBundle(source, config, steps, parentId, diagnostics, runContext)
   }
 
   return null
 }
 
-async function readLlmwikiHttpSourceBundle(source, config, steps, parentId, diagnostics = []) {
+async function readLlmwikiHttpSourceBundle(source, config, steps, parentId, diagnostics = [], runContext = {}) {
   if (source.protocol !== 'llmwiki-http') return null
   const sourceLabel = safeSourceLabel(source)
 
@@ -2591,7 +2855,13 @@ async function readLlmwikiHttpSourceBundle(source, config, steps, parentId, diag
 
   for (const candidate of discoveryUrls) {
     try {
-      const manifest = await fetchKnowledgeSourceJson(candidate.url, { method: 'GET' }, `llmwiki-http ${candidate.label}`, config)
+      const manifest = await fetchKnowledgeSourceJson(
+        candidate.url,
+        { method: 'GET' },
+        `llmwiki-http ${candidate.label}`,
+        config,
+        ioLogSourceContext(source, runContext, `llmwiki-http ${candidate.label}`),
+      )
       const sourceBundle = normalizeSourceBundleManifest(source, manifest)
       if (!sourceBundle) {
         lastError = new Error(`${candidate.label} did not include source bundle metadata.`)
@@ -2624,7 +2894,7 @@ async function readLlmwikiHttpSourceBundle(source, config, steps, parentId, diag
   return null
 }
 
-async function readMcpSourceBundle(source, config, steps, parentId, diagnostics = []) {
+async function readMcpSourceBundle(source, config, steps, parentId, diagnostics = [], runContext = {}) {
   if (
     Array.isArray(source.capabilities)
     && source.capabilities.length > 0
@@ -2645,7 +2915,7 @@ async function readMcpSourceBundle(source, config, steps, parentId, diagnostics 
   const started = performance.now()
 
   try {
-    const manifest = await callMcpTool(source, 'llmwiki_source_bundle', {}, config)
+    const manifest = await callMcpTool(source, 'llmwiki_source_bundle', {}, config, runContext)
     const sourceBundle = normalizeSourceBundleManifest(source, manifest)
     if (!sourceBundle) throw new Error('MCP source bundle response did not include source bundle metadata.')
     replaceStep(steps, {
@@ -2671,29 +2941,29 @@ async function readMcpSourceBundle(source, config, steps, parentId, diagnostics 
   }
 }
 
-async function queryKnowledgeSource(source, query, config) {
+async function queryKnowledgeSource(source, query, config, runContext = {}) {
   assertAllowedKnowledgeSourceFetchUrl(source.url, config)
 
   if (source.protocol === 'llmwiki-http') {
-    return queryLlmwikiHttpSource(source, query, config)
+    return queryLlmwikiHttpSource(source, query, config, runContext)
   }
 
   if (source.protocol === 'mcp') {
-    return callMcpTool(source, 'llmwiki_context', { query, limit: MAX_EVIDENCE_ITEMS_PER_SOURCE }, config)
+    return callMcpTool(source, 'llmwiki_context', { query, limit: MAX_EVIDENCE_ITEMS_PER_SOURCE }, config, runContext)
   }
 
   if (source.protocol === 'a2a') {
-    return queryA2aSource(source, query, config)
+    return queryA2aSource(source, query, config, runContext)
   }
 
   throw new Error(`Unsupported Knowledge Source protocol: ${source.protocol}`)
 }
 
-async function queryLlmwikiHttpSource(source, query, config) {
+async function queryLlmwikiHttpSource(source, query, config, runContext = {}) {
   const primaryPayload = await postKnowledgeSourceJson(joinUrl(source.url, '/query'), {
     query,
     limit: MAX_EVIDENCE_ITEMS_PER_SOURCE,
-  }, 'llmwiki-http query', config)
+  }, 'llmwiki-http query', config, ioLogSourceContext(source, runContext, 'llmwiki-http query'))
   const searchResults = []
 
   for (const variant of compactSearchQueryVariants(query)) {
@@ -2701,7 +2971,7 @@ async function queryLlmwikiHttpSource(source, query, config) {
       const searchPayload = await postKnowledgeSourceJson(joinUrl(source.url, '/search'), {
         query: variant,
         limit: MAX_SEARCH_AUGMENT_RESULTS_PER_QUERY,
-      }, 'llmwiki-http search', config)
+      }, 'llmwiki-http search', config, ioLogSourceContext(source, runContext, 'llmwiki-http search-augment'))
       searchResults.push(...searchResultsFromPayload(searchPayload))
     } catch (error) {
       config.logger.warn(redactedLogLine(`source ${safeId(source.id)} search augmentation failed`, error))
@@ -2711,13 +2981,13 @@ async function queryLlmwikiHttpSource(source, query, config) {
   return mergeSearchResultsIntoKnowledgePayload(primaryPayload, searchResults)
 }
 
-async function callMcpTool(source, name, args, config) {
+async function callMcpTool(source, name, args, config, runContext = {}) {
   const envelope = await postKnowledgeSourceJson(mcpEndpointUrl(source.url), {
     jsonrpc: '2.0',
     id: ++mcpRequestId,
     method: 'tools/call',
     params: { name, arguments: args },
-  }, `mcp ${name}`, config)
+  }, `mcp ${name}`, config, ioLogSourceContext(source, runContext, `mcp ${name}`))
   const error = asRecord(envelope.error)
   if (error) throw new Error('MCP tool returned a JSON-RPC error.')
   const result = asRecord(envelope.result)
@@ -2734,14 +3004,14 @@ async function callMcpTool(source, name, args, config) {
     || result
 }
 
-async function queryA2aSource(source, query, config) {
+async function queryA2aSource(source, query, config, runContext = {}) {
   const cardUrl = a2aAgentCardUrl(source.url)
-  const card = await fetchKnowledgeSourceJson(cardUrl, {}, 'a2a agent card', config)
+  const card = await fetchKnowledgeSourceJson(cardUrl, {}, 'a2a agent card', config, ioLogSourceContext(source, runContext, 'a2a agent-card'))
   const messageUrl = resolveA2aMessageUrl(card, cardUrl)
   if (!isAllowedA2aKnowledgeSourceMessageUrl(messageUrl, config)) {
     throw new Error('A2A source agent card message URL is not allowed.')
   }
-  const message = await postKnowledgeSourceJson(messageUrl, { data: { query } }, 'a2a message', config)
+  const message = await postKnowledgeSourceJson(messageUrl, { data: { query } }, 'a2a message', config, ioLogSourceContext(source, runContext, 'a2a message'))
   assertNoA2aError(message)
   return extractA2aContextPayload(message) || fallbackA2aContextPayload(source, message)
 }
@@ -2823,7 +3093,7 @@ function hasValidCitationAnchor(answer, citations) {
   return false
 }
 
-async function callHermesChatCompletions({ query, conversation, sourceResults, sourceFailures, citations, graph, config }) {
+async function callHermesChatCompletions({ query, conversation, sourceResults, sourceFailures, citations, graph, config, runContext = {} }) {
   const body = {
     ...(config.hermesModel ? { model: config.hermesModel } : {}),
     messages: hermesMessages({ query, conversation, sourceResults, sourceFailures, citations, graph }),
@@ -2837,7 +3107,13 @@ async function callHermesChatCompletions({ query, conversation, sourceResults, s
     method: 'POST',
     headers,
     body: JSON.stringify(body),
-  }, 'chat completions', config)
+  }, 'chat completions', config, {
+    flow: 'runtime',
+    operation: 'chat-completions',
+    requestId: runContext?.requestId,
+    traceId: runContext?.traceId,
+    requestBody: body,
+  })
   return extractHermesAnswer(payload) || 'The chat completions endpoint returned no answer text.'
 }
 
@@ -4019,6 +4295,12 @@ function redactedBridgeSettings(config, request) {
       configuredAllowedSourceOrigins: config.allowedSourceOrigins.length,
       allowedSourceOrigins: config.allowedSourceOrigins.map(redactedUrlSummary),
     },
+    observability: {
+      auditLog: Boolean(config.auditLog),
+      ioLog: Boolean(config.ioLog),
+      ioLogMode: config.ioLogMode,
+      ioLogPathConfigured: Boolean(config.ioLogPath),
+    },
     persistence: {
       enabled: Boolean(config.configPath),
       configPathConfigured: Boolean(config.configPath),
@@ -4194,6 +4476,38 @@ function normalizeBridgeConfigSettingsInput(input, currentConfig) {
     persisted.auditLog = auditLog
     live.auditLog = auditLog
     markApplied(applied, 'auditLog')
+  }
+
+  const ioLogUpdate = settingValue(input, 'ioLog')
+  if (ioLogUpdate.present) {
+    const ioLogMode = ioLogSetting(ioLogUpdate.value, 'ioLog')
+    persisted.ioLog = ioLogMode !== OFF_IO_LOG_MODE
+    persisted.ioLogMode = ioLogMode
+    live.ioLog = ioLogMode !== OFF_IO_LOG_MODE
+    live.ioLogMode = ioLogMode
+    live.ioLogPath = liveIoLogPathForMode(ioLogMode, currentConfig.ioLogPath)
+    markApplied(applied, 'ioLog', 'ioLogMode')
+  }
+
+  const ioLogModeUpdate = settingValue(input, 'ioLogMode')
+  if (ioLogModeUpdate.present) {
+    const ioLogMode = ioLogSetting(ioLogModeUpdate.value, 'ioLogMode')
+    persisted.ioLog = ioLogMode !== OFF_IO_LOG_MODE
+    persisted.ioLogMode = ioLogMode
+    live.ioLog = ioLogMode !== OFF_IO_LOG_MODE
+    live.ioLogMode = ioLogMode
+    live.ioLogPath = liveIoLogPathForMode(ioLogMode, currentConfig.ioLogPath)
+    markApplied(applied, 'ioLog', 'ioLogMode')
+  }
+
+  const ioLogPathUpdate = settingValue(input, 'ioLogPath')
+  if (ioLogPathUpdate.present) {
+    const ioLogPath = stringSetting(ioLogPathUpdate.value)
+    persisted.ioLogPath = ioLogPath
+    live.ioLogPath = live.ioLogMode === FILE_IO_LOG_MODE || currentConfig.ioLogMode === FILE_IO_LOG_MODE
+      ? ioLogPath || join(process.cwd(), DEFAULT_IO_LOG_FILE_PATH)
+      : ''
+    markApplied(applied, 'ioLogPath')
   }
 
   const bridgeBearerTokenUpdate = firstSettingValue(input, ['bridgeBearerToken', 'bearerToken'])
@@ -4433,6 +4747,22 @@ function booleanSetting(value, field) {
     if (['0', 'false', 'no', 'off'].includes(normalized)) return false
   }
   throw new HttpError(400, `${field} must be a boolean.`, 'invalid_bridge_settings')
+}
+
+function ioLogSetting(value, field) {
+  try {
+    const mode = ioLogModeOption(value)
+    if (mode) return mode
+  } catch (error) {
+    throw new HttpError(400, error instanceof Error ? error.message : String(error), 'invalid_bridge_settings')
+  }
+  throw new HttpError(400, `${field} must be true, false, on, off, logger, stdout, or file.`, 'invalid_bridge_settings')
+}
+
+function liveIoLogPathForMode(mode, currentPath = '') {
+  return mode === FILE_IO_LOG_MODE
+    ? currentPath || join(process.cwd(), DEFAULT_IO_LOG_FILE_PATH)
+    : ''
 }
 
 function originListSetting(value, normalizer, field) {
@@ -6287,6 +6617,21 @@ function bridgeConfig(env, options = {}) {
     ?? booleanOption(persistentConfig.auditLog)
     ?? booleanOption(persistentConfig.auditLogEnabled)
     ?? false
+  const configuredIoLogPath = stringOption(options.ioLogPath)
+    || stringOption(env[IO_LOG_PATH_ENV])
+    || stringOption(persistentConfig.ioLogPath)
+    || ''
+  const ioLogMode = ioLogModeOption(options.ioLogMode)
+    ?? ioLogModeOption(options.ioLog)
+    ?? ioLogModeOption(options.ioLogEnabled)
+    ?? ioLogModeOption(env[IO_LOG_ENV])
+    ?? ioLogModeOption(persistentConfig.ioLogMode)
+    ?? ioLogModeOption(persistentConfig.ioLog)
+    ?? ioLogModeOption(persistentConfig.ioLogEnabled)
+    ?? (configuredIoLogPath ? FILE_IO_LOG_MODE : DEFAULT_IO_LOG_MODE)
+  const ioLogPath = ioLogMode === FILE_IO_LOG_MODE
+    ? configuredIoLogPath || join(process.cwd(), DEFAULT_IO_LOG_FILE_PATH)
+    : ''
   const runtimeProfile = runtimeProfileOption(options.runtimeProfile)
     ?? runtimeProfileOption(env.LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE)
     ?? runtimeProfileOption(env.HERMES_A2A_BRIDGE_RUNTIME_PROFILE)
@@ -6351,6 +6696,9 @@ function bridgeConfig(env, options = {}) {
     allowedSourceOrigins,
     sourcePolicy,
     auditLog,
+    ioLog: ioLogMode !== OFF_IO_LOG_MODE,
+    ioLogMode,
+    ioLogPath,
     runtimeProfile,
     runtimeId,
     runtimeName,
@@ -6439,6 +6787,18 @@ function runtimeProfileOption(value) {
   throw new Error(`Unsupported LLMWiki Agent Bridge runtime profile: ${value}.`)
 }
 
+function ioLogModeOption(value) {
+  if (typeof value === 'boolean') return value ? DEFAULT_IO_LOG_MODE : OFF_IO_LOG_MODE
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, '')
+  if (!normalized) return undefined
+  if (['0', 'false', 'no', 'off', 'disable', 'disabled', 'none'].includes(normalized)) return OFF_IO_LOG_MODE
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return DEFAULT_IO_LOG_MODE
+  if (['logger', 'log', 'stdout'].includes(normalized)) return LOGGER_IO_LOG_MODE
+  if (['file', 'jsonl'].includes(normalized)) return FILE_IO_LOG_MODE
+  throw new Error(`Unsupported LLMWiki Agent Bridge I/O log mode: ${value}.`)
+}
+
 function envFlagOption(value) {
   if (typeof value !== 'string' || value.trim() === '') return undefined
   return envFlag(value)
@@ -6500,26 +6860,105 @@ async function postJson(url, body, label, config) {
   }, label, config)
 }
 
-async function postKnowledgeSourceJson(url, body, label, config) {
+async function postKnowledgeSourceJson(url, body, label, config, ioLogContext = {}) {
   return fetchKnowledgeSourceJson(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  }, label, config)
+  }, label, config, { ...ioLogContext, requestBody: body })
 }
 
-async function fetchKnowledgeSourceJson(url, init, label, config) {
+async function fetchKnowledgeSourceJson(url, init, label, config, ioLogContext = {}) {
   assertAllowedKnowledgeSourceFetchUrl(url, config)
-  return fetchJson(url, { ...init, redirect: 'error' }, label, config)
+  return fetchJson(url, { ...init, redirect: 'error' }, label, config, { flow: 'source', ...ioLogContext })
 }
 
-async function fetchJson(url, init, label, config) {
-  const response = await fetchWithTimeout(url, init, config.requestTimeoutMs)
-  if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}`)
+async function fetchJson(url, init, label, config, ioLogContext = {}) {
+  const started = performance.now()
+  const method = readStringValue(init?.method).toUpperCase() || 'GET'
+  const context = {
+    flow: ioLogContext.flow || 'http',
+    operation: ioLogContext.operation || label,
+    requestId: ioLogContext.requestId,
+    traceId: ioLogContext.traceId,
+    source: ioLogContext.source,
+  }
+  const target = ioLogHttpTarget(url, context)
+  const requestBody = ioLogContext.requestBody !== undefined ? ioLogContext.requestBody : jsonBodyFromFetchInit(init)
+
+  emitIoLog(config, {
+    phase: `${context.flow}.request`,
+    flow: context.flow,
+    operation: context.operation,
+    requestId: context.requestId,
+    traceId: context.traceId,
+    target,
+    request: {
+      method,
+      headers: redactedHeaderSummary(init?.headers),
+      body: requestBody,
+    },
+  })
+
   try {
-    return await response.json()
+    const response = await fetchWithTimeout(url, init, config.requestTimeoutMs)
+    const responseText = await response.text()
+    const parsed = parseFetchJsonResponseBody(responseText)
+
+    emitIoLog(config, {
+      phase: `${context.flow}.response`,
+      flow: context.flow,
+      operation: context.operation,
+      requestId: context.requestId,
+      traceId: context.traceId,
+      target,
+      response: {
+        statusCode: response.status,
+        ok: response.ok,
+        body: parsed.validJson ? parsed.value : { text: responseText },
+      },
+      durationMs: Math.round(performance.now() - started),
+    })
+
+    if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}`)
+    if (!parsed.validJson) throw new Error(`${label} returned invalid JSON`)
+    return parsed.value
+  } catch (error) {
+    emitIoLog(config, {
+      phase: `${context.flow}.error`,
+      flow: context.flow,
+      operation: context.operation,
+      requestId: context.requestId,
+      traceId: context.traceId,
+      target,
+      request: {
+        method,
+        headers: redactedHeaderSummary(init?.headers),
+        body: requestBody,
+      },
+      error,
+      durationMs: Math.round(performance.now() - started),
+    })
+    throw error
+  }
+}
+
+function jsonBodyFromFetchInit(init) {
+  const body = init?.body
+  if (typeof body !== 'string') return undefined
+  try {
+    return JSON.parse(body)
   } catch {
-    throw new Error(`${label} returned invalid JSON`)
+    return body
+  }
+}
+
+function parseFetchJsonResponseBody(text) {
+  if (!text.trim()) return { validJson: false, value: undefined }
+  try {
+    return { validJson: true, value: JSON.parse(text) }
+  } catch {
+    return { validJson: false, value: undefined }
   }
 }
 

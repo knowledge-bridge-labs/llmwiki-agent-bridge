@@ -1420,6 +1420,34 @@
               "allowedSourceOrigins"
             ]
           },
+          "observability": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "auditLog": {
+                "type": "boolean"
+              },
+              "ioLog": {
+                "type": "boolean"
+              },
+              "ioLogMode": {
+                "enum": [
+                  "logger",
+                  "file",
+                  "off"
+                ]
+              },
+              "ioLogPathConfigured": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "auditLog",
+              "ioLog",
+              "ioLogMode",
+              "ioLogPathConfigured"
+            ]
+          },
           "persistence": {
             "$ref": "#/components/schemas/SettingsPersistence"
           }
@@ -1432,6 +1460,7 @@
           "bridgeAuth",
           "network",
           "sourcePolicy",
+          "observability",
           "persistence"
         ]
       },
@@ -1543,6 +1572,34 @@
           },
           "auditLog": {
             "type": "boolean"
+          },
+          "ioLog": {
+            "oneOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "enum": [
+                  "on",
+                  "off",
+                  "logger",
+                  "stdout",
+                  "file"
+                ]
+              }
+            ]
+          },
+          "ioLogMode": {
+            "enum": [
+              "on",
+              "off",
+              "logger",
+              "stdout",
+              "file"
+            ]
+          },
+          "ioLogPath": {
+            "type": "string"
           }
         }
       },

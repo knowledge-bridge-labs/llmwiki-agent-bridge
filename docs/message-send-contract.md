@@ -209,6 +209,20 @@ clients that need structured output.
 The generated OpenAPI contract for this endpoint is committed at
 [openapi.json](./openapi.json) and checked by `npm run contracts:check`.
 
+## Observability
+
+`/message:send` emits default-on I/O debug JSONL events to
+`.runtime-logs/llmwiki-agent-bridge-io.jsonl` unless another sink is configured.
+These events are separate from safe request audit records. I/O
+events can include the request prompt, source request/response bodies, runtime
+messages/body, runtime response or error, and final bridge artifact after
+credential and URL redaction.
+
+Disable the debug stream with `LLMWIKI_AGENT_BRIDGE_IO_LOG=off`, programmatic
+`ioLog: false`, or persistent `ioLog: false` / `ioLogMode: "off"`. The safe
+audit stream remains opt-in with `LLMWIKI_AGENT_BRIDGE_AUDIT_LOG=1` and still
+logs only route patterns, counts, status, and redaction flags.
+
 ## MCP Tool Compatibility
 
 The bridge also exposes `POST /mcp` as an MCP-style JSON-RPC compatibility

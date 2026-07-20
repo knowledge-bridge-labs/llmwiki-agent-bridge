@@ -1905,6 +1905,268 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(serialized, /\?api_key=/)
   })
 
+  it('emits default redacted IO logs for message sends and honors opt-out', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, response }) => {
+      if (request.method === 'GET') {
+        writeJson(response, 404, { error: { code: 'not_found' } })
+        return
+      }
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        wiki_title: 'IO Log Wiki',
+        evidence: [
+          {
+            page_id: 'io-log-page',
+            title: 'IO Log Evidence',
+            path: 'io-log-page.md',
+            snippet: 'I/O logging evidence is available.',
+            source_refs: ['IO-LOG-1'],
+          },
+        ],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const answerCanary = 'IO_LOG_ANSWER_CANARY_default_on'
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: answerCanary } }],
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const logger = recordingLogger()
+    const ioLogDir = await mkdtemp(join(tmpdir(), 'llmwiki-bridge-io-default-'))
+    const ioLogPath = join(ioLogDir, 'bridge-io.jsonl')
+    t.after(async () => {
+      await rm(ioLogDir, { force: true, recursive: true })
+    })
+    const promptCanary = 'IO_LOG_PROMPT_CANARY_default_on'
+    const secretCanaries = [
+      'io-log-freeform-bearer-secret',
+      'aW8tbG9nLWJhc2ljLXNlY3JldA==',
+      'io-log-cookie-secret',
+      'io-log-set-cookie-secret',
+      'io-log-client-secret',
+      'io-log-signature-secret',
+      'io-log-code-secret',
+      'io-log-sig-secret',
+      'C:\\Users\\angel\\secret.txt',
+      '\\\\server\\share\\secret.txt',
+      '/home/angel/secret.txt',
+      '/var/tmp/secret.txt',
+    ]
+    const promptWithSecrets = [
+      promptCanary,
+      'Bearer io-log-freeform-bearer-secret',
+      'Basic aW8tbG9nLWJhc2ljLXNlY3JldA==',
+      'Cookie: session=io-log-cookie-secret',
+      'Set-Cookie: session=io-log-set-cookie-secret',
+      'https://wiki.example.test/context?client_secret=io-log-client-secret&signature=io-log-signature-secret&code=io-log-code-secret&sig=io-log-sig-secret',
+      'C:\\Users\\angel\\secret.txt',
+      '\\\\server\\share\\secret.txt',
+      '/home/angel/secret.txt',
+      '/var/tmp/secret.txt',
+    ].join(' ')
+    const bridgeBearerToken = 'io-log-bridge-bearer-secret'
+    const runtimeApiKey = 'sk-proj-io-log-runtime-secret-1234567890'
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      hermesApiKey: runtimeApiKey,
+      bridgeBearerToken,
+      ioLogPath,
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${bridgeBearerToken}`,
+      },
+      body: JSON.stringify({
+        data: {
+          query: promptWithSecrets,
+          knowledgeSources: [
+            knowledgeSource('io-log-source', 'IO Log Source', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+    assert.equal(response.status, 200)
+
+    const events = await readJsonLines(ioLogPath)
+    assert(events.length > 0)
+    assert(events.some((event) => event.phase === 'bridge.request'))
+    assert(events.some((event) => event.phase === 'source.request'))
+    assert(events.some((event) => event.phase === 'runtime.request'))
+    assert(events.some((event) => event.phase === 'runtime.response'))
+    assert(events.some((event) => event.phase === 'bridge.response'))
+
+    const serialized = JSON.stringify(events)
+    assert.match(serialized, new RegExp(escapeRegExp(promptCanary)))
+    assert.match(serialized, new RegExp(escapeRegExp(answerCanary)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(bridgeBearerToken)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(runtimeApiKey)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(source.url)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(serialized, /Authorization[^}]+io-log-bridge-bearer-secret/i)
+    for (const canary of secretCanaries) {
+      assert.doesNotMatch(serialized, new RegExp(escapeRegExp(canary)))
+    }
+
+    const optOutLogger = recordingLogger()
+    const optOutIoLogPath = join(ioLogDir, 'bridge-io-off.jsonl')
+    const optOutBridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      hermesApiKey: runtimeApiKey,
+      bridgeBearerToken,
+      env: { LLMWIKI_AGENT_BRIDGE_IO_LOG: 'off' },
+      ioLogPath: optOutIoLogPath,
+      logger: optOutLogger,
+    })
+    t.after(() => closeServer(optOutBridge.server))
+
+    const optOutResponse = await fetch(`${optOutBridge.url}/message:send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${bridgeBearerToken}`,
+      },
+      body: JSON.stringify({
+        data: {
+          query: promptCanary,
+          knowledgeSources: [
+            knowledgeSource('io-log-source', 'IO Log Source', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+
+    assert.equal(optOutResponse.status, 200)
+    assert.rejects(() => readFile(optOutIoLogPath, 'utf8'))
+    assert.equal(ioEvents(optOutLogger).length, 0)
+    assert.doesNotMatch(optOutLogger.lines.join('\n'), new RegExp(escapeRegExp(promptCanary)))
+    assert.doesNotMatch(optOutLogger.lines.join('\n'), new RegExp(escapeRegExp(answerCanary)))
+
+    const explicitLogger = recordingLogger()
+    const explicitLoggerBridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      hermesApiKey: runtimeApiKey,
+      env: { LLMWIKI_AGENT_BRIDGE_IO_LOG: 'logger' },
+      logger: explicitLogger,
+    })
+    t.after(() => closeServer(explicitLoggerBridge.server))
+
+    const explicitLoggerResponse = await fetch(`${explicitLoggerBridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: promptCanary,
+          knowledgeSources: [
+            knowledgeSource('io-log-source', 'IO Log Source', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+
+    assert.equal(explicitLoggerResponse.status, 200)
+    assert(ioEvents(explicitLogger).some((event) => event.phase === 'bridge.request'))
+  })
+
+  it('logs runtime timeout IO request context and error without secrets', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, response }) => {
+      if (request.method === 'GET') {
+        writeJson(response, 404, { error: { code: 'not_found' } })
+        return
+      }
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      writeJson(response, 200, {
+        wiki_title: 'IO Timeout Wiki',
+        evidence: [
+          {
+            page_id: 'io-timeout-page',
+            title: 'IO Timeout Evidence',
+            snippet: 'Runtime timeout evidence is available.',
+          },
+        ],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const runtime = await startFixtureServer(async ({ response }) => {
+      await delay(200)
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'late answer' } }],
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const logger = recordingLogger()
+    const ioLogDir = await mkdtemp(join(tmpdir(), 'llmwiki-bridge-io-timeout-'))
+    const ioLogPath = join(ioLogDir, 'bridge-io.jsonl')
+    t.after(async () => {
+      await rm(ioLogDir, { force: true, recursive: true })
+    })
+    const promptCanary = 'IO_LOG_TIMEOUT_PROMPT_CANARY'
+    const runtimeApiKey = 'sk-proj-io-log-timeout-secret-1234567890'
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      hermesApiKey: runtimeApiKey,
+      requestTimeoutMs: 20,
+      ioLogPath,
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-request-id': 'io-timeout-request',
+        'x-trace-id': 'io-timeout-trace',
+      },
+      body: JSON.stringify({
+        data: {
+          query: promptCanary,
+          knowledgeSources: [
+            knowledgeSource('io-timeout-source', 'IO Timeout Source', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+
+    assert.equal(response.status, 502)
+    const events = await readJsonLines(ioLogPath)
+    const runtimeError = events.find((event) => event.phase === 'runtime.error')
+    assert(runtimeError)
+    assert.equal(runtimeError.requestId, 'io-timeout-request')
+    assert.equal(runtimeError.traceId, 'io-timeout-trace')
+    assert.equal(runtimeError.error.timeout, true)
+
+    const serialized = JSON.stringify(events)
+    assert.match(serialized, new RegExp(escapeRegExp(promptCanary)))
+    assert.match(serialized, /Request timed out/)
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(runtimeApiKey)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(serialized, /Bearer\s+sk-proj-io-log-timeout-secret/)
+  })
+
   it('exposes read-only MCP source tools for progressive source exploration without calling runtime', async (t) => {
     const source = await startFixtureServer(async ({ request, url, body, response }) => {
       if (url.pathname === '/query') {
@@ -7660,6 +7922,26 @@ function auditEvents(logger) {
       }
     })
     .filter((event) => event?.event === 'llmwiki.agent_bridge.request')
+}
+
+function ioEvents(logger) {
+  return logger.lines
+    .map((line) => {
+      try {
+        return JSON.parse(line)
+      } catch {
+        return null
+      }
+    })
+    .filter((event) => event?.event === 'llmwiki.agent_bridge.io')
+}
+
+async function readJsonLines(path) {
+  const text = await readFile(path, 'utf8')
+  return text.split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
 }
 
 function jsonFetchResponse(status, value) {

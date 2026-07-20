@@ -95,6 +95,8 @@ runtime is Hermes or DeepAgents.
 | `LLMWIKI_AGENT_BRIDGE_BEARER_TOKEN` | unset | Optional bearer token required by clients that call the bridge. Required for non-loopback binds unless the insecure development escape hatch is explicit. |
 | `LLMWIKI_AGENT_BRIDGE_TIMEOUT_MS` | `120000` | Outbound runtime/source request timeout in milliseconds. |
 | `LLMWIKI_AGENT_BRIDGE_AUDIT_LOG` | unset | Set to `1`, `true`, `yes`, or `on` to emit safe request audit JSON lines through the bridge logger. Events include route patterns and counts only; raw prompts, answers, URLs, credentials, model names, query strings, and local paths are omitted. |
+| `LLMWIKI_AGENT_BRIDGE_IO_LOG` | `file` | Default-on I/O debug JSONL. Set `off` to suppress prompt/body/answer debug logs, `logger`/`stdout` to route through process logs, or `file` to append JSONL to a file sink. |
+| `LLMWIKI_AGENT_BRIDGE_IO_LOG_PATH` | `.runtime-logs/llmwiki-agent-bridge-io.jsonl` | Optional path for I/O debug JSONL. |
 | `LLMWIKI_AGENT_BRIDGE_ALLOWED_ORIGINS` | unset | Comma-separated browser CORS origins allowed to call the bridge in addition to loopback origins. |
 | `LLMWIKI_AGENT_BRIDGE_SOURCE_POLICY` | `private-http` | Outbound Knowledge Source URL policy. See [Client Paths](./client-paths.md#source-url-policy). |
 | `LLMWIKI_AGENT_BRIDGE_ALLOWED_SOURCE_ORIGINS` | unset | Comma-separated exact source origins allowed by the `allowlist` policy or as exceptions under stricter policies. |
@@ -142,6 +144,12 @@ Runtime credentials, bridge bearer token, CORS origins, request timeout, source
 policy, source-origin allowlists, and bind settings are available under
 diagnostics/advanced. Changes to the bridge listener `host` or `port` are saved
 but only take effect after restart.
+
+Default I/O debug logs are controlled separately from safe request audit logs.
+Use `ioLog: false` or `ioLogMode: "off"` in persistent settings when prompt,
+source body, runtime body, and answer debug events should be suppressed. Use
+`ioLogMode: "logger"` for stdout/process-log retention, or `ioLogPath` for a
+non-default JSONL file path.
 
 ## Protocol Status
 
