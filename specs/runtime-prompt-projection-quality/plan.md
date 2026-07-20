@@ -214,3 +214,24 @@
       paths;
     - carry the same invalid-anchor token/count aggregate through the
       private-safe live wrapper sanitized summary.
+26. Loop 20 production default approval e2e matrix:
+    - add fixture/query class metadata to built-in benchmark fixtures;
+    - strengthen local `single-source` and global `multi-source` fixtures with
+      strict answer oracles and expected citation mappings;
+    - add an `insufficient-evidence` fixture that requires the runtime to
+      state approval/endpoint evidence gaps rather than invent facts;
+    - add private-safe live wrapper profiles `prod-approval-smoke`,
+      `prod-approval-candidate`, and `prod-approval-full`;
+    - add a tracked e2e script that wraps the private-safe live wrapper and
+      emits a fail-closed `defaultApproval` decision for a named renderer;
+    - require production approval coverage across local query, global query,
+      insufficient-evidence query, graph query, graph relation, and strict
+      evidence-fidelity classes;
+    - record only safe runtime aliases and safe model-class labels, with one
+      e2e invocation representing one runtime/model-class approval cell;
+    - scan the final e2e JSON output before approval can pass;
+    - add deterministic mock tests for the approval success path and
+      invalid-anchor approval blocking;
+    - document LLMWiki ingest candidates and exclude raw live artifacts,
+      endpoint/model/key values, temp paths, raw answers, and private local
+      paths.

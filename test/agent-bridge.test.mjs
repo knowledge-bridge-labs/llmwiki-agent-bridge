@@ -3780,7 +3780,8 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(report.live.enabled, false)
     assert.deepEqual(forbiddenOfflineRecommendationPaths, [])
     assert.equal(report.validation.ok, true)
-    assert.equal(report.fixtures.length, 6)
+    assert.equal(report.fixtures.length, 7)
+    assert(fixtureIds.includes('insufficient-evidence'))
     assert(fixtureIds.includes('graph-linear-chain'))
     assert(fixtureIds.includes('graph-strict-evidence-fidelity'))
     assert(fixtureIds.includes('graph-dense-crossrefs'))
@@ -3877,7 +3878,7 @@ describe('llmwiki-agent-bridge', () => {
     const graphifyFixture = report.fixtures.find((fixture) => fixture.id === 'graphify-graph')
 
     assert.equal(report.validation.ok, true)
-    assert.equal(report.totals.fixtureCount, 7)
+    assert.equal(report.totals.fixtureCount, 8)
     assert(graphifyFixture)
     assert.equal(graphifyFixture.sourceCount, 1)
     assert.equal(graphifyFixture.sourceSummaryCount, 1)
@@ -3928,7 +3929,7 @@ describe('llmwiki-agent-bridge', () => {
           {
             message: {
               content: isMarkdownSummary
-                ? 'Markdown summary output cites both required sources exactly [1](#citation-1) [2](#citation-2).'
+                ? localSingleSourceAnswer()
                 : 'Compact JSON output uses a bare citation [1].',
             },
           },
@@ -3983,7 +3984,7 @@ describe('llmwiki-agent-bridge', () => {
     assert.deepEqual(liveFixture.renderers['compact-json'].citationAnchorsFound, [])
     assert.equal(liveFixture.renderers['markdown-summary'].pass, true)
     assert.deepEqual(
-      liveFixture.renderers['markdown-summary'].citationAnchorsFound.map((anchor) => anchor.anchor),
+      [...new Set(liveFixture.renderers['markdown-summary'].citationAnchorsFound.map((anchor) => anchor.anchor))],
       ['[1](#citation-1)', '[2](#citation-2)'],
     )
     assert.equal(runtime.requests.length, 2)
@@ -4666,7 +4667,7 @@ describe('llmwiki-agent-bridge', () => {
           {
             finish_reason: 'stop',
             message: {
-              content: 'The synthetic release readiness answer cites both required evidence anchors [1](#citation-1) [2](#citation-2).',
+              content: graphDenseAnswer(),
             },
           },
         ],
@@ -4682,11 +4683,11 @@ describe('llmwiki-agent-bridge', () => {
     const { stdout } = await runRuntimePromptBenchmark([
       '--live',
       '--fixture',
-      'single-source',
+      'graph-dense-crossrefs',
       '--renderer',
       'compact-json',
       '--max-tokens',
-      '64',
+      '128',
       '--timeout-ms',
       '10000',
     ], {
@@ -5108,6 +5109,211 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(modelName)))
     assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(apiKey)))
     assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(tmpdir())))
+  })
+
+  it('production approval e2e approves compact-json across local global insufficient and graph fixture classes', async (t) => {
+    const modelName = 'prod-approval-e2e-model-canary'
+    const apiKey = 'sk-proj-prod-approval-e2e-canary-1234567890'
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      const userPrompt = body.messages.find((message) => message.role === 'user')?.content || ''
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: productionApprovalAnswerForPrompt(userPrompt),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 80,
+          completion_tokens: 120,
+          total_tokens: 200,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const { stdout, stderr } = await runRuntimePromptProductionApproval([
+      '--runtime-alias',
+      'mock-private-runtime',
+      '--model-class',
+      'mock-model-class',
+      '--required-model-class',
+      'mock-model-class',
+      '--overall-timeout-ms',
+      '30000',
+      '--',
+      '--timeout-ms',
+      '10000',
+      '--max-tokens',
+      '768',
+    ], {
+      env: mockRuntimeEnv(runtime, { model: modelName, apiKey }),
+      maxBuffer: 2 * 1024 * 1024,
+    })
+
+    const report = JSON.parse(stdout)
+
+    assert.equal(stderr, '')
+    assert.equal(report.schema, 'llmwiki-agent-bridge.runtime-prompt-production-approval.v1')
+    assert.equal(report.wrapper.status, 'ok')
+    assert.equal(report.sensitiveScan.ok, true)
+    assert.equal(report.sensitiveScan.totalMatches, 0)
+    assert.equal(report.sourceSummary.sensitiveScan.ok, true)
+    assert.equal(report.defaultApproval.status, 'approved')
+    assert.equal(report.defaultApproval.approved, true)
+    assert.equal(report.defaultApproval.rendererId, 'compact-json')
+    assert.equal(report.defaultApproval.modelClass, 'mock-model-class')
+    assert.deepEqual(report.defaultApproval.blockingReasons, [])
+    assert.equal(report.defaultApproval.metrics.runCount, 5)
+    assert.equal(report.defaultApproval.metrics.passRatePct, 100)
+    assert.deepEqual(report.defaultApproval.metrics.failureCodeCounts, {})
+    assert.equal(report.defaultApproval.metrics.answerOracle.strictFailureCount, 0)
+    assert.equal(report.defaultApproval.metrics.expectedCitationMappings.strictFailureCount, 0)
+    assert.deepEqual(report.defaultApproval.fixtureCoverage.missingFixtureClasses, [])
+    assert.deepEqual(report.defaultApproval.fixtureCoverage.missingQueryClasses, [])
+    assert.deepEqual(report.defaultApproval.fixtureCoverage.missingModelClasses, [])
+    assert.deepEqual(report.defaultApproval.fixtureCoverage.modelClasses, ['mock-model-class'])
+    assert.deepEqual(report.defaultApproval.fixtureCoverage.fixtureClasses, [
+      'global-multi-source',
+      'graph-relation',
+      'insufficient-evidence',
+      'local-single-source',
+      'strict-evidence-fidelity',
+    ])
+    assert.deepEqual(report.defaultApproval.fixtureCoverage.queryClasses, [
+      'global-query',
+      'graph-query',
+      'insufficient-evidence-query',
+      'local-query',
+    ])
+    assert.equal(runtime.requests.length, 5)
+
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(modelName)))
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(apiKey)))
+    assert.doesNotMatch(stdout, /"outputText"\s*:/)
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(tmpdir())))
+  })
+
+  it('production approval e2e blocks default approval on invalid citation anchors', async (t) => {
+    const invalidAnchorToken = '[6](#citation-6)'
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: `${strictEvidenceFidelityRowAnswer()}\nInvalid extra anchor ${invalidAnchorToken}.`,
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 40,
+          completion_tokens: 90,
+          total_tokens: 130,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await runRuntimePromptProductionApproval([
+        '--runtime-alias',
+        'mock-private-runtime',
+        '--overall-timeout-ms',
+        '30000',
+        '--required-fixture',
+        'graph-strict-evidence-fidelity',
+        '--required-fixture-class',
+        'strict-evidence-fidelity',
+        '--required-query-class',
+        'graph-query',
+        '--',
+        '--profile',
+        'none',
+        '--fixture',
+        'graph-strict-evidence-fidelity',
+        '--renderer',
+        'compact-json',
+        '--timeout-ms',
+        '10000',
+        '--max-tokens',
+        '768',
+      ], {
+        env: mockRuntimeEnv(runtime),
+        maxBuffer: 2 * 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.equal(error.stderr, '')
+
+    const report = JSON.parse(error.stdout)
+
+    assert.equal(report.defaultApproval.approved, false)
+    assert.equal(report.defaultApproval.status, 'blocked')
+    assert.deepEqual(report.defaultApproval.metrics.failureCodeCounts, { citation_anchor_invalid: 1 })
+    assert.equal(report.defaultApproval.metrics.citationCoverage.invalidCitationAnchorCount, 1)
+    assert.deepEqual(report.defaultApproval.metrics.citationCoverage.invalidCitationAnchors, [invalidAnchorToken])
+    assert(report.defaultApproval.blockingReasons.includes('default renderer failureCodeCounts must be empty'))
+    assert(report.defaultApproval.blockingReasons.includes('default renderer invalid citation anchors must be 0'))
+    assert.equal(report.sourceSummary.sensitiveScan.ok, true)
+  })
+
+  it('production approval e2e rejects unsafe runtime aliases in final sanitized output', async (t) => {
+    const modelName = 'prod-approval-unsafe-alias-model-canary'
+    const apiKey = 'sk-proj-prod-approval-unsafe-alias-canary-1234567890'
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      const userPrompt = body.messages.find((message) => message.role === 'user')?.content || ''
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: productionApprovalAnswerForPrompt(userPrompt),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 80,
+          completion_tokens: 120,
+          total_tokens: 200,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const { stdout } = await runRuntimePromptProductionApproval([
+      '--runtime-alias',
+      apiKey,
+      '--overall-timeout-ms',
+      '30000',
+      '--',
+      '--timeout-ms',
+      '10000',
+      '--max-tokens',
+      '768',
+    ], {
+      env: mockRuntimeEnv(runtime, { model: modelName, apiKey }),
+      maxBuffer: 2 * 1024 * 1024,
+    })
+
+    const report = JSON.parse(stdout)
+
+    assert.equal(report.runtimeAlias, 'configured-runtime')
+    assert.equal(report.defaultApproval.runtimeAlias, 'configured-runtime')
+    assert.equal(report.sensitiveScan.ok, true)
+    assert.equal(report.defaultApproval.approved, true)
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(modelName)))
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(apiKey)))
+    assert.doesNotMatch(stdout, /"outputText"\s*:/)
   })
 
   it('redaction scan catches synthetic raw outputText, keys, bearer tokens, query keys, and local paths without printing values', async (t) => {
@@ -5889,8 +6095,8 @@ describe('llmwiki-agent-bridge', () => {
           {
             message: {
               content: isFailingRun
-                ? 'Repeated live run dropped one required citation [1](#citation-1).'
-                : 'Repeated live run covered both required citations [1](#citation-1) [2](#citation-2).',
+                ? localSingleSourceAnswer({ includeRuntimeProfilesCitation: false })
+                : localSingleSourceAnswer(),
             },
           },
         ],
@@ -5970,7 +6176,7 @@ describe('llmwiki-agent-bridge', () => {
           {
             finish_reason: 'length',
             message: {
-              content: 'Truncated output still lists both citations [1](#citation-1) [2](#citation-2).',
+              content: localSingleSourceAnswer(),
             },
           },
         ],
@@ -6047,7 +6253,7 @@ describe('llmwiki-agent-bridge', () => {
         choices: [
           {
             message: {
-              content: 'Output has the required citations but no finish reason [1](#citation-1) [2](#citation-2).',
+              content: localSingleSourceAnswer(),
             },
           },
         ],
@@ -6622,6 +6828,7 @@ describe('llmwiki-agent-bridge', () => {
     assert(files.has('scripts/export-openapi.mjs'))
     assert(files.has('scripts/benchmark-runtime-prompt.mjs'))
     assert(files.has('scripts/validate-runtime-prompt-live-safe.mjs'))
+    assert(files.has('scripts/e2e-runtime-prompt-production-approval.mjs'))
     assert(files.has('README.md'))
     assert(files.has('LICENSE'))
     assert(files.has('integrations/README.md'))
@@ -6644,6 +6851,17 @@ async function runRuntimePromptBenchmark(args, { env = {}, maxBuffer = 1024 * 10
 
 async function runRuntimePromptLiveSafe(args, { env = {}, maxBuffer = 1024 * 1024 } = {}) {
   return await execFileAsync(process.execPath, ['scripts/validate-runtime-prompt-live-safe.mjs', ...args], {
+    cwd: packageRoot,
+    env: {
+      ...process.env,
+      ...env,
+    },
+    maxBuffer,
+  })
+}
+
+async function runRuntimePromptProductionApproval(args, { env = {}, maxBuffer = 1024 * 1024 } = {}) {
+  return await execFileAsync(process.execPath, ['scripts/e2e-runtime-prompt-production-approval.mjs', ...args], {
     cwd: packageRoot,
     env: {
       ...process.env,
@@ -6708,6 +6926,57 @@ function strictEvidenceFidelityAnswer({
     privacyClaim,
     distortionClaims,
   ].filter(Boolean).join(' ')
+}
+
+function localSingleSourceAnswer({ includeRuntimeProfilesCitation = true } = {}) {
+  return [
+    'Expected claim row: Release readiness depends on local checks citation anchors graph summaries and explicit source limitations [1](#citation-1)',
+    includeRuntimeProfilesCitation
+      ? 'Expected claim row: Runtime profiles share the same evidence contract [2](#citation-2)'
+      : 'Expected claim row: Runtime profiles share the same evidence contract',
+    'Release readiness uses local checks, citation anchors, graph summaries, and source limitations [1](#citation-1).',
+    includeRuntimeProfilesCitation
+      ? 'Runtime profiles preserve the evidence contract for this local query [2](#citation-2).'
+      : 'Runtime profiles preserve the evidence contract for this local query.',
+  ].join('\n')
+}
+
+function globalMultiSourceAnswer() {
+  return [
+    'Expected claim row: Bridge Client Path uses source fan-out evidence bundling runtime synthesis and one normalized artifact [1](#citation-1)',
+    'Expected claim row: Generic Runtime Profile fits local OpenAI-compatible runtimes [3](#citation-3)',
+    'Expected claim row: Evidence-only Mode gathers citations graph context trace steps and source bundle metadata without calling a runtime [4](#citation-4)',
+    'Bridge Client Path includes source fan-out for release-risk analysis [1](#citation-1).',
+    'Direct Client Path remains a separate comparison point [2](#citation-2).',
+    'Generic Runtime Profile supports local OpenAI-compatible runtimes [3](#citation-3).',
+    'Evidence-only Mode works without calling a runtime [4](#citation-4).',
+  ].join('\n')
+}
+
+function insufficientEvidenceAnswer() {
+  return [
+    'Expected claim row: Insufficient evidence for production default approval [1](#citation-1)',
+    'Expected claim row: Private runtime endpoint is not provided [1](#citation-1)',
+    'Insufficient evidence means production default approval is not established [1](#citation-1).',
+    'The private runtime endpoint is not provided in this fixture [1](#citation-1).',
+  ].join('\n')
+}
+
+function graphDenseAnswer() {
+  return [
+    'TOON evaluation cites TOON and compact JSON comparison evidence [1](#citation-1).',
+    'Graph fixture matrix covers linear chains, dense cross-references, and nested graph records [2](#citation-2).',
+    'Runtime prompt docs describe codecs as ephemeral LLM input renderers [3](#citation-3).',
+    'Codec fallback policy guards citation gates before rollout [4](#citation-4).',
+  ].join('\n')
+}
+
+function productionApprovalAnswerForPrompt(userPrompt) {
+  if (userPrompt.includes('Release readiness depends on local checks')) return localSingleSourceAnswer()
+  if (userPrompt.includes('Bridge Client Path uses source fan-out')) return globalMultiSourceAnswer()
+  if (userPrompt.includes('Insufficient evidence for production default approval')) return insufficientEvidenceAnswer()
+  if (userPrompt.includes('Promotion Decision requires Citation Fidelity Gate')) return strictEvidenceFidelityRowAnswer()
+  return linearChainRowAnswer()
 }
 
 function linearChainRowAnswer({ includeValidation = true } = {}) {

@@ -25,6 +25,7 @@ quality gates pass.
 | Failure taxonomy | Live reports include `failureCodes` and aggregate `failureCodeCounts` | Required for failure attribution |
 | Safe live diagnostics | Live reports summarize failure codes, missing configured oracle terms/relations, missing expected claim phrases, citation coverage, invalid exact anchor tokens/counts, finish reason, truncation, and output length without raw model text, offsets, surrounding context, or private runtime/local values | Required for prompt-contract versus renderer-loss isolation |
 | Private-safe live wrapper | Tracked wrapper captures raw child stdout/stderr only in OS temp, enforces an overall timeout, scans raw and sanitized output for sensitive patterns, and prints sanitized aggregate JSON only | Required before copying live aggregate metrics into docs |
+| Production default approval e2e | Tracked e2e wrapper checks a named default renderer against production approval fixture/query classes using sanitized live-safe output only | Required before treating any renderer as production-default approved |
 | Benchmark-only strict answer format | Live user prompts provide mandatory completeness instructions, the allowed exact citation-anchor set, `Expected claim row` skeletons, supplemental required-anchor rows, and strict oracle coverage rows | Required when strict expected citation mappings leave top-level citation anchors or strict oracle items otherwise unforced |
 | Live recommendation | `live.recommendation` ranks renderers quality-first | Size can recommend a renderer only after strict live pass rate is 100% and strict quality failures are zero |
 | Representative strict fixture coverage | Built-in strict fixtures include multi-hop citation mappings, every-occurrence repeated claims, nearby-wrong-anchor failures, unsupported/contradictory claims, and privacy/source-path claims | Required before using live recommendations as promotion evidence |
@@ -178,6 +179,58 @@ pass-through benchmark arguments. `loop17-smoke` runs the two strict fixtures
 with compact JSON once; `loop17-full` runs the same fixtures across compact
 JSON, markdown summary, and TOON three times; `none` forces `--live` without
 other defaults.
+
+For production-default approval, use the tracked e2e wrapper rather than
+reading `live.recommendation` alone:
+
+```sh
+npm run e2e:runtime-prompt:production-approval -- --profile prod-approval-smoke --runtime-alias configured-runtime --model-class configured-model-class --overall-timeout-ms 300000
+```
+
+`prod-approval-smoke` runs one private-safe pass for `compact-json` across the
+production approval fixture set. `prod-approval-candidate` runs three repeated
+passes across lossless candidates `compact-json` and `toon`. `prod-approval-full`
+runs three repeated passes across `compact-json`, `markdown-summary`, `toon`,
+and `pretty-json` so lossy/debug controls remain visible without silently
+becoming defaults. Pass-through benchmark options can still override fixture,
+renderer, token, temperature, and timeout settings for calibration.
+
+The e2e wrapper emits
+`llmwiki-agent-bridge.runtime-prompt-production-approval.v1` with a
+`defaultApproval` object for a named renderer, defaulting to `compact-json`.
+Approval is fail-closed and independent from "smallest eligible renderer"
+ranking. It requires:
+
+- live-safe child status and JSON parsing to pass;
+- sensitive scan status ok with zero matches;
+- live validation status ok;
+- required fixture ids present: `single-source`, `multi-source`,
+  `insufficient-evidence`, `graph-linear-chain`, and
+  `graph-strict-evidence-fidelity`;
+- required fixture classes present: local single-source, global multi-source,
+  insufficient evidence, graph relation, and strict evidence fidelity;
+- required query classes present: local query, global query,
+  insufficient-evidence query, and graph query;
+- the configured safe `modelClass` for this invocation to satisfy the required
+  model-class check;
+- the named default renderer to have 100% pass rate, zero failed runs, empty
+  failure-code counts, no truncation, no invalid citation anchors, 100%
+  required-anchor coverage, zero strict oracle failures, zero strict
+  unsupported/contradictory/distortion hits, 100% required oracle item
+  coverage, and 100% strict expected-citation mapping and occurrence coverage.
+
+The e2e output records only a safe runtime alias supplied by the operator. It
+also records only a safe model-class label supplied by the operator. Multi-model
+approval means running the e2e once per required `runtimeAlias`/`modelClass`
+cell and comparing sanitized outputs; a single invocation is only approval for
+that safe model class. The e2e script scans its own final JSON output and must
+not record configured endpoint values, configured model names, keys, raw
+answers, raw prompts, temp paths, or local absolute paths.
+
+LLMWiki ingest guidance: ingest this document plus the
+`specs/runtime-prompt-projection-quality/` files after review. Do not ingest
+`.llmwiki-work`, raw live reports, wrapper temp files, endpoint/model/key
+values, raw runtime answers, or local private path exports.
 
 Raw child stdout/stderr stay in OS temp files and their paths are not printed.
 The wrapper scans those raw files plus its own emitted summary for raw
@@ -798,3 +851,35 @@ These metrics can evolve as fixtures improve:
   acceptance for the configured private runtime and the two strict graph
   fixtures only; it is not broad production default approval across all
   renderers, models, or fixture classes.
+
+### Loop 20: Production default approval e2e matrix
+
+- Research/analysis: Loop 19 was scoped to `compact-json` on one configured
+  private runtime and two strict graph fixtures. Production default approval
+  needs a separate gate that covers local queries, global multi-source
+  queries, insufficient-evidence behavior, graph relations, strict repeated
+  citation/privacy fixtures, renderer candidates, and safe runtime aliases.
+- TDD target: add deterministic mock e2e coverage proving the default renderer
+  can be approved across the production fixture/query class matrix and proving
+  approval is blocked when an otherwise good answer invents an invalid exact
+  citation anchor.
+- Quality gates added: fixtures now report `fixtureClass` and `queryClass`.
+  `single-source` and `multi-source` have strict local/global query oracles
+  and expected citation mappings. A new `insufficient-evidence` fixture checks
+  that the runtime states the approval gap instead of inventing production
+  default or private endpoint facts.
+- Tooling added: `scripts/e2e-runtime-prompt-production-approval.mjs` wraps
+  the private-safe live wrapper and emits a sanitized `defaultApproval`
+  decision for a named renderer. New live-safe profiles `prod-approval-smoke`,
+  `prod-approval-candidate`, and `prod-approval-full` provide reusable
+  fixture/renderer matrices.
+- Regression coverage: mock tests cover the passing production approval e2e
+  path, invalid-anchor approval blocking, local/global/insufficient fixture
+  classes, no-raw-output privacy behavior, and continued package inclusion.
+- Retrospective: this still does not change the production bridge runtime
+  contract, public API, source policy, security defaults, or renderer default.
+  It creates the reusable approval gate required before making such a
+  production-default claim. Multi-model approval still requires one sanitized
+  e2e run per required safe `runtimeAlias`/`modelClass` cell. Live results
+  copied into docs must come only from sanitized e2e/wrapper summaries and must
+  use safe runtime aliases and safe model-class labels.

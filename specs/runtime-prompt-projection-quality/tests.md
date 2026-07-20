@@ -238,6 +238,38 @@
   local absolute paths.
 - The private-safe live wrapper sanitized failure summary preserves invalid
   exact anchor token/count aggregates while sensitive scan status remains ok.
+- Built-in benchmark fixtures expose safe `fixtureClass` and `queryClass`
+  metadata in offline and live reports.
+- The production approval fixture matrix includes local single-source,
+  global multi-source, insufficient-evidence, graph relation, and strict
+  evidence-fidelity fixture classes.
+- `single-source` local-query and `multi-source` global-query fixtures have
+  strict answer oracles and expected citation mappings so live approval checks
+  validate content rather than citation-anchor presence only.
+- `insufficient-evidence` requires an answer that states the production
+  default approval gap and absence of private runtime endpoint evidence instead
+  of inventing a renderer approval or endpoint value.
+- The private-safe live wrapper supports `prod-approval-smoke`,
+  `prod-approval-candidate`, and `prod-approval-full` profiles while keeping
+  raw child stdout/stderr in OS temp and emitting sanitized aggregate JSON.
+- The production approval e2e script emits
+  `llmwiki-agent-bridge.runtime-prompt-production-approval.v1` and a
+  `defaultApproval` decision for a named renderer.
+- `defaultApproval` passes only when required fixture ids, fixture classes, and
+  query classes are present; the invocation's safe model class satisfies the
+  required model-class check; the named default renderer has 100% pass rate,
+  empty failure-code counts, no truncation, no invalid citation anchors, 100%
+  required-anchor coverage, zero strict answer-oracle failures, zero strict
+  unsupported/contradictory/distortion hits, 100% required oracle item
+  coverage, and 100% strict expected-citation mapping and occurrence coverage.
+- The production approval e2e script blocks approval when an otherwise valid
+  answer includes an invalid exact citation anchor.
+- Production approval e2e summaries do not expose raw `"outputText"`,
+  endpoint values, configured model names, keys, temp paths, raw prompts, raw
+  answers, or local absolute paths.
+- Production approval e2e summaries sanitize unsafe runtime aliases, expose
+  only safe model-class labels, and scan their final JSON output before
+  approval can pass.
 
 ## Commands
 
@@ -254,6 +286,12 @@ node scripts/benchmark-runtime-prompt.mjs --live --fixture graph-linear-chain,gr
 npm run eval:runtime-prompt:live:safe -- --profile loop17-smoke --overall-timeout-ms 180000
 # Optional repeated renderer profile when the runtime is stable enough:
 npm run eval:runtime-prompt:live:safe -- --profile loop17-full --overall-timeout-ms 420000
+# Production default approval e2e. Use only sanitized output in docs/wiki:
+npm run e2e:runtime-prompt:production-approval -- --profile prod-approval-smoke --runtime-alias configured-runtime --model-class configured-model-class --overall-timeout-ms 300000
+# Candidate/full profiles for default-change or lossy-renderer approval work:
+npm run e2e:runtime-prompt:production-approval -- --profile prod-approval-candidate --runtime-alias configured-runtime --model-class configured-model-class --min-runs 3 --overall-timeout-ms 600000
+npm run e2e:runtime-prompt:production-approval -- --profile prod-approval-full --runtime-alias configured-runtime --model-class configured-model-class --min-runs 3 --overall-timeout-ms 900000
+npm test -- --test-name-pattern "production approval|local query|global query|insufficient evidence|invalid anchor"
 npm test -- --test-name-pattern "offline.*size-only|runtime prompt rendering offline|quality-first|recommendation"
 npm test -- --test-name-pattern "strict claim checklist|claim-preserving|safe diagnostic|graph-strict-evidence-fidelity|runtime prompt rendering offline"
 npm test -- --test-name-pattern "oracle coverage|strict answer format|strict claim checklist|claim-preserving|safe diagnostic|graph-strict-evidence-fidelity|expected citation mapping|runtime prompt rendering offline"

@@ -192,7 +192,7 @@ function parseArgs(argv) {
 
 function helpText() {
   return [
-    'Usage: node scripts/benchmark-runtime-prompt.mjs [--fixture single-source,multi-source] [--renderer compact-json,markdown-summary,toon] [--graphify-graph graphify-out/graph.json] [--graphify-query "..."] [--live] [--live-runs N] [--no-validate]',
+    'Usage: node scripts/benchmark-runtime-prompt.mjs [--fixture single-source,multi-source,insufficient-evidence] [--renderer compact-json,markdown-summary,toon] [--graphify-graph graphify-out/graph.json] [--graphify-query "..."] [--live] [--live-runs N] [--no-validate]',
     '',
     'Builds local synthetic LLMWiki runtime evidence bundles and compares prompt',
     'renderers. Offline mode is the default and performs no provider, network, or',
@@ -312,6 +312,8 @@ function benchmarkFixture(fixture, renderers) {
   return {
     id: fixture.id,
     description: fixture.description,
+    fixtureClass: fixture.fixtureClass || 'general',
+    queryClass: fixture.queryClass || 'general',
     sourceCount: fixture.evidenceBundle.sources.length,
     citationCount: fixture.evidenceBundle.citations.length,
     sourceFailureCount: fixture.evidenceBundle.sourceFailures.length,
@@ -1197,6 +1199,8 @@ async function evaluateLiveRuntime(fixtures, renderers, args) {
     }
     fixtureReports.push({
       id: fixture.id,
+      fixtureClass: fixture.fixtureClass || 'general',
+      queryClass: fixture.queryClass || 'general',
       citationCount: fixture.evidenceBundle.citationCount,
       renderers: rendererReports,
     })
@@ -3547,7 +3551,43 @@ function buildEvidenceBundleFixtures() {
     {
       id: 'single-source',
       description: 'One successful synthetic llmwiki-http source with citations, graph summary, corpus summary, and an explicit empty sourceFailures array.',
+      fixtureClass: 'local-single-source',
+      queryClass: 'local-query',
       query: 'What release-readiness evidence should the runtime cite?',
+      answerOracle: {
+        schema: 'llmwiki-agent-bridge.answer-oracle.v1',
+        gate: 'strict',
+        requiredTerms: [
+          'Release readiness',
+          'Runtime profiles',
+          'citation anchors',
+          'graph summaries',
+          'source limitations',
+        ],
+        forbiddenTerms: [
+          'production default is approved without live validation',
+          'raw private path',
+        ],
+        unsupportedClaims: [
+          { allOf: ['Release readiness', 'requires raw private paths'] },
+          { allOf: ['Runtime profiles', 'change the evidence contract'] },
+        ],
+        contradictoryClaims: [
+          { allOf: ['Runtime profiles', 'do not share', 'evidence contract'] },
+        ],
+        expectedCitationMappings: [
+          {
+            claim: 'Release readiness depends on local checks citation anchors graph summaries and explicit source limitations',
+            expectedCitationIds: ['release-wiki:release-readiness'],
+            windowChars: 140,
+          },
+          {
+            claim: 'Runtime profiles share the same evidence contract',
+            expectedCitationIds: ['release-wiki:runtime-profiles'],
+            windowChars: 100,
+          },
+        ],
+      },
       evidenceBundle: {
         schema: 'llmwiki-agent-bridge.answer-evidence.v1',
         runtimeContract: {
@@ -3655,7 +3695,59 @@ function buildEvidenceBundleFixtures() {
     {
       id: 'multi-source',
       description: 'Two successful synthetic sources plus one redacted source failure, with citation refs, source summaries, and merged graph/corpus summaries.',
+      fixtureClass: 'global-multi-source',
+      queryClass: 'global-query',
       query: 'How do client paths and runtime profiles affect bridge release risk?',
+      answerOracle: {
+        schema: 'llmwiki-agent-bridge.answer-oracle.v1',
+        gate: 'strict',
+        requiredTerms: [
+          'Bridge Client Path',
+          'Generic Runtime Profile',
+          'Evidence-only Mode',
+          'source fan-out',
+        ],
+        requiredRelations: [
+          {
+            from: 'Bridge Client Path',
+            relation: { anyOf: ['uses', 'includes', 'provides'] },
+            to: 'source fan-out',
+          },
+          {
+            from: 'Evidence-only Mode',
+            relation: { anyOf: ['without calling', 'skips'] },
+            to: 'runtime',
+          },
+        ],
+        forbiddenTerms: [
+          'source failures are hidden',
+          'citations are optional',
+        ],
+        unsupportedClaims: [
+          { allOf: ['Archive Wiki', 'was successfully queried'] },
+          { allOf: ['Generic Runtime Profile', 'requires Hermes'] },
+        ],
+        contradictoryClaims: [
+          { allOf: ['Evidence-only Mode', 'calls a runtime'] },
+        ],
+        expectedCitationMappings: [
+          {
+            claim: 'Bridge Client Path uses source fan-out evidence bundling runtime synthesis and one normalized artifact',
+            expectedCitationIds: ['client-wiki:bridge-path'],
+            windowChars: 140,
+          },
+          {
+            claim: 'Generic Runtime Profile fits local OpenAI-compatible runtimes',
+            expectedCitationIds: ['runtime-wiki:generic-profile'],
+            windowChars: 110,
+          },
+          {
+            claim: 'Evidence-only Mode gathers citations graph context trace steps and source bundle metadata without calling a runtime',
+            expectedCitationIds: ['runtime-wiki:evidence-only'],
+            windowChars: 160,
+          },
+        ],
+      },
       evidenceBundle: {
         schema: 'llmwiki-agent-bridge.answer-evidence.v1',
         runtimeContract: {
@@ -3837,9 +3929,136 @@ function buildEvidenceBundleFixtures() {
         citationCount: 4,
       },
     },
+    {
+      id: 'insufficient-evidence',
+      description: 'One synthetic source that explicitly lacks production-default approval and private-runtime endpoint evidence.',
+      fixtureClass: 'insufficient-evidence',
+      queryClass: 'insufficient-evidence-query',
+      query: 'Which runtime prompt renderer is approved as the production default, and which private runtime endpoint approved it?',
+      answerOracle: {
+        schema: 'llmwiki-agent-bridge.answer-oracle.v1',
+        gate: 'strict',
+        requiredTerms: [
+          'Insufficient evidence',
+          'production default approval',
+          'private runtime endpoint',
+          'not provided',
+        ],
+        forbiddenTerms: [
+          'compact-json is approved for production default',
+          'toon is approved for production default',
+          'markdown-summary is approved for production default',
+          'private runtime endpoint is http',
+          'private runtime endpoint is https',
+        ],
+        unsupportedClaims: [
+          { allOf: ['compact-json', 'approved for production default'] },
+          { allOf: ['toon', 'approved for production default'] },
+          { allOf: ['markdown-summary', 'approved for production default'] },
+        ],
+        contradictoryClaims: [
+          { allOf: ['private runtime endpoint value', 'is provided'] },
+        ],
+        expectedCitationMappings: [
+          {
+            claim: 'Insufficient evidence for production default approval',
+            expectedCitationIds: ['approval-gap-wiki:approval-gap'],
+            windowChars: 100,
+          },
+          {
+            claim: 'Private runtime endpoint is not provided',
+            expectedCitationIds: ['approval-gap-wiki:approval-gap'],
+            windowChars: 100,
+          },
+        ],
+      },
+      evidenceBundle: {
+        schema: 'llmwiki-agent-bridge.answer-evidence.v1',
+        runtimeContract: {
+          citations: 'Use the top-level citations array as the only citation anchor source.',
+          graph: 'Graph and source bundle details are returned in the bridge artifact and source tools, not in this answer prompt.',
+        },
+        citationDigest: [
+          {
+            id: 'approval-gap-wiki:approval-gap',
+            title: 'Production Approval Evidence Gap',
+            path: 'docs/runtime-prompt/production-approval-gap.md',
+            snippet: 'This fixture contains no production default approval, no private runtime endpoint, and no model-specific approval record.',
+            sourceRefs: [{ sourceId: 'approval-gap-wiki', pageId: 'approval-gap' }],
+          },
+        ],
+        citations: [
+          {
+            id: 'approval-gap-wiki:approval-gap',
+            sourceId: 'approval-gap-wiki',
+            pageId: 'approval-gap',
+            title: 'Production Approval Evidence Gap',
+            path: 'docs/runtime-prompt/production-approval-gap.md',
+            score: 0.93,
+            snippet: 'This fixture contains no production default approval, no private runtime endpoint, and no model-specific approval record.',
+            sourceRefs: [{ sourceId: 'approval-gap-wiki', pageId: 'approval-gap' }],
+          },
+        ],
+        sources: [
+          {
+            id: 'approval-gap-wiki',
+            name: 'Synthetic Approval Gap Wiki',
+            protocol: 'llmwiki-http',
+            description: 'Synthetic insufficient-evidence source for fail-closed runtime prompt approval checks.',
+            wikiTitle: 'Synthetic Approval Gap Wiki',
+            adapter: 'markdown',
+            implementation: 'synthetic-fixture',
+            pageCount: 1,
+            approvedPageCount: 1,
+            orientation: [
+              {
+                title: 'Production Approval Evidence Gap',
+                path: 'docs/runtime-prompt/production-approval-gap.md',
+                summary: 'The available evidence intentionally lacks production approval, endpoint, and model approval facts.',
+              },
+            ],
+            citationIndexes: [1],
+            citationCount: 1,
+            limitations: ['Synthetic insufficient-evidence fixture; absence of evidence is intentional.'],
+            graph: {
+              nodeCount: 0,
+              edgeCount: 0,
+            },
+          },
+        ],
+        sourceFailures: [],
+        mergedGraphSummary: {
+          nodeCount: 0,
+          edgeCount: 0,
+          corpusPageCount: 1,
+          corpusApprovedPageCount: 1,
+        },
+        mergedCorpusSummary: {
+          sourceCount: 1,
+          pageCount: 1,
+          approvedPageCount: 1,
+          sources: [
+            {
+              id: 'approval-gap-wiki',
+              name: 'Synthetic Approval Gap Wiki',
+              protocol: 'llmwiki-http',
+              description: 'Synthetic insufficient-evidence source for fail-closed runtime prompt approval checks.',
+              wikiTitle: 'Synthetic Approval Gap Wiki',
+              adapter: 'markdown',
+              implementation: 'synthetic-fixture',
+              pageCount: 1,
+              approvedPageCount: 1,
+            },
+          ],
+        },
+        citationCount: 1,
+      },
+    },
     graphFixture({
       id: 'graph-linear-chain',
       description: 'Graph-shaped evidence with a linear decision chain from problem to implementation to validation.',
+      fixtureClass: 'graph-relation',
+      queryClass: 'graph-query',
       query: 'Which implementation and validation steps follow from the compact runtime prompt decision?',
       sourceId: 'graph-linear',
       sourceName: 'Synthetic Linear Graph Wiki',
@@ -3910,6 +4129,8 @@ function buildEvidenceBundleFixtures() {
     graphFixture({
       id: 'graph-strict-evidence-fidelity',
       description: 'Strict graph-shaped evidence fixture covering citation fidelity, repeated citation, and privacy-redaction gates.',
+      fixtureClass: 'strict-evidence-fidelity',
+      queryClass: 'graph-query',
       query: 'Which promotion, citation-fidelity, repeated-citation, and privacy-redaction gates must be cited before recommending a runtime prompt renderer?',
       sourceId: 'graph-strict-fidelity',
       sourceName: 'Synthetic Strict Evidence Fidelity Wiki',
@@ -4015,6 +4236,8 @@ function buildEvidenceBundleFixtures() {
     graphFixture({
       id: 'graph-dense-crossrefs',
       description: 'Dense CKG-style cross-reference fixture with repeated edge rows across decisions, specs, tests, and docs.',
+      fixtureClass: 'graph-dense-crossrefs',
+      queryClass: 'graph-query',
       query: 'Which specs and tests should be cited when deciding whether TOON can replace compact JSON?',
       sourceId: 'graph-dense',
       sourceName: 'Synthetic Dense Graph Wiki',
@@ -4050,6 +4273,8 @@ function buildEvidenceBundleFixtures() {
     graphFixture({
       id: 'graph-mixed-nested-metadata',
       description: 'Mixed graph fixture with uniform graph rows plus nested metadata to expose TOON fallback and overhead behavior.',
+      fixtureClass: 'graph-mixed-metadata',
+      queryClass: 'graph-query',
       query: 'What risks should block a prompt codec rollout when graph metadata becomes irregular?',
       sourceId: 'graph-mixed',
       sourceName: 'Synthetic Mixed Metadata Graph Wiki',
@@ -4089,7 +4314,7 @@ function buildEvidenceBundleFixtures() {
   ]
 }
 
-function graphFixture({ id, description, query, sourceId, sourceName, citationPrefix, citations, graphNodes, graphEdges, limitations, extraMetadata = undefined, answerOracle = undefined }) {
+function graphFixture({ id, description, fixtureClass = 'graph', queryClass = 'graph-query', query, sourceId, sourceName, citationPrefix, citations, graphNodes, graphEdges, limitations, extraMetadata = undefined, answerOracle = undefined }) {
   const normalizedCitations = citations.map(([slug, title, path, snippet], index) => ({
     id: `${sourceId}:${citationPrefix}-${slug}`,
     sourceId,
@@ -4119,6 +4344,8 @@ function graphFixture({ id, description, query, sourceId, sourceName, citationPr
   return {
     id,
     description,
+    fixtureClass,
+    queryClass,
     query,
     ...(answerOracle ? { answerOracle } : {}),
     evidenceBundle: {

@@ -183,3 +183,31 @@
 - [x] Extend the Loop 19 private-safe live wrapper sanitized summary to retain
       invalid exact anchor token/count aggregates while keeping sensitive scans
       clean.
+- [x] Add Loop 20 fixture/query class metadata to benchmark fixture reports and
+      sanitized live summaries.
+- [x] Strengthen Loop 20 `single-source` local-query and `multi-source`
+      global-query fixtures with strict answer oracles and expected citation
+      mappings.
+- [x] Add Loop 20 `insufficient-evidence` fixture requiring the runtime to
+      state approval/endpoint evidence gaps instead of inventing production
+      default approval facts.
+- [x] Add Loop 20 private-safe live wrapper profiles
+      `prod-approval-smoke`, `prod-approval-candidate`, and
+      `prod-approval-full`.
+- [x] Add Loop 20 reusable production approval e2e script
+      `scripts/e2e-runtime-prompt-production-approval.mjs` and npm entry
+      `e2e:runtime-prompt:production-approval`.
+- [x] Add Loop 20 safe runtime-alias and model-class metadata to the e2e
+      approval output, with unsafe aliases sanitized before final output.
+- [x] Add Loop 20 final e2e JSON sensitive-output scanning before
+      `defaultApproval` can pass.
+- [x] Add Loop 20 deterministic mock e2e coverage proving `compact-json`
+      default approval passes across local, global, insufficient-evidence, and
+      graph fixture/query classes.
+- [x] Add Loop 20 deterministic mock e2e coverage proving default approval is
+      blocked by invalid exact citation anchors.
+- [x] Add Loop 20 deterministic mock e2e coverage proving unsafe runtime
+      aliases are not printed in the final sanitized output.
+- [x] Document Loop 20 LLMWiki ingest candidates and explicitly exclude raw
+      live artifacts, endpoint/model/key values, temp paths, raw answers, and
+      private local path exports.

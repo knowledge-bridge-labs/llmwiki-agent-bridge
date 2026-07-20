@@ -11,6 +11,7 @@ const BENCHMARK_SCRIPT = 'scripts/benchmark-runtime-prompt.mjs'
 const DEFAULT_OVERALL_TIMEOUT_MS = 180_000
 const SAFE_SUMMARY_SCHEMA = 'llmwiki-agent-bridge.runtime-prompt-live-safe.v1'
 const LIVE_SAFE_TIMEOUT_ENV = 'LLMWIKI_AGENT_BRIDGE_LIVE_SAFE_OVERALL_TIMEOUT_MS'
+const PRODUCTION_APPROVAL_FIXTURES = 'single-source,multi-source,insufficient-evidence,graph-linear-chain,graph-strict-evidence-fidelity'
 const SENSITIVE_ENV_NAMES = [
   'LLMWIKI_AGENT_BRIDGE_BASE_URL',
   'LLMWIKI_AGENT_BRIDGE_MODEL',
@@ -51,6 +52,42 @@ const PROFILES = {
     defaults: [
       ['--fixture', 'graph-linear-chain,graph-strict-evidence-fidelity'],
       ['--renderer', 'compact-json,markdown-summary,toon'],
+      ['--live-runs', '3'],
+      ['--temperature', '0.2'],
+      ['--max-tokens', '768'],
+      ['--timeout-ms', '120000'],
+    ],
+  },
+  'prod-approval-smoke': {
+    id: 'prod-approval-smoke',
+    description: 'Private-safe one-run production default approval smoke across local, global, insufficient-evidence, and strict graph fixture classes.',
+    defaults: [
+      ['--fixture', PRODUCTION_APPROVAL_FIXTURES],
+      ['--renderer', 'compact-json'],
+      ['--live-runs', '1'],
+      ['--temperature', '0.2'],
+      ['--max-tokens', '768'],
+      ['--timeout-ms', '120000'],
+    ],
+  },
+  'prod-approval-candidate': {
+    id: 'prod-approval-candidate',
+    description: 'Private-safe repeated production default approval candidate profile for lossless renderer candidates.',
+    defaults: [
+      ['--fixture', PRODUCTION_APPROVAL_FIXTURES],
+      ['--renderer', 'compact-json,toon'],
+      ['--live-runs', '3'],
+      ['--temperature', '0.2'],
+      ['--max-tokens', '768'],
+      ['--timeout-ms', '120000'],
+    ],
+  },
+  'prod-approval-full': {
+    id: 'prod-approval-full',
+    description: 'Private-safe repeated production default approval profile across production candidates plus lossy/debug controls.',
+    defaults: [
+      ['--fixture', PRODUCTION_APPROVAL_FIXTURES],
+      ['--renderer', 'compact-json,markdown-summary,toon,pretty-json'],
       ['--live-runs', '3'],
       ['--temperature', '0.2'],
       ['--max-tokens', '768'],
@@ -166,7 +203,7 @@ function helpText() {
     'sensitive patterns, and are never printed with paths or matched values.',
     '',
     'Wrapper options:',
-    '  --profile <id>              Defaults profile: loop17-smoke, loop17-full, or none.',
+    `  --profile <id>              Defaults profile: ${Object.keys(PROFILES).join(', ')}.`,
     `                              Default: loop17-smoke.`,
     '  --overall-timeout-ms <ms>   Wall-clock timeout for the entire benchmark child.',
     `                              Default: ${DEFAULT_OVERALL_TIMEOUT_MS}.`,
@@ -427,8 +464,22 @@ function sanitizeBenchmarkLiveReport(report) {
       failureCount: Array.isArray(live.validation?.failures) ? live.validation.failures.length : 0,
     },
     recommendation: sanitizeRecommendation(live.recommendation),
+    fixtureCoverage: sanitizeFixtureCoverage(live.fixtures),
     totals: sanitizeLiveTotals(live.totals, rendererSummaries),
     renderers: rendererSummaries,
+  }
+}
+
+function sanitizeFixtureCoverage(fixtures = []) {
+  const fixtureList = Array.isArray(fixtures) ? fixtures : []
+  const fixtureIds = fixtureList.map((fixture) => safeNameOrNull(fixture?.id)).filter(Boolean)
+  const fixtureClasses = [...new Set(fixtureList.map((fixture) => safeNameOrNull(fixture?.fixtureClass)).filter(Boolean))].sort()
+  const queryClasses = [...new Set(fixtureList.map((fixture) => safeNameOrNull(fixture?.queryClass)).filter(Boolean))].sort()
+  return {
+    fixtureCount: fixtureList.length,
+    fixtureIds,
+    fixtureClasses,
+    queryClasses,
   }
 }
 

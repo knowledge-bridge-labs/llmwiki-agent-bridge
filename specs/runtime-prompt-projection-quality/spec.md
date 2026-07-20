@@ -232,3 +232,25 @@ quality gates.
   offsets, surrounding text, private endpoints, configured model names, keys,
   temp paths, or local absolute paths. Invalid anchors still fail strict live
   validation with `citation_anchor_invalid`.
+- `REQ-037`: Built-in benchmark fixtures include safe `fixtureClass` and
+  `queryClass` metadata so approval tooling can verify coverage across local
+  single-source queries, global multi-source queries, insufficient-evidence
+  queries, graph relation queries, and strict evidence-fidelity fixtures
+  without inspecting raw prompt or model output.
+- `REQ-038`: A tracked production-default approval e2e script invokes the
+  private-safe live wrapper and emits only sanitized aggregate JSON with a
+  `defaultApproval` decision for a named renderer. Approval is independent
+  from the quality-first "smallest eligible renderer" recommendation and fails
+  closed unless the named renderer passes all configured fixture/query classes
+  and the invocation's safe model class with 100% pass rate, empty
+  failure-code counts, no truncation, no invalid citation anchors, 100%
+  required-anchor coverage, zero strict answer-oracle failures, zero strict
+  unsupported/contradictory/distortion hits, 100% required oracle item
+  coverage, and 100% strict expected-citation mapping and occurrence coverage.
+- `REQ-039`: The private-safe live wrapper provides reusable production
+  approval profiles for smoke, lossless-candidate, and full renderer-matrix
+  validation. Profiles may record safe fixture, renderer, and runtime-alias
+  identifiers only; the e2e script may record safe model-class labels only.
+  The e2e script scans its final JSON output and must not record private
+  endpoint values, configured model names, keys, raw runtime answers, raw
+  prompts, temp paths, or local absolute paths.
