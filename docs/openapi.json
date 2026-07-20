@@ -1987,12 +1987,23 @@
               "not_selected",
               "status_not_ready",
               "missing_url",
-              "unsupported_protocol"
+              "unsupported_protocol",
+              "source_policy_blocked"
+            ]
+          },
+          "basis": {
+            "enum": [
+              "selection",
+              "last_known_status",
+              "descriptor",
+              "bridge_policy",
+              "last_known_status_bridge_policy"
             ]
           }
         },
         "required": [
-          "ready"
+          "ready",
+          "basis"
         ]
       },
       "Citation": {

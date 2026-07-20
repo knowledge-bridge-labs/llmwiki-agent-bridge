@@ -834,9 +834,12 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
         McpSourceReadiness: objectSchema({
           ready: { type: 'boolean' },
           reason: {
-            enum: ['not_selected', 'status_not_ready', 'missing_url', 'unsupported_protocol'],
+            enum: ['not_selected', 'status_not_ready', 'missing_url', 'unsupported_protocol', 'source_policy_blocked'],
           },
-        }, ['ready']),
+          basis: {
+            enum: ['selection', 'last_known_status', 'descriptor', 'bridge_policy', 'last_known_status_bridge_policy'],
+          },
+        }, ['ready', 'basis']),
         Citation: objectSchema({
           id: { type: 'string' },
           title: { type: 'string' },
@@ -1331,12 +1334,13 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
   const runContext = normalizedRunContext(runContextInput)
   const diagnostics = []
   const { query, sources, orchestrationMode, conversation } = parseA2aRunRequest(body, config)
-  const readySources = sources.filter(isSelectedReadySource)
+  const readySources = sources.filter((source) => isSelectedReadySource(source))
+  const policyReadySources = readySources.filter((source) => isSelectedReadySource(source, config))
   recordA2aAuditDetails(auditDetails, {
     orchestrationMode,
-    runtimeCalled: orchestrationMode !== 'evidence-only',
+    runtimeCalled: false,
     selectedSourceCount: sources.filter(isSelectedSource).length,
-    selectedReadySourceCount: readySources.length,
+    selectedReadySourceCount: policyReadySources.length,
     conversationMessageCount: conversation.messageCount,
     conversationHistoryLength: conversation.historyLength,
     conversationContextProvided: conversation.contextProvided,
@@ -1346,7 +1350,7 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
       id: 'bridge-plan',
       label: 'Plan source calls',
       status: 'done',
-      detail: `Prepared ${readySources.length} selected ready Knowledge Source(s) for ${orchestrationMode} answering.`,
+      detail: `Prepared ${readySources.length} selected last-known ready Knowledge Source(s) for ${orchestrationMode} answering.`,
     }),
   ]
   const sourceResults = []
@@ -1388,7 +1392,23 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
 
   let answer = ''
 
-  if (orchestrationMode === 'evidence-only') {
+  const allReadySourcesFailed = readySources.length > 0
+    && sourceFailures.length === readySources.length
+    && sourceResults.length === 0
+
+  if (orchestrationMode !== 'evidence-only' && allReadySourcesFailed) {
+    answer = sourceFailClosedAnswer({ sourceFailures })
+    steps.push(step({
+      id: 'bridge-source-fail-closed',
+      label: 'Fail closed without runtime',
+      status: 'done',
+      detail: `Skipped the runtime call because all ${sourceFailures.length} selected ready Knowledge Source(s) failed.`,
+    }))
+    recordA2aAuditDetails(auditDetails, {
+      runtimeCalled: false,
+      diagnosticCount: diagnostics.length,
+    })
+  } else if (orchestrationMode === 'evidence-only') {
     answer = evidenceOnlyAnswer({
       query,
       sourceResults,
@@ -1412,6 +1432,9 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
     })
     steps.push(completionsStep)
     const completionsStarted = performance.now()
+    recordA2aAuditDetails(auditDetails, {
+      runtimeCalled: true,
+    })
 
     try {
       answer = await callHermesChatCompletions({
@@ -1513,9 +1536,10 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
 async function gatherSourceEvidence(source, query, config) {
   const diagnostics = []
   const steps = []
+  const sourceLabel = safeSourceLabel(source)
   const toolStep = step({
     id: `tool-${safeId(source.id)}`,
-    label: `Call ${source.name}`,
+    label: `Call ${sourceLabel}`,
     status: 'running',
     connectionId: source.id,
     toolName: toolNameFor(source),
@@ -1541,13 +1565,16 @@ async function gatherSourceEvidence(source, query, config) {
     })
     return { source, result, sourceBundle, steps, diagnostics }
   } catch (error) {
-    config.logger.error(redactedLogLine(`source ${source.id} failed`, error))
+    config.logger.error(redactedLogLine(`source ${safeId(source.id)} failed`, error))
     const diagnostic = sourceQueryDiagnostic(source, error, config)
+    const retainedDiagnostics = diagnostics.filter((item) => !isSourceBundleDiagnosticForSource(item, source))
+    diagnostics.length = 0
+    diagnostics.push(...retainedDiagnostics)
     diagnostics.push(diagnostic)
     replaceStep(steps, {
       ...toolStep,
       status: 'error',
-      detail: `${source.name} could not be queried by the bridge.`,
+      detail: `${sourceLabel} could not be queried by the bridge.`,
       error: 'Source query failed.',
       diagnostic,
       latencyMs: Math.round(performance.now() - started),
@@ -1974,7 +2001,7 @@ async function runMcpSourceTool(name, args, config) {
     const readRequest = resolveMcpReadToolRequest(args, config)
     const page = await readKnowledgeSourcePage(readRequest.source, readRequest.upstreamPageId, includeDrafts, config)
     const readResult = {
-      source: knowledgeSourceToolSummary(readRequest.source),
+      source: knowledgeSourceToolSummary(readRequest.source, config),
       pageId: readRequest.pageId,
       page,
     }
@@ -1993,7 +2020,7 @@ async function runMcpSourceTool(name, args, config) {
     const limit = sourceToolLimit(args, DEFAULT_SOURCE_TOOL_LIMIT, MAX_SOURCE_TOOL_LIMIT)
     const payload = await contextKnowledgeSource(source, query, limit, includeDrafts, config)
     const context = {
-      source: knowledgeSourceToolSummary(source),
+      source: knowledgeSourceToolSummary(source, config),
       query,
       ...normalizeKnowledgeResult(source, payload),
     }
@@ -2009,7 +2036,7 @@ async function runMcpSourceTool(name, args, config) {
     if (!query) throw new HttpError(400, 'llmwiki_search arguments.query is required.', 'bad_request')
     const limit = sourceToolLimit(args, DEFAULT_SOURCE_TOOL_LIMIT, MAX_SOURCE_TOOL_LIMIT)
     const payload = await searchKnowledgeSource(source, query, limit, includeDrafts, config)
-    const search = normalizeSearchToolResult(source, query, payload)
+    const search = normalizeSearchToolResult(source, query, payload, config)
     return {
       summary: sourceSearchSummary(search),
       structuredKey: 'llmwiki_search',
@@ -2021,7 +2048,7 @@ async function runMcpSourceTool(name, args, config) {
     const limit = sourceToolLimit(args, DEFAULT_GRAPH_TOOL_LIMIT, MAX_GRAPH_TOOL_LIMIT)
     const payload = await graphKnowledgeSource(source, limit, includeDrafts, config)
     const graph = {
-      source: knowledgeSourceToolSummary(source),
+      source: knowledgeSourceToolSummary(source, config),
       limit,
       graph: namespaceGraph(normalizeGraphPayload(payload), source),
     }
@@ -2037,7 +2064,7 @@ async function runMcpSourceTool(name, args, config) {
     const diagnostics = []
     const sourceBundle = await readSourceBundle(source, config, steps, 'mcp-source-bundle', diagnostics)
     const result = {
-      source: knowledgeSourceToolSummary(source),
+      source: knowledgeSourceToolSummary(source, config),
       sourceBundle,
       steps,
       diagnostics,
@@ -2149,6 +2176,7 @@ async function runGraphNeighborsMcpSourceTool(args, config) {
       relations,
       limit,
       payload,
+      config,
     }))
   }
 
@@ -2177,7 +2205,7 @@ async function runGraphNeighborsMcpSourceTool(args, config) {
 
 function listMcpKnowledgeSources(args, config) {
   const sources = mcpToolSources(args, config)
-  const sourceSummaries = sources.map(knowledgeSourceToolSummary)
+  const sourceSummaries = sources.map((source) => knowledgeSourceToolSummary(source, config))
   const result = {
     sources: sourceSummaries,
     totalSourceCount: sourceSummaries.length,
@@ -2395,7 +2423,7 @@ function graphNeighborRelations(args) {
   ])
 }
 
-function knowledgeSourceToolSummary(source) {
+function knowledgeSourceToolSummary(source, config = null) {
   return removeUndefinedProperties({
     id: source.id,
     name: source.name,
@@ -2404,25 +2432,30 @@ function knowledgeSourceToolSummary(source) {
     status: source.status,
     selected: source.selected !== false,
     url: source.url,
-    readiness: knowledgeSourceReadiness(source),
+    readiness: knowledgeSourceReadiness(source, config),
     capabilities: source.capabilities,
     adapter: source.adapter,
     implementation: source.implementation,
   })
 }
 
-function knowledgeSourceReadiness(source) {
-  if (source.selected === false) return { ready: false, reason: 'not_selected' }
-  if (source.status !== 'ready') return { ready: false, reason: 'status_not_ready' }
-  if (!source.url) return { ready: false, reason: 'missing_url' }
-  if (!['llmwiki-http', 'mcp', 'a2a'].includes(source.protocol)) return { ready: false, reason: 'unsupported_protocol' }
-  return { ready: true }
+function knowledgeSourceReadiness(source, config = null) {
+  if (source.selected === false) return { ready: false, reason: 'not_selected', basis: 'selection' }
+  if (source.status !== 'ready') return { ready: false, reason: 'status_not_ready', basis: 'last_known_status' }
+  if (!source.url) return { ready: false, reason: 'missing_url', basis: 'descriptor' }
+  if (!['llmwiki-http', 'mcp', 'a2a'].includes(source.protocol)) {
+    return { ready: false, reason: 'unsupported_protocol', basis: 'descriptor' }
+  }
+  if (config && !isAllowedKnowledgeSourceFetchUrl(source.url, config)) {
+    return { ready: false, reason: 'source_policy_blocked', basis: 'bridge_policy' }
+  }
+  return { ready: true, basis: config ? 'last_known_status_bridge_policy' : 'last_known_status' }
 }
 
-function normalizeSearchToolResult(source, query, payload) {
+function normalizeSearchToolResult(source, query, payload, config = null) {
   const rawResults = searchResultsFromPayload(payload)
   return {
-    source: knowledgeSourceToolSummary(source),
+    source: knowledgeSourceToolSummary(source, config),
     query,
     results: rawResults.map((item, index) => normalizeSearchToolItem(source, item, index)),
   }
@@ -2442,11 +2475,11 @@ function normalizeSearchToolItem(source, item, index) {
   })
 }
 
-function normalizeGraphNeighborsToolResult(source, nodeIds, { depth, direction, relations, limit, payload }) {
+function normalizeGraphNeighborsToolResult(source, nodeIds, { depth, direction, relations, limit, payload, config = null }) {
   const graph = namespaceGraph(graphFromKnowledgePayload(payload) || emptyGraph(), source)
   const citations = normalizeCitations(source, payload)
   return {
-    source: knowledgeSourceToolSummary(source),
+    source: knowledgeSourceToolSummary(source, config),
     nodeIds: nodeIds.map((nodeId) => sourcePrefixedId(source, nodeId)),
     depth,
     direction,
@@ -2481,10 +2514,11 @@ function listSourcesSummary(sources) {
   return [
     `Registered Knowledge Sources: ${sources.length}.`,
     ...sources.map((source) => {
+      const sourceId = diagnosticSubject(source.id)
       const readiness = source.readiness?.ready
         ? 'ready'
         : `unavailable: ${source.readiness?.reason || 'unknown'}`
-      return `- ${source.id}: ${source.name} (${source.protocol}, ${source.status}, ${readiness}${source.selected === false ? ', not selected' : ''})`
+      return `- ${sourceId}: ${safeSourceLabel(source)} (${source.protocol}, ${source.status}, ${readiness}${source.selected === false ? ', not selected' : ''})`
     }),
   ].join('\n')
 }
@@ -2535,6 +2569,7 @@ async function readSourceBundle(source, config, steps, parentId, diagnostics = [
 
 async function readLlmwikiHttpSourceBundle(source, config, steps, parentId, diagnostics = []) {
   if (source.protocol !== 'llmwiki-http') return null
+  const sourceLabel = safeSourceLabel(source)
 
   const discoveryUrls = [
     { url: joinUrl(source.url, '/source-bundle'), label: 'source bundle' },
@@ -2544,7 +2579,7 @@ async function readLlmwikiHttpSourceBundle(source, config, steps, parentId, diag
 
   const manifestStep = step({
     id: `source-manifest-${safeId(source.id)}`,
-    label: `Read ${source.name} source bundle`,
+    label: `Read ${sourceLabel} source bundle`,
     status: 'running',
     connectionId: source.id,
     detail: 'Reading llmwiki-http source bundle discovery metadata.',
@@ -2571,7 +2606,7 @@ async function readLlmwikiHttpSourceBundle(source, config, steps, parentId, diag
       return sourceBundle
     } catch (error) {
       lastError = error
-      config.logger.warn(redactedLogLine(`source ${source.id} ${candidate.label} unavailable`, error))
+      config.logger.warn(redactedLogLine(`source ${safeId(source.id)} ${candidate.label} unavailable`, error))
     }
   }
 
@@ -2585,7 +2620,7 @@ async function readLlmwikiHttpSourceBundle(source, config, steps, parentId, diag
     diagnostic,
     latencyMs: Math.round(performance.now() - started),
   })
-  if (lastError) config.logger.warn(redactedLogLine(`source ${source.id} source bundle discovery unavailable`, lastError))
+  if (lastError) config.logger.warn(redactedLogLine(`source ${safeId(source.id)} source bundle discovery unavailable`, lastError))
   return null
 }
 
@@ -2600,7 +2635,7 @@ async function readMcpSourceBundle(source, config, steps, parentId, diagnostics 
 
   const manifestStep = step({
     id: `source-manifest-${safeId(source.id)}`,
-    label: `Read ${source.name} source bundle`,
+    label: `Read ${safeSourceLabel(source)} source bundle`,
     status: 'running',
     connectionId: source.id,
     detail: 'Reading MCP source bundle discovery metadata.',
@@ -2621,7 +2656,7 @@ async function readMcpSourceBundle(source, config, steps, parentId, diagnostics 
     })
     return sourceBundle
   } catch (error) {
-    config.logger.warn(redactedLogLine(`source ${source.id} MCP source bundle unavailable`, error))
+    config.logger.warn(redactedLogLine(`source ${safeId(source.id)} MCP source bundle unavailable`, error))
     const diagnostic = sourceBundleDiagnostic(source, error, config)
     diagnostics.push(diagnostic)
     replaceStep(steps, {
@@ -2669,7 +2704,7 @@ async function queryLlmwikiHttpSource(source, query, config) {
       }, 'llmwiki-http search', config)
       searchResults.push(...searchResultsFromPayload(searchPayload))
     } catch (error) {
-      config.logger.warn(redactedLogLine(`source ${source.id} search augmentation failed`, error))
+      config.logger.warn(redactedLogLine(`source ${safeId(source.id)} search augmentation failed`, error))
     }
   }
 
@@ -2738,6 +2773,15 @@ function evidenceOnlyAnswer({ sourceResults, sourceFailures, citations, graph, s
   }
 
   return lines.join('\n')
+}
+
+function sourceFailClosedAnswer({ sourceFailures }) {
+  return [
+    `Source readiness diagnostic: ${sourceFailures.length} selected Knowledge Source(s) could not be queried.`,
+    'Persisted ready status is treated as last-known only until a live source query succeeds.',
+    'The bridge did not call the configured runtime because no selected Knowledge Source returned evidence.',
+    'See trace steps and diagnostics for redacted source failure details.',
+  ].join('\n')
 }
 
 function answerWithFallbackCitationAnchors(answer, citations) {
@@ -3459,7 +3503,18 @@ function mergeGraphs(graphs) {
   return { nodes, edges }
 }
 
+function safeSourceLabel(source) {
+  return safeTraceTitle(source?.name) || safeTraceIdentifier(source?.id) || 'Knowledge Source'
+}
+
+function isSourceBundleDiagnosticForSource(diagnostic, source) {
+  return diagnostic?.scope === 'source'
+    && diagnostic?.phase === 'source-bundle'
+    && diagnostic?.subject === diagnosticSubject(source?.id)
+}
+
 function sourceQueryDiagnostic(source, error, config) {
+  const sourceLabel = safeSourceLabel(source)
   return diagnostic({
     severity: 'error',
     scope: 'source',
@@ -3481,11 +3536,12 @@ function sourceQueryDiagnostic(source, error, config) {
       ['redaction', 'source URL, credentials, headers, and upstream body omitted'],
     ],
     remediation: sourceQueryRemediation(error),
-    message: `${source.name} could not be queried by the bridge.`,
+    message: `${sourceLabel} could not be queried by the bridge.`,
   })
 }
 
 function sourceBundleDiagnostic(source, error, config) {
+  const sourceLabel = safeSourceLabel(source)
   return diagnostic({
     severity: 'warning',
     scope: 'source',
@@ -3505,7 +3561,7 @@ function sourceBundleDiagnostic(source, error, config) {
       ['redaction', 'source URL, credentials, headers, and upstream body omitted'],
     ],
     remediation: 'The bridge will continue without source bundle metadata. Check the source-bundle or manifest endpoint if bundle metadata is expected.',
-    message: `${source.name} source bundle metadata could not be read.`,
+    message: `${sourceLabel} source bundle metadata could not be read.`,
   })
 }
 
@@ -3864,11 +3920,8 @@ function requestOrchestrationMode(data, envelope) {
   )
 }
 
-function isSelectedReadySource(source) {
-  return source.url
-    && source.status === 'ready'
-    && source.selected !== false
-    && ['llmwiki-http', 'mcp', 'a2a'].includes(source.protocol)
+function isSelectedReadySource(source, config = null) {
+  return knowledgeSourceReadiness(source, config).ready
 }
 
 function isSelectedSource(source) {
@@ -3912,7 +3965,7 @@ function agentCard(config) {
 function sourceRegistrySummary(config) {
   const sources = normalizeKnowledgeSourceDescriptors(config.registeredSources)
   const selectedSources = sources.filter((source) => source.selected !== false)
-  const readySources = sources.filter(isSelectedReadySource)
+  const readySources = sources.filter((source) => isSelectedReadySource(source, config))
   return {
     registeredSourceCount: sources.length,
     selectedSourceCount: selectedSources.length,

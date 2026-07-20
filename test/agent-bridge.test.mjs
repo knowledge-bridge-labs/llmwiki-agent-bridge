@@ -404,6 +404,73 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(persisted.sources[1].selected, false)
   })
 
+  it('fails closed without leaking URLs when a persisted ready registered source is stale', async (t) => {
+    const configPath = await tempConfigPath(t)
+    const staleSource = await startFixtureServer(async () => {})
+    const staleSourceUrl = `${staleSource.url}/private-source?token=source-secret`
+    await closeServer(staleSource.server)
+
+    const hermes = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'Runtime should not be called.' } }],
+      })
+    })
+    t.after(() => closeServer(hermes.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      configPath,
+      hermesBaseUrl: `${hermes.url}/v1`,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const saveResponse = await fetch(`${bridge.url}/settings/sources.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sources: [
+          knowledgeSource('stale-source', 'Stale Source', 'llmwiki-http', staleSourceUrl),
+        ],
+      }),
+    })
+
+    assert.equal(saveResponse.status, 200)
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'source readiness hardening query should stay private',
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts[0].parts[0].data
+    const queryDiagnostics = artifact.diagnostics.filter((diagnostic) => (
+      diagnostic.scope === 'source' && diagnostic.phase === 'query'
+    ))
+    const serialized = JSON.stringify(artifact)
+
+    assert.equal(response.status, 200)
+    assert.equal(a2a.status.state, 'completed')
+    assert.equal(hermes.requests.length, 0)
+    assert.equal(artifact.steps.some((step) => step.id === 'runtime-chat-completions'), false)
+    assert.equal(artifact.steps.find((step) => step.id === 'bridge-source-fail-closed').status, 'done')
+    assert.match(artifact.answer, /Persisted ready status is treated as last-known only/)
+    assert.match(artifact.answer, /did not call the configured runtime/)
+    assert.equal(queryDiagnostics.length, 1)
+    assert.equal(artifact.diagnostics.length, 1)
+    assert.equal(queryDiagnostics[0].subject, 'stale-source')
+    assert.equal(queryDiagnostics[0].redacted, true)
+    assert.equal(observationValue(queryDiagnostics[0], 'sourceStatus'), 'ready')
+    assert.doesNotMatch(serialized, /127\.0\.0\.1/)
+    assert.doesNotMatch(serialized, /private-source/)
+    assert.doesNotMatch(serialized, /source-secret/)
+    assert.doesNotMatch(serialized, /source readiness hardening query/)
+  })
+
   it('appends bounded fallback citation anchors when runtime answer omits anchors', async (t) => {
     const source = await startFixtureServer(async ({ url, response }) => {
       if (url.pathname === '/search') {
@@ -745,6 +812,13 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(
       schema.components.schemas.McpSourceSummary.properties.readiness.$ref,
       '#/components/schemas/McpSourceReadiness',
+    )
+    assert.deepEqual(
+      schema.components.schemas.McpSourceReadiness.required,
+      ['ready', 'basis'],
+    )
+    assert(
+      schema.components.schemas.McpSourceReadiness.properties.reason.enum.includes('source_policy_blocked'),
     )
   })
 
@@ -1148,6 +1222,7 @@ describe('llmwiki-agent-bridge', () => {
     const sourceOrigin = 'http://192.168.50.10:8765'
     const completionsOrigin = 'http://agent-public-policy.example.test'
     const sourceRequests = []
+    const completionsRequests = []
     let bridge
 
     globalThis.fetch = async (input, init = {}) => {
@@ -1160,6 +1235,7 @@ describe('llmwiki-agent-bridge', () => {
       }
 
       if (url.origin === completionsOrigin) {
+        completionsRequests.push({ url, body: parseJsonFetchBody(init.body) })
         return jsonFetchResponse(200, {
           choices: [{ message: { role: 'assistant', content: 'Answer with public-https source skipped.' } }],
         })
@@ -1198,8 +1274,9 @@ describe('llmwiki-agent-bridge', () => {
 
     assert.equal(response.status, 200)
     assert.equal(sourceRequests.length, 0)
+    assert.equal(completionsRequests.length, 0)
     assert.equal(failedStep.status, 'error')
-    assert.equal(artifact.answer, 'Answer with public-https source skipped.')
+    assert.match(artifact.answer, /did not call the configured runtime/)
   })
 
   it('rejects invalid, userinfo, and non-http source URLs under every source policy', async (t) => {
@@ -1258,11 +1335,11 @@ describe('llmwiki-agent-bridge', () => {
 
       assert.equal(response.status, 200)
       assert.equal(failedSteps.length, 3)
-      assert.equal(artifact.answer, 'Answer with invalid sources skipped.')
+      assert.match(artifact.answer, /did not call the configured runtime/)
     }
 
     assert.equal(sourceRequests.length, 0)
-    assert.equal(completionsRequests.length, 3)
+    assert.equal(completionsRequests.length, 0)
   })
 
   it('does not send a default chat completions authorization header when no API key is configured', async (t) => {
@@ -1980,10 +2057,10 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(listedSources.unavailableSourceCount, 1)
     assert.equal(listedSources.sources[0].id, 'progressive-source')
     assert.equal(listedSources.sources[0].url, source.url)
-    assert.deepEqual(listedSources.sources[0].readiness, { ready: true })
+    assert.deepEqual(listedSources.sources[0].readiness, { ready: true, basis: 'last_known_status_bridge_policy' })
     assert.equal(listedSources.sources[1].id, 'warming-source')
     assert.equal(listedSources.sources[1].url, `${source.url}/warming-private-path?token=source-secret`)
-    assert.deepEqual(listedSources.sources[1].readiness, { ready: false, reason: 'status_not_ready' })
+    assert.deepEqual(listedSources.sources[1].readiness, { ready: false, reason: 'status_not_ready', basis: 'last_known_status' })
     assert.match(listed.result.content[0].text, /progressive-source: Progressive Source \(llmwiki-http, ready, ready\)/)
     assert.doesNotMatch(listed.result.content[0].text, /127\.0\.0\.1/)
     assert.doesNotMatch(listed.result.content[0].text, /warming-private-path/)
@@ -2132,6 +2209,46 @@ describe('llmwiki-agent-bridge', () => {
       '/alpha/read/topic',
       '/alpha/read/topic',
     ])
+  })
+
+  it('marks persisted ready sources blocked by source policy as unavailable without preflight', async (t) => {
+    const blockedUrl = 'http://127.0.0.1:49152/private-path?token=source-secret'
+    const bridge = await startAgentBridge({
+      port: 0,
+      sourcePolicy: 'allowlist',
+      allowedSourceOrigins: [],
+      registeredSources: [
+        knowledgeSource('policy-blocked', 'Policy Blocked Source', 'llmwiki-http', blockedUrl),
+      ],
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const healthResponse = await fetch(`${bridge.url}/health`)
+    const health = await healthResponse.json()
+    const listed = await callBridgeMcpTool(bridge, 'policy-list', 'llmwiki_list_sources', {})
+    const listedSources = listed.result.structuredContent.llmwiki_sources
+
+    assert.equal(healthResponse.status, 200)
+    assert.deepEqual(health.sourceRegistry, {
+      registeredSourceCount: 1,
+      selectedSourceCount: 1,
+      selectedReadySourceCount: 0,
+      unavailableSourceCount: 1,
+    })
+    assert.equal(listed.result.isError, false)
+    assert.equal(listedSources.totalSourceCount, 1)
+    assert.equal(listedSources.selectedSourceCount, 1)
+    assert.equal(listedSources.readySourceCount, 0)
+    assert.equal(listedSources.unavailableSourceCount, 1)
+    assert.deepEqual(listedSources.sources[0].readiness, {
+      ready: false,
+      reason: 'source_policy_blocked',
+      basis: 'bridge_policy',
+    })
+    assert.doesNotMatch(listed.result.content[0].text, /127\.0\.0\.1/)
+    assert.doesNotMatch(listed.result.content[0].text, /private-path/)
+    assert.doesNotMatch(listed.result.content[0].text, /source-secret/)
   })
 
   it('proxies read-only MCP source tools to MCP Knowledge Source tools', async (t) => {
@@ -3924,18 +4041,15 @@ describe('llmwiki-agent-bridge', () => {
     const a2a = await response.json()
     const artifact = a2a.artifacts[0].parts[0].data
     const failedStep = artifact.steps.find((step) => step.connectionId === 'unsafe-a2a')
-    const hermesUserMessage = hermes.lastBody.messages.find((message) => message.role === 'user').content
 
     assert.equal(response.status, 200)
     assert.equal(a2aSource.requests.length, 1)
     assert.equal(a2aSource.requests[0].url.pathname, '/.well-known/agent-card.json')
-    assert.equal(hermes.requests.length, 1)
+    assert.equal(hermes.requests.length, 0)
     assert.equal(failedStep.status, 'error')
     assert.equal(failedStep.error, 'Source query failed.')
-    assert.equal(artifact.answer, 'Answer with unsafe source skipped.')
+    assert.match(artifact.answer, /did not call the configured runtime/)
     assert.doesNotMatch(JSON.stringify(artifact.steps), /tailnet-source/)
-    assert.match(hermesUserMessage, /"sourceFailures"/)
-    assert.doesNotMatch(hermesUserMessage, /tailnet-source/)
   })
 
   it('does not expose fixture handler error details in JSON responses', async (t) => {
@@ -4014,21 +4128,18 @@ describe('llmwiki-agent-bridge', () => {
     const artifact = a2a.artifacts[0].parts[0].data
     const failedSteps = artifact.steps.filter((step) => step.status === 'error')
     const queryFailedSteps = failedSteps.filter((step) => step.error === 'Source query failed.')
-    const completionsUserMessage = completionsRequests[0].body.messages.find((message) => message.role === 'user').content
 
     assert.equal(response.status, 200)
     assert.equal(sourceRequests.length, 0)
-    assert.equal(completionsRequests.length, 1)
+    assert.equal(completionsRequests.length, 0)
     assert.equal(failedSteps.length, 3)
     assert.deepEqual(queryFailedSteps.map((step) => step.error), [
       'Source query failed.',
       'Source query failed.',
       'Source query failed.',
     ])
-    assert.equal(artifact.answer, 'Answer with blocked sources skipped.')
+    assert.match(artifact.answer, /did not call the configured runtime/)
     assert.doesNotMatch(JSON.stringify(artifact.steps), /192\.168\.70\.10/)
-    assert.match(completionsUserMessage, /"sourceFailures"/)
-    assert.doesNotMatch(completionsUserMessage, /192\.168\.70\.10/)
     assert.doesNotMatch(logger.lines.join('\n'), /192\.168\.70\.10/)
   })
 
@@ -4083,7 +4194,15 @@ describe('llmwiki-agent-bridge', () => {
   })
 
   it('continues with redacted source failure steps when one selected source fails', async (t) => {
-    const goodSource = await startFixtureServer(async ({ response }) => {
+    const goodSource = await startFixtureServer(async ({ url, response }) => {
+      if (url.pathname === '/source-bundle') {
+        writeJson(response, 200, {
+          source_id: 'good',
+          bundle_id: 'good-bundle',
+          capabilities: ['llmwiki_context'],
+        })
+        return
+      }
       writeJson(response, 200, {
         wiki_title: 'Good Wiki',
         evidence: [
@@ -4145,8 +4264,10 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(typeof a2a.traceId, 'string')
     assert.equal(artifact.requestId, a2a.requestId)
     assert.equal(artifact.traceId, a2a.traceId)
+    assert.equal(hermes.requests.length, 1)
     assert.equal(artifact.answer, expectedFallbackAnswer('Answer from surviving evidence.', 1))
     assert.deepEqual(artifact.citations.map((citation) => citation.id), ['good:good'])
+    assert.deepEqual(evidenceBundle.sources.map((source) => source.id), ['good'])
     assert.equal(failedStep.status, 'error')
     assert.equal(failedStep.error, 'Source query failed.')
     assert.equal(failedStep.diagnostic.schemaVersion, 'llmwiki.agent-bridge.diagnostic.v1')
@@ -4163,6 +4284,7 @@ describe('llmwiki-agent-bridge', () => {
       artifact.diagnostics.filter((diagnostic) => diagnostic.subject === 'bad' && diagnostic.phase === 'query'),
       [failedStep.diagnostic],
     )
+    assert.equal(artifact.diagnostics.length, 1)
     assert.doesNotMatch(JSON.stringify(failedStep), /backend exposed detail/)
     assert.doesNotMatch(JSON.stringify(failedStep), /127\.0\.0\.1/)
     assert.match(hermesUserMessage, /"sourceFailures"/)
@@ -7267,6 +7389,7 @@ describe('llmwiki-agent-bridge', () => {
     assert(files.has('scripts/benchmark-runtime-prompt.mjs'))
     assert(files.has('scripts/validate-runtime-prompt-live-safe.mjs'))
     assert(files.has('scripts/e2e-runtime-prompt-production-approval.mjs'))
+    assert(files.has('scripts/e2e-chat-api-query-matrix.mjs'))
     assert(files.has('README.md'))
     assert(files.has('LICENSE'))
     assert(files.has('integrations/README.md'))

@@ -21,7 +21,32 @@
 ## Commands
 
 ```sh
+node --check scripts/e2e-chat-api-query-matrix.mjs
+npm run e2e:chat-api:matrix
 npm run contracts:check
 npm test
 npm run check
 ```
+
+## Reusable chat API query matrix
+
+`scripts/e2e-chat-api-query-matrix.mjs` exercises the direct `/message:send`
+HTTP shape used by `llmwiki-chat`, not the browser UI. The default npm script
+starts a deterministic in-process bridge with mock Knowledge Source and mock
+OpenAI-compatible runtime servers, emits only case IDs, statuses, counts, and
+failure codes, and exits non-zero on failed checks. Live mode can target an
+already running bridge/source through environment or CLI overrides. Mock mode
+requires citation-bearing evidence. Live mode accepts citation, graph, or source
+bundle evidence because deployed `llmwiki-serve` sources may expose graph-first
+context without citation rows. Audit checks run in live mode only when an audit
+log path is provided.
+
+Covered matrix cases:
+
+- evidence-only request with a selected ready source;
+- delegated-runtime request with a selected ready source;
+- multi-turn follow-up with stable thread/context and bounded runtime history;
+- top-level A2A `message` without `data.query`;
+- long history truncation and runtime role-order safety;
+- unreachable selected source diagnostics with sanitized output checks;
+- bridge audit redaction safe-field checks when audit output is observable.

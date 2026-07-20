@@ -39,6 +39,7 @@
     "scripts/benchmark-runtime-prompt.mjs",
     "scripts/validate-runtime-prompt-live-safe.mjs",
     "scripts/e2e-runtime-prompt-production-approval.mjs",
+    "scripts/e2e-chat-api-query-matrix.mjs",
     "examples",
     "integrations",
     "README.md",
@@ -56,7 +57,7 @@
     "npm": ">=10"
   },
   "scripts": {
-    "lint": "node --check src/index.mjs && node --check bin/llmwiki-agent-bridge.mjs && node --check test/agent-bridge.test.mjs && node --check scripts/benchmark-runtime-prompt.mjs && node --check scripts/validate-runtime-prompt-live-safe.mjs && node --check scripts/e2e-runtime-prompt-production-approval.mjs",
+    "lint": "node --check src/index.mjs && node --check bin/llmwiki-agent-bridge.mjs && node --check test/agent-bridge.test.mjs && node --check scripts/benchmark-runtime-prompt.mjs && node --check scripts/validate-runtime-prompt-live-safe.mjs && node --check scripts/e2e-runtime-prompt-production-approval.mjs && node --check scripts/e2e-chat-api-query-matrix.mjs",
     "test": "node --test test/agent-bridge.test.mjs",
     "check": "npm run lint && npm run contracts:check && npm test && npm run pack:dry-run",
     "bench:runtime-prompt": "node scripts/benchmark-runtime-prompt.mjs",
@@ -64,6 +65,7 @@
     "bench:runtime-prompt:live": "node scripts/benchmark-runtime-prompt.mjs --live",
     "eval:runtime-prompt:live:safe": "node scripts/validate-runtime-prompt-live-safe.mjs",
     "e2e:runtime-prompt:production-approval": "node scripts/e2e-runtime-prompt-production-approval.mjs",
+    "e2e:chat-api:matrix": "node scripts/e2e-chat-api-query-matrix.mjs",
     "contracts:generate": "node scripts/export-openapi.mjs",
     "contracts:check": "node scripts/export-openapi.mjs --check",
     "pack:dry-run": "npm pack --dry-run --json --ignore-scripts",
