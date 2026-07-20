@@ -45,4 +45,7 @@ Do not expose the bridge on public or shared interfaces without a bearer token a
 
 ## Dependency Surface
 
-This package currently uses Node.js built-ins and has no runtime npm dependencies. Continue to review changes for SSRF, token leakage, unsafe public binds, CORS regressions, and citation or trace data leaks.
+This package currently uses a small runtime npm dependency set documented in
+`THIRD_PARTY_NOTICES.md`, plus Node.js built-ins. Continue to review changes
+for SSRF, token leakage, unsafe public binds, CORS regressions, dependency
+updates, and citation or trace data leaks.

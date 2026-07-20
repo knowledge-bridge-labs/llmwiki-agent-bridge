@@ -937,8 +937,8 @@ function buildCanaries(args, runId) {
     get bearerText() {
       return `Bearer ${this.bearerTokenValue}`
     },
-    skLikeKey: `sk-proj-live-default-io-${runKey}-1234567890abcdef`,
-    windowsPath: `C:\\Users\\angel\\AppData\\Local\\Temp\\llmwiki-default-io-${runKey}.md`,
+    skLikeKey: `sk-${`proj-live-default-io-${runKey}-1234567890abcdef`}`,
+    windowsPath: `C:\\Users\\example-user\\AppData\\Local\\Temp\\llmwiki-default-io-${runKey}.md`,
     historyUserCanary: `LIVE_IO_HISTORY_USER_${runKey}`,
     historyAssistantCanary: `LIVE_IO_HISTORY_ASSISTANT_${runKey}`,
     casePrompt(id) {

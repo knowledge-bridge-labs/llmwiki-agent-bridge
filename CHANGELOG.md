@@ -6,8 +6,15 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+No unreleased changes.
+
+## [0.1.0] - 2026-07-21 public package preview
+
 ### Added
 
+- Initial bridge runtime for connecting OpenAI-compatible local agent runtimes to LLMWiki Knowledge Sources.
+- Support for `llmwiki-http`, MCP-style `llmwiki_context`, and A2A-style source adapters.
+- Grounded answer response with citations, graph data, and trace steps.
 - CODEOWNERS for the planned Knowledge Bridge Labs maintainer team and safer
   changed-file rendering in the automated PR review guide.
 - Usage-question issue form so public support routing works while blank issues
@@ -24,11 +31,3 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 - Documentation for the generic companion runtime bridge model with initial Hermes, DeepAgents, and generic runtime profiles.
 - Documentation for direct `llmwiki-serve` client usage versus bridge-mediated runtime usage.
 - Security, support, contribution, third-party notice, and CI metadata.
-
-## [0.1.0] - 2026-07-03 source-preview baseline
-
-### Added
-
-- Initial bridge runtime for connecting OpenAI-compatible local agent runtimes to LLMWiki Knowledge Sources.
-- Support for `llmwiki-http`, MCP-style `llmwiki_context`, and A2A-style source adapters.
-- Grounded answer response with citations, graph data, and trace steps.

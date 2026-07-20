@@ -87,14 +87,40 @@ Before publishing:
    version and current registry state. During `public-unpublished`, the bridge
    package should still be marked as npm publication pending until upload and
    install-smoke verification finish.
-4. Confirm the `CHANGELOG.md` `0.1.0` source-preview baseline and finalize any
-   package-release notes for the publication date.
-5. Prefer npm provenance or trusted publishing once the GitHub organization and
-   repository ownership are stable.
+4. Confirm the `CHANGELOG.md` `0.1.0` public package preview entry matches the
+   publication date and release contents.
+5. Confirm npm Trusted Publishing is configured for this package and workflow.
 
 Before publishing to npm, run the central package-publication gate documented
 in the sibling `llmwiki-docs` repository and confirm the toolchain release
 status is at least `public-unpublished`.
+If packages are being published sequentially, use the central staging preflight
+or a package-specific registry expectation until the matrix has a mode for the
+current partial state.
 
-Keep npm tokens out of commits, logs, shell history, and CI variables unless a
-maintainer has explicitly approved that fallback.
+### npm Trusted Publisher
+
+Configure npm Trusted Publishing on npmjs.com for:
+
+- Package: `llmwiki-agent-bridge`
+- Publisher: GitHub Actions
+- GitHub organization/user: `knowledge-bridge-labs`
+- Repository: `llmwiki-agent-bridge`
+- Workflow filename: `publish.yml`
+- GitHub environment: `npm`
+- Allowed action: `npm publish`
+
+The workflow lives at `.github/workflows/publish.yml`, uses the `npm`
+environment, grants `contents: read` and `id-token: write`, runs on a
+GitHub-hosted Ubuntu runner with Node 24, installs with `npm ci`, runs
+`npm run check`, `npm run audit`, performs a dry package inspection, and then
+runs tokenless `npm publish`.
+
+Do not add `NPM_TOKEN` or token-based publishing secrets to this workflow.
+Trusted Publishing uses GitHub Actions OIDC, and npm automatically emits
+provenance for eligible public GitHub publishes.
+
+If npm requires the package to already exist before adding the trusted publisher
+relationship, a maintainer may need to create the initial public package or
+package settings manually with npm 2FA. Do not invent credentials or commit
+tokens as a workaround.
