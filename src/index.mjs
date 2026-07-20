@@ -48,11 +48,32 @@ const SETTINGS_JSON_ROUTE = '/settings.json'
 const SETTINGS_CONFIG_JSON_ROUTE = '/settings/config.json'
 const SETTINGS_SOURCES_JSON_ROUTE = '/settings/sources.json'
 const CONFIG_PATH_ENV = 'LLMWIKI_AGENT_BRIDGE_CONFIG_PATH'
+const AUDIT_LOG_ENV = 'LLMWIKI_AGENT_BRIDGE_AUDIT_LOG'
+const IO_LOG_ENV = 'LLMWIKI_AGENT_BRIDGE_IO_LOG'
+const IO_LOG_PATH_ENV = 'LLMWIKI_AGENT_BRIDGE_IO_LOG_PATH'
 const DEPRECATED_CONFIG_PATH_ENV = 'HERMES_A2A_BRIDGE_CONFIG_PATH'
 const PUBLIC_BIND_OPT_IN_ENV = 'LLMWIKI_AGENT_BRIDGE_ALLOW_PUBLIC_BIND'
 const INSECURE_PUBLIC_BIND_OPT_IN_ENV = 'LLMWIKI_AGENT_BRIDGE_ALLOW_INSECURE_PUBLIC_BIND'
 const DEPRECATED_PUBLIC_BIND_OPT_IN_ENV = 'HERMES_A2A_BRIDGE_ALLOW_PUBLIC_BIND'
 const DEPRECATED_INSECURE_PUBLIC_BIND_OPT_IN_ENV = 'HERMES_A2A_BRIDGE_ALLOW_INSECURE_PUBLIC_BIND'
+const AUDIT_LOG_SCHEMA_VERSION = 'llmwiki.agent-bridge.audit.v1'
+const REQUEST_AUDIT_EVENT = 'llmwiki.agent_bridge.request'
+const IO_LOG_SCHEMA_VERSION = 'llmwiki.agent-bridge.io.v1'
+const IO_LOG_EVENT = 'llmwiki.agent_bridge.io'
+const FILE_IO_LOG_MODE = 'file'
+const LOGGER_IO_LOG_MODE = 'logger'
+const OFF_IO_LOG_MODE = 'off'
+const DEFAULT_IO_LOG_MODE = FILE_IO_LOG_MODE
+const DEFAULT_IO_LOG_FILE_PATH = join('.runtime-logs', 'llmwiki-agent-bridge-io.jsonl')
+const MAX_IO_LOG_DEPTH = 8
+const MAX_IO_LOG_ARRAY_ITEMS = 50
+const MAX_IO_LOG_STRING_CHARS = 20_000
+const MAX_CONVERSATION_MESSAGES = 12
+const MAX_CONVERSATION_MESSAGE_CONTENT_CHARS = 6000
+const MAX_CONVERSATION_DESCRIPTOR_DEPTH = 3
+const MAX_CONVERSATION_DESCRIPTOR_KEYS = 40
+const MAX_CONVERSATION_DESCRIPTOR_ARRAY_ITEMS = 20
+const MAX_CONVERSATION_DESCRIPTOR_STRING_CHARS = 1000
 const relevanceStopWords = new Set([
   'a',
   'an',
@@ -176,6 +197,19 @@ const baseCorsHeaders = {
   'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
   Vary: 'Origin',
 }
+const auditedBridgeRoutes = new Set([
+  MESSAGE_SEND_ROUTE,
+  MCP_ROUTE,
+  SETTINGS_ROUTE,
+  SETTINGS_JSON_ROUTE,
+  SETTINGS_CONFIG_JSON_ROUTE,
+  SETTINGS_SOURCES_JSON_ROUTE,
+  AGENT_CARD_ROUTE,
+  '/health',
+])
+const auditedMcpMethods = new Set(['tools/list', 'tools/call'])
+const conversationMessageRoles = new Set(['user', 'assistant', 'system'])
+const conversationRuntimeRoles = new Set(['user', 'assistant'])
 
 let mcpRequestId = 0
 
@@ -419,9 +453,24 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
         }, ['id', 'name', 'description', 'protocol', 'runtime', 'agentRuntime', 'provider', 'url', 'capabilities', 'metadata']),
         MessageSendEnvelope: objectSchema({
           data: { $ref: '#/components/schemas/MessageSendData' },
+          message: { $ref: '#/components/schemas/A2aTextMessage' },
+          configuration: { $ref: '#/components/schemas/MessageSendConfiguration' },
+          metadata: { $ref: '#/components/schemas/MessageSendMetadata' },
         }, ['data']),
         MessageSendData: objectSchema({
           query: { type: 'string', minLength: 1 },
+          message: { $ref: '#/components/schemas/A2aTextMessage' },
+          messages: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/ConversationMessage' },
+            description: 'Optional bounded OpenAI/LangChain-compatible conversation messages. data.query remains the source retrieval query.',
+          },
+          threadId: { type: 'string' },
+          sessionId: { type: 'string' },
+          turnId: { type: 'string' },
+          runtimeContext: { $ref: '#/components/schemas/MessageSendRuntimeContext' },
+          configuration: { $ref: '#/components/schemas/MessageSendConfiguration' },
+          metadata: { $ref: '#/components/schemas/MessageSendMetadata' },
           orchestrationMode: {
             $ref: '#/components/schemas/OrchestrationMode',
             default: DEFAULT_ORCHESTRATION_MODE,
@@ -440,7 +489,53 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
             items: { $ref: '#/components/schemas/KnowledgeSourceDescriptor' },
             default: [],
           },
-        }, ['query']),
+        }),
+        A2aTextMessage: objectSchema({
+          kind: { const: 'message' },
+          messageId: { type: 'string' },
+          contextId: { type: 'string' },
+          role: { enum: ['user', 'agent'] },
+          parts: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/A2aTextPart' },
+          },
+          metadata: { $ref: '#/components/schemas/MessageSendMetadata' },
+        }, ['kind', 'messageId', 'role', 'parts']),
+        A2aTextPart: objectSchema({
+          kind: { const: 'text' },
+          text: { type: 'string' },
+        }, ['kind', 'text']),
+        ConversationMessage: objectSchema({
+          role: { enum: ['user', 'assistant', 'system'] },
+          content: { type: 'string' },
+        }, ['role', 'content']),
+        MessageSendRuntimeContext: objectSchema({
+          conversation: {
+            type: 'object',
+            additionalProperties: true,
+            description: 'Optional client-provided safe conversation descriptor. It is passed to the runtime when present but never emitted in audit logs.',
+          },
+        }),
+        MessageSendConfiguration: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            historyLength: {
+              type: 'integer',
+              minimum: 0,
+              maximum: MAX_CONVERSATION_MESSAGES,
+            },
+          },
+        },
+        MessageSendMetadata: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            threadId: { type: 'string' },
+            sessionId: { type: 'string' },
+            turnId: { type: 'string' },
+          },
+        },
         KnowledgeSourceDescriptor: objectSchema({
           id: { type: 'string' },
           name: { type: 'string' },
@@ -574,8 +669,14 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
               items: { type: 'string' },
             },
           }, ['policy', 'configuredAllowedSourceOrigins', 'allowedSourceOrigins']),
+          observability: objectSchema({
+            auditLog: { type: 'boolean' },
+            ioLog: { type: 'boolean' },
+            ioLogMode: { enum: ['logger', 'file', 'off'] },
+            ioLogPathConfigured: { type: 'boolean' },
+          }, ['auditLog', 'ioLog', 'ioLogMode', 'ioLogPathConfigured']),
           persistence: { $ref: '#/components/schemas/SettingsPersistence' },
-        }, ['bridge', 'endpoints', 'runtime', 'runtimeConnection', 'bridgeAuth', 'network', 'sourcePolicy', 'persistence']),
+        }, ['bridge', 'endpoints', 'runtime', 'runtimeConnection', 'bridgeAuth', 'network', 'sourcePolicy', 'observability', 'persistence']),
         SettingsConfigRequest: objectSchema({
           runtimeProfile: { enum: ['hermes', 'deepagents', 'generic'] },
           runtimeId: { type: 'string' },
@@ -600,6 +701,10 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
           bearerToken: { type: 'string' },
           allowPublicBind: { type: 'boolean' },
           allowInsecurePublicBind: { type: 'boolean' },
+          auditLog: { type: 'boolean' },
+          ioLog: { oneOf: [{ type: 'boolean' }, { enum: ['on', 'off', 'logger', 'stdout', 'file'] }] },
+            ioLogMode: { enum: ['on', 'off', 'logger', 'stdout', 'file'] },
+          ioLogPath: { type: 'string' },
         }),
         SettingsConfigResponse: objectSchema({
           status: { const: 'saved' },
@@ -750,9 +855,12 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
         McpSourceReadiness: objectSchema({
           ready: { type: 'boolean' },
           reason: {
-            enum: ['not_selected', 'status_not_ready', 'missing_url', 'unsupported_protocol'],
+            enum: ['not_selected', 'status_not_ready', 'missing_url', 'unsupported_protocol', 'source_policy_blocked'],
           },
-        }, ['ready']),
+          basis: {
+            enum: ['selection', 'last_known_status', 'descriptor', 'bridge_policy', 'last_known_status_bridge_policy'],
+          },
+        }, ['ready', 'basis']),
         Citation: objectSchema({
           id: { type: 'string' },
           title: { type: 'string' },
@@ -970,12 +1078,357 @@ function errorResponseBody(httpError, fallbackContext = null) {
   })
 }
 
+function bridgeRoutePattern(pathname) {
+  return auditedBridgeRoutes.has(pathname) ? pathname : undefined
+}
+
+function emitRequestAuditLog(config, input) {
+  if (!config.auditLog || !input.route) return
+
+  try {
+    const event = requestAuditEvent(input)
+    const line = JSON.stringify(event)
+    const logger = config.logger && typeof config.logger.log === 'function' ? config.logger : console
+    logger.log(line)
+  } catch {
+    // Audit logging must never affect request handling.
+  }
+}
+
+function emitIoLog(config, input) {
+  if (!config.ioLog || config.ioLogMode === OFF_IO_LOG_MODE) return
+
+  try {
+    const event = ioLogEvent(input)
+    const line = JSON.stringify(event)
+    if (config.ioLogPath) {
+      mkdirSync(dirname(config.ioLogPath), { recursive: true })
+      writeFileSync(config.ioLogPath, `${line}\n`, { encoding: 'utf8', flag: 'a' })
+      return
+    }
+    const logger = config.logger && typeof config.logger.log === 'function' ? config.logger : console
+    logger.log(line)
+  } catch {
+    // I/O logging is diagnostic only and must never affect request handling.
+  }
+}
+
+function ioLogEvent(input) {
+  return removeUndefinedProperties({
+    schemaVersion: IO_LOG_SCHEMA_VERSION,
+    event: IO_LOG_EVENT,
+    timestamp: new Date().toISOString(),
+    phase: ioLogLabel(input.phase),
+    flow: ioLogLabel(input.flow),
+    requestId: safeRunIdentifier(input.requestId) || undefined,
+    traceId: safeRunIdentifier(input.traceId) || undefined,
+    route: auditedRoute(input.route),
+    operation: ioLogLabel(input.operation),
+    target: redactForIoLog(input.target),
+    request: redactForIoLog(input.request),
+    response: redactForIoLog(input.response),
+    error: input.error ? ioLogError(input.error) : undefined,
+    durationMs: auditedNonNegativeInteger(input.durationMs),
+    redacted: true,
+  })
+}
+
+function ioLogLabel(value) {
+  const text = readStringValue(value).trim()
+  if (!text) return undefined
+  return text.replace(/[^A-Za-z0-9_.:-]+/g, '-').slice(0, 120)
+}
+
+function ioLogError(error) {
+  return removeUndefinedProperties({
+    name: error instanceof Error ? ioLogLabel(error.name) : undefined,
+    message: redactIoString(error instanceof Error ? error.message : String(error)),
+    timeout: isTimeoutError(error) ? true : undefined,
+  })
+}
+
+function ioLogSourceContext(source, runContext = {}, operation = '') {
+  return removeUndefinedProperties({
+    flow: 'source',
+    operation,
+    requestId: runContext?.requestId,
+    traceId: runContext?.traceId,
+    source: ioLogSourceSummary(source),
+  })
+}
+
+function ioLogSourceSummary(source) {
+  return removeUndefinedProperties({
+    id: safeTraceIdentifier(source?.id),
+    name: safeTraceTitle(source?.name),
+    protocol: source?.protocol,
+  })
+}
+
+function ioLogHttpTarget(url, context = {}) {
+  const parsed = parseUrlForIoLog(url)
+  return removeUndefinedProperties({
+    kind: context.flow || 'http',
+    operation: context.operation,
+    route: parsed?.pathname || undefined,
+    queryStringRedacted: parsed ? Boolean(parsed.search) : undefined,
+    urlRedacted: true,
+    source: context.source,
+  })
+}
+
+function parseUrlForIoLog(value) {
+  try {
+    return new URL(value)
+  } catch {
+    return null
+  }
+}
+
+function redactForIoLog(value, depth = 0, seen = new WeakSet()) {
+  if (value === undefined || value === null) return value
+  if (typeof value === 'string') return redactIoString(value)
+  if (typeof value === 'number' || typeof value === 'boolean') return value
+  if (typeof value === 'bigint') return String(value)
+  if (typeof value !== 'object') return undefined
+
+  if (seen.has(value)) return '[circular]'
+  seen.add(value)
+
+  if (depth >= MAX_IO_LOG_DEPTH) return '[truncated-depth]'
+
+  if (Array.isArray(value)) {
+    const items = value
+      .slice(0, MAX_IO_LOG_ARRAY_ITEMS)
+      .map((item) => redactForIoLog(item, depth + 1, seen))
+      .filter((item) => item !== undefined)
+    if (value.length > MAX_IO_LOG_ARRAY_ITEMS) items.push(`[${value.length - MAX_IO_LOG_ARRAY_ITEMS} item(s) truncated]`)
+    return items
+  }
+
+  const output = {}
+  for (const [key, rawValue] of Object.entries(value)) {
+    if (rawValue === undefined) continue
+    if (isCredentialLikeKey(key)) {
+      output[key] = '[redacted]'
+      continue
+    }
+    if (isUrlLikeKey(key)) {
+      output[key] = rawValue ? '[redacted-url]' : rawValue
+      continue
+    }
+    const redacted = redactForIoLog(rawValue, depth + 1, seen)
+    if (redacted !== undefined) output[key] = redacted
+  }
+  return output
+}
+
+function redactIoString(value) {
+  const text = String(value)
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/\bBasic\s+[A-Za-z0-9+/=-]+/gi, 'Basic [redacted]')
+    .replace(/\b(Set-Cookie|Cookie)\s*:\s*[^\r\n]+/gi, '$1: [redacted]')
+    .replace(/\b(?:sk|sk-proj|sk-ant|hf)_[A-Za-z0-9._~+/=-]+/g, '[redacted-key]')
+    .replace(/\b(?:sk|sk-proj)-[A-Za-z0-9._~+/=-]+/g, '[redacted-key]')
+    .replace(/([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|key|secret|client[_-]?secret|password|credential|code|sig|signature)=)[^&\s"'<>]+/gi, '$1[redacted]')
+    .replace(/https?:\/\/[^\s"'<>]+/gi, '[redacted-url]')
+    .replace(/\b[A-Za-z]:\\[^\s"'<>]+/g, '[redacted-path]')
+    .replace(/\\\\[^\\\s"'<>]+\\[^\s"'<>]+/g, '[redacted-path]')
+    .replace(/\/(?:Users|home|var\/folders|var\/tmp|tmp)\/[^\s"'<>]+/g, '[redacted-path]')
+
+  if (text.length <= MAX_IO_LOG_STRING_CHARS) return text
+  return `${text.slice(0, MAX_IO_LOG_STRING_CHARS - 3)}...`
+}
+
+function isCredentialLikeKey(key) {
+  const normalized = String(key || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+  return normalized === 'authorization'
+    || normalized === 'proxyauthorization'
+    || normalized === 'cookie'
+    || normalized === 'setcookie'
+    || normalized === 'xapikey'
+    || normalized === 'apikey'
+    || normalized === 'agentapikey'
+    || normalized === 'hermesapikey'
+    || normalized === 'bridgebearertoken'
+    || normalized === 'bearertoken'
+    || normalized === 'accesstoken'
+    || normalized.endsWith('token')
+    || normalized.endsWith('secret')
+    || normalized.endsWith('password')
+    || normalized.endsWith('credential')
+    || normalized.endsWith('credentials')
+}
+
+function isUrlLikeKey(key) {
+  const normalized = String(key || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+  return normalized === 'url'
+    || normalized.endsWith('url')
+    || normalized.endsWith('uri')
+    || normalized.endsWith('endpoint')
+}
+
+function redactedHeaderSummary(headers = {}) {
+  const entries = headers instanceof Headers
+    ? [...headers.entries()]
+    : Object.entries(headers || {})
+  const output = {}
+  for (const [key, value] of entries) {
+    const normalized = String(key || '').toLowerCase()
+    output[normalized] = isSafeIoHeader(normalized)
+      ? redactForIoLog(Array.isArray(value) ? value.join(', ') : String(value || ''))
+      : '[redacted]'
+  }
+  return output
+}
+
+function isSafeIoHeader(name) {
+  return name === 'accept' || name === 'content-type'
+}
+
+function requestAuditEvent(input) {
+  return removeUndefinedProperties({
+    schemaVersion: AUDIT_LOG_SCHEMA_VERSION,
+    event: REQUEST_AUDIT_EVENT,
+    timestamp: new Date().toISOString(),
+    requestId: safeRunIdentifier(input.requestId) || undefined,
+    traceId: safeRunIdentifier(input.traceId) || undefined,
+    method: auditedHttpMethod(input.method),
+    route: auditedRoute(input.route),
+    statusCode: auditedStatusCode(input.statusCode),
+    durationMs: auditedNonNegativeInteger(input.durationMs),
+    sourcePolicy: auditedSourcePolicy(input.sourcePolicy),
+    orchestrationMode: auditedOrchestrationMode(input.orchestrationMode),
+    runtimeCalled: auditedBoolean(input.runtimeCalled),
+    selectedSourceCount: auditedNonNegativeInteger(input.selectedSourceCount),
+    selectedReadySourceCount: auditedNonNegativeInteger(input.selectedReadySourceCount),
+    citationCount: auditedNonNegativeInteger(input.citationCount),
+    sourceBundleCount: auditedNonNegativeInteger(input.sourceBundleCount),
+    graphNodeCount: auditedNonNegativeInteger(input.graphNodeCount),
+    artifactCount: auditedNonNegativeInteger(input.artifactCount),
+    diagnosticCount: auditedNonNegativeInteger(input.diagnosticCount),
+    conversationMessageCount: auditedNonNegativeInteger(input.conversationMessageCount),
+    conversationHistoryLength: auditedNonNegativeInteger(input.conversationHistoryLength),
+    conversationContextProvided: auditedBoolean(input.conversationContextProvided),
+    mcpMethod: auditedMcpMethod(input.mcpMethod),
+    mcpToolName: auditedMcpToolName(input.mcpToolName),
+    mcpError: auditedBoolean(input.mcpError),
+    mcpErrorCode: auditedJsonRpcErrorCode(input.mcpErrorCode),
+    errorCode: auditedErrorCode(input.errorCode),
+    authorized: auditedBoolean(input.authorized),
+    originAllowed: auditedBoolean(input.originAllowed),
+    redacted: true,
+    routePatternOnly: true,
+    queryStringLogged: false,
+    requestBodyLogged: false,
+    responseBodyLogged: false,
+    credentialsLogged: false,
+    sourceUrlsLogged: false,
+  })
+}
+
+function recordA2aAuditDetails(target, details) {
+  if (!target) return
+  Object.assign(target, removeUndefinedProperties({
+    orchestrationMode: auditedOrchestrationMode(details.orchestrationMode),
+    runtimeCalled: auditedBoolean(details.runtimeCalled),
+    selectedSourceCount: auditedNonNegativeInteger(details.selectedSourceCount),
+    selectedReadySourceCount: auditedNonNegativeInteger(details.selectedReadySourceCount),
+    citationCount: auditedNonNegativeInteger(details.citationCount),
+    sourceBundleCount: auditedNonNegativeInteger(details.sourceBundleCount),
+    graphNodeCount: auditedNonNegativeInteger(details.graphNodeCount),
+    artifactCount: auditedNonNegativeInteger(details.artifactCount),
+    diagnosticCount: auditedNonNegativeInteger(details.diagnosticCount),
+    conversationMessageCount: auditedNonNegativeInteger(details.conversationMessageCount),
+    conversationHistoryLength: auditedNonNegativeInteger(details.conversationHistoryLength),
+    conversationContextProvided: auditedBoolean(details.conversationContextProvided),
+  }))
+}
+
+function recordMcpAuditDetails(target, details) {
+  if (!target) return
+  Object.assign(target, removeUndefinedProperties({
+    mcpMethod: auditedMcpMethod(details.mcpMethod),
+    mcpToolName: auditedMcpToolName(details.mcpToolName),
+  }))
+}
+
+function mcpResultAudit(result) {
+  const error = asRecord(result?.error)
+  return removeUndefinedProperties({
+    mcpError: error ? true : false,
+    mcpErrorCode: auditedJsonRpcErrorCode(readNumber(error || {}, 'code')),
+  })
+}
+
+function auditedHttpMethod(value) {
+  const method = readStringValue(value).toUpperCase()
+  return /^[A-Z]{1,16}$/.test(method) ? method : undefined
+}
+
+function auditedRoute(value) {
+  return auditedBridgeRoutes.has(value) ? value : undefined
+}
+
+function auditedStatusCode(value) {
+  const status = Number(value)
+  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined
+}
+
+function auditedNonNegativeInteger(value) {
+  const number = Number(value)
+  return Number.isInteger(number) && number >= 0 ? number : undefined
+}
+
+function auditedBoolean(value) {
+  return typeof value === 'boolean' ? value : undefined
+}
+
+function auditedOrchestrationMode(value) {
+  return orchestrationModes.has(value) ? value : undefined
+}
+
+function auditedSourcePolicy(value) {
+  try {
+    return sourcePolicyOption(value)
+  } catch {
+    return undefined
+  }
+}
+
+function auditedMcpMethod(value) {
+  if (auditedMcpMethods.has(value)) return value
+  return value ? '[unknown]' : undefined
+}
+
+function auditedMcpToolName(value) {
+  if (!value) return undefined
+  if (value === 'llmwiki_agent_run') return value
+  if (mcpSourceToolNames().includes(value)) return value
+  return '[unknown]'
+}
+
+function auditedJsonRpcErrorCode(value) {
+  const code = Number(value)
+  return Number.isInteger(code) ? code : undefined
+}
+
+function auditedErrorCode(value) {
+  const code = readStringValue(value)
+  return /^[a-z0-9_.-]{1,80}$/.test(code) ? code : undefined
+}
+
 async function handleBridgeRequest(request, response, config) {
+  const started = performance.now()
   const url = new URL(request.url || '/', `http://${request.headers.host || `${config.host}:${config.port}`}`)
+  const route = bridgeRoutePattern(url.pathname)
+  const auditContext = requestRunContext(request)
+  const auditDetails = {}
   let messageRunContext = null
 
   try {
     if (!isAllowedBridgeOrigin(request.headers.origin, config, request)) {
+      auditDetails.originAllowed = false
       writeJson(response, 403, {
         error: {
           code: 'origin_not_allowed',
@@ -984,6 +1437,7 @@ async function handleBridgeRequest(request, response, config) {
       }, config, request)
       return
     }
+    auditDetails.originAllowed = request.headers.origin ? true : undefined
 
     if (request.method === 'OPTIONS') {
       writeJson(response, 204, null, config, request)
@@ -996,6 +1450,7 @@ async function handleBridgeRequest(request, response, config) {
     }
 
     if (!isAuthorizedBridgeRequest(request, config)) {
+      auditDetails.authorized = false
       writeJson(response, 401, {
         error: {
           code: 'bridge_unauthorized',
@@ -1004,6 +1459,7 @@ async function handleBridgeRequest(request, response, config) {
       }, config, request)
       return
     }
+    auditDetails.authorized = config.bridgeBearerToken ? true : undefined
 
     if (request.method === 'GET' && url.pathname === AGENT_CARD_ROUTE) {
       writeJson(response, 200, agentCard(config), config, request)
@@ -1051,16 +1507,30 @@ async function handleBridgeRequest(request, response, config) {
     }
 
     if (request.method === 'POST' && url.pathname === MESSAGE_SEND_ROUTE) {
-      messageRunContext = requestRunContext(request)
+      messageRunContext = auditContext
       const body = await readJsonBody(request)
-      const result = await runA2aMessage(body, config, messageRunContext)
+      emitIoLog(config, {
+        phase: 'bridge.request',
+        flow: 'bridge',
+        requestId: messageRunContext.requestId,
+        traceId: messageRunContext.traceId,
+        route: MESSAGE_SEND_ROUTE,
+        request: {
+          method: request.method,
+          route: MESSAGE_SEND_ROUTE,
+          headers: redactedHeaderSummary(request.headers),
+          body,
+        },
+      })
+      const result = await runA2aMessage(body, config, messageRunContext, auditDetails)
       writeJson(response, 200, result, config, request)
       return
     }
 
     if (request.method === 'POST' && url.pathname === MCP_ROUTE) {
       const body = await readJsonBody(request)
-      const result = await handleMcpJsonRpc(body, config)
+      const result = await handleMcpJsonRpc(body, config, auditContext, auditDetails)
+      Object.assign(auditDetails, mcpResultAudit(result))
       writeJson(response, 200, result, config, request)
       return
     }
@@ -1068,22 +1538,59 @@ async function handleBridgeRequest(request, response, config) {
     writeJson(response, 404, { error: { code: 'not_found', message: 'Not found.' } }, config, request)
   } catch (error) {
     const httpError = error instanceof HttpError ? error : new HttpError(500, 'Bridge request failed.', 'bridge_error')
+    auditDetails.errorCode = httpError.code
     config.logger.error(redactedLogLine('bridge request failed', error))
-    writeJson(response, httpError.status, errorResponseBody(httpError, messageRunContext), config, request)
+    const body = errorResponseBody(httpError, messageRunContext)
+    if (route === MESSAGE_SEND_ROUTE) {
+      emitIoLog(config, {
+        phase: 'bridge.error',
+        flow: 'bridge',
+        requestId: messageRunContext?.requestId || auditContext.requestId,
+        traceId: messageRunContext?.traceId || auditContext.traceId,
+        route,
+        response: {
+          statusCode: httpError.status,
+          body,
+        },
+        error: httpError,
+      })
+    }
+    writeJson(response, httpError.status, body, config, request)
+  } finally {
+    emitRequestAuditLog(config, {
+      ...auditDetails,
+      requestId: messageRunContext?.requestId || auditContext.requestId,
+      traceId: messageRunContext?.traceId || auditContext.traceId,
+      method: request.method,
+      route,
+      statusCode: response.statusCode,
+      durationMs: Math.round(performance.now() - started),
+      sourcePolicy: config.sourcePolicy,
+    })
   }
 }
 
-async function runA2aMessage(body, config, runContextInput = {}) {
+async function runA2aMessage(body, config, runContextInput = {}, auditDetails = null) {
   const runContext = normalizedRunContext(runContextInput)
   const diagnostics = []
-  const { query, sources, orchestrationMode } = parseA2aRunRequest(body, config)
-  const readySources = sources.filter(isSelectedReadySource)
+  const { query, sources, orchestrationMode, conversation } = parseA2aRunRequest(body, config)
+  const readySources = sources.filter((source) => isSelectedReadySource(source))
+  const policyReadySources = readySources.filter((source) => isSelectedReadySource(source, config))
+  recordA2aAuditDetails(auditDetails, {
+    orchestrationMode,
+    runtimeCalled: false,
+    selectedSourceCount: sources.filter(isSelectedSource).length,
+    selectedReadySourceCount: policyReadySources.length,
+    conversationMessageCount: conversation.messageCount,
+    conversationHistoryLength: conversation.historyLength,
+    conversationContextProvided: conversation.contextProvided,
+  })
   const steps = [
     step({
       id: 'bridge-plan',
       label: 'Plan source calls',
       status: 'done',
-      detail: `Prepared ${readySources.length} selected ready Knowledge Source(s) for ${orchestrationMode} answering.`,
+      detail: `Prepared ${readySources.length} selected last-known ready Knowledge Source(s) for ${orchestrationMode} answering.`,
     }),
   ]
   const sourceResults = []
@@ -1093,7 +1600,7 @@ async function runA2aMessage(body, config, runContextInput = {}) {
   const sourceOutcomes = await mapWithConcurrency(
     readySources,
     DEFAULT_SOURCE_FAN_OUT_CONCURRENCY,
-    (source) => gatherSourceEvidence(source, query, config),
+    (source) => gatherSourceEvidence(source, query, config, runContext),
   )
 
   for (const outcome of sourceOutcomes) {
@@ -1110,6 +1617,12 @@ async function runA2aMessage(body, config, runContextInput = {}) {
 
   const citations = dedupeCitations(sourceResults.flatMap((item) => item.result.citations))
   const graph = mergeGraphs(sourceResults.map((item) => item.result.graph).filter(Boolean))
+  recordA2aAuditDetails(auditDetails, {
+    citationCount: citations.length,
+    sourceBundleCount: sourceBundles.length,
+    graphNodeCount: graph.nodes.length,
+    diagnosticCount: diagnostics.length,
+  })
   steps.push(step({
     id: 'bridge-evidence',
     label: 'Prepare evidence',
@@ -1119,7 +1632,23 @@ async function runA2aMessage(body, config, runContextInput = {}) {
 
   let answer = ''
 
-  if (orchestrationMode === 'evidence-only') {
+  const allReadySourcesFailed = readySources.length > 0
+    && sourceFailures.length === readySources.length
+    && sourceResults.length === 0
+
+  if (orchestrationMode !== 'evidence-only' && allReadySourcesFailed) {
+    answer = sourceFailClosedAnswer({ sourceFailures })
+    steps.push(step({
+      id: 'bridge-source-fail-closed',
+      label: 'Fail closed without runtime',
+      status: 'done',
+      detail: `Skipped the runtime call because all ${sourceFailures.length} selected ready Knowledge Source(s) failed.`,
+    }))
+    recordA2aAuditDetails(auditDetails, {
+      runtimeCalled: false,
+      diagnosticCount: diagnostics.length,
+    })
+  } else if (orchestrationMode === 'evidence-only') {
     answer = evidenceOnlyAnswer({
       query,
       sourceResults,
@@ -1143,15 +1672,20 @@ async function runA2aMessage(body, config, runContextInput = {}) {
     })
     steps.push(completionsStep)
     const completionsStarted = performance.now()
+    recordA2aAuditDetails(auditDetails, {
+      runtimeCalled: true,
+    })
 
     try {
       answer = await callHermesChatCompletions({
         query,
+        conversation,
         sourceResults,
         sourceFailures,
         citations,
         graph,
         config,
+        runContext,
       })
       const citationFallback = answerWithFallbackCitationAnchors(answer, citations)
       answer = citationFallback.answer
@@ -1167,6 +1701,10 @@ async function runA2aMessage(body, config, runContextInput = {}) {
       config.logger.error(redactedLogLine('chat completions failed', error))
       const diagnostic = runtimeChatCompletionsDiagnostic(error, config)
       diagnostics.push(diagnostic)
+      recordA2aAuditDetails(auditDetails, {
+        runtimeCalled: true,
+        diagnosticCount: diagnostics.length,
+      })
       replaceStep(steps, {
         ...completionsStep,
         status: 'error',
@@ -1203,7 +1741,7 @@ async function runA2aMessage(body, config, runContextInput = {}) {
     diagnostics,
   }
 
-  return {
+  const result = {
     id: randomUUID(),
     requestId: runContext.requestId,
     traceId: runContext.traceId,
@@ -1229,14 +1767,31 @@ async function runA2aMessage(body, config, runContextInput = {}) {
       },
     ],
   }
+  recordA2aAuditDetails(auditDetails, {
+    artifactCount: result.artifacts.length,
+    diagnosticCount: diagnostics.length,
+  })
+  emitIoLog(config, {
+    phase: 'bridge.response',
+    flow: 'bridge',
+    requestId: runContext.requestId,
+    traceId: runContext.traceId,
+    route: MESSAGE_SEND_ROUTE,
+    response: {
+      statusCode: 200,
+      body: result,
+    },
+  })
+  return result
 }
 
-async function gatherSourceEvidence(source, query, config) {
+async function gatherSourceEvidence(source, query, config, runContext = {}) {
   const diagnostics = []
   const steps = []
+  const sourceLabel = safeSourceLabel(source)
   const toolStep = step({
     id: `tool-${safeId(source.id)}`,
-    label: `Call ${source.name}`,
+    label: `Call ${sourceLabel}`,
     status: 'running',
     connectionId: source.id,
     toolName: toolNameFor(source),
@@ -1248,8 +1803,8 @@ async function gatherSourceEvidence(source, query, config) {
   let sourceBundle = null
 
   try {
-    sourceBundle = await readSourceBundle(source, config, steps, toolStep.id, diagnostics)
-    const payload = await queryKnowledgeSource(source, query, config)
+    sourceBundle = await readSourceBundle(source, config, steps, toolStep.id, diagnostics, runContext)
+    const payload = await queryKnowledgeSource(source, query, config, runContext)
     const result = normalizeKnowledgeResult(source, payload)
     const citationRefs = traceCitationRefs(result.citations)
     replaceStep(steps, {
@@ -1262,13 +1817,28 @@ async function gatherSourceEvidence(source, query, config) {
     })
     return { source, result, sourceBundle, steps, diagnostics }
   } catch (error) {
-    config.logger.error(redactedLogLine(`source ${source.id} failed`, error))
+    emitIoLog(config, {
+      phase: 'source.error',
+      ...ioLogSourceContext(source, runContext, 'source-query'),
+      target: {
+        kind: 'source',
+        source: ioLogSourceSummary(source),
+      },
+      request: {
+        body: { query },
+      },
+      error,
+    })
+    config.logger.error(redactedLogLine(`source ${safeId(source.id)} failed`, error))
     const diagnostic = sourceQueryDiagnostic(source, error, config)
+    const retainedDiagnostics = diagnostics.filter((item) => !isSourceBundleDiagnosticForSource(item, source))
+    diagnostics.length = 0
+    diagnostics.push(...retainedDiagnostics)
     diagnostics.push(diagnostic)
     replaceStep(steps, {
       ...toolStep,
       status: 'error',
-      detail: `${source.name} could not be queried by the bridge.`,
+      detail: `${sourceLabel} could not be queried by the bridge.`,
       error: 'Source query failed.',
       diagnostic,
       latencyMs: Math.round(performance.now() - started),
@@ -1305,9 +1875,12 @@ async function mapWithConcurrency(items, concurrency, mapper) {
   return results
 }
 
-async function handleMcpJsonRpc(body, config) {
+async function handleMcpJsonRpc(body, config, runContextInput = {}, auditDetails = null) {
   const request = asRecord(body)
   const id = jsonRpcId(request?.id)
+  recordMcpAuditDetails(auditDetails, {
+    mcpMethod: auditedMcpMethod(request?.method),
+  })
   if (!request || request.jsonrpc !== '2.0' || typeof request.method !== 'string') {
     return mcpJsonRpcError(id, -32600, 'Invalid JSON-RPC request.')
   }
@@ -1323,21 +1896,24 @@ async function handleMcpJsonRpc(body, config) {
   }
 
   if (request.method === 'tools/call') {
-    return handleMcpToolsCall(request, id, config)
+    return handleMcpToolsCall(request, id, config, runContextInput, auditDetails)
   }
 
   return mcpJsonRpcError(id, -32601, `Method not found: ${request.method}`)
 }
 
-async function handleMcpToolsCall(request, id, config) {
+async function handleMcpToolsCall(request, id, config, runContextInput = {}, auditDetails = null) {
   const params = asRecord(request.params)
   const name = readString(params || {}, 'name')
+  recordMcpAuditDetails(auditDetails, {
+    mcpToolName: auditedMcpToolName(name),
+  })
   if (!params || !name) {
     return mcpJsonRpcError(id, -32602, 'MCP tools/call params.name is required.')
   }
 
   if (name === 'llmwiki_agent_run') {
-    return handleMcpAgentRunToolCall(params, id, config)
+    return handleMcpAgentRunToolCall(params, id, config, runContextInput, auditDetails)
   }
 
   if (mcpSourceToolNames().includes(name)) {
@@ -1347,11 +1923,11 @@ async function handleMcpToolsCall(request, id, config) {
   return mcpJsonRpcError(id, -32602, `Unknown MCP tool: ${name}.`)
 }
 
-async function handleMcpAgentRunToolCall(params, id, config) {
+async function handleMcpAgentRunToolCall(params, id, config, runContextInput = {}, auditDetails = null) {
   const args = asRecord(params.arguments) || {}
   const a2aBody = asRecord(args.data) ? args : { data: args }
   try {
-    const a2a = await runA2aMessage(a2aBody, config)
+    const a2a = await runA2aMessage(a2aBody, config, runContextInput, auditDetails)
     const agentResult = extractLlmwikiAgentResult(a2a)
     return mcpJsonRpcSuccess(id, {
       content: [
@@ -1689,7 +2265,7 @@ async function runMcpSourceTool(name, args, config) {
     const readRequest = resolveMcpReadToolRequest(args, config)
     const page = await readKnowledgeSourcePage(readRequest.source, readRequest.upstreamPageId, includeDrafts, config)
     const readResult = {
-      source: knowledgeSourceToolSummary(readRequest.source),
+      source: knowledgeSourceToolSummary(readRequest.source, config),
       pageId: readRequest.pageId,
       page,
     }
@@ -1708,7 +2284,7 @@ async function runMcpSourceTool(name, args, config) {
     const limit = sourceToolLimit(args, DEFAULT_SOURCE_TOOL_LIMIT, MAX_SOURCE_TOOL_LIMIT)
     const payload = await contextKnowledgeSource(source, query, limit, includeDrafts, config)
     const context = {
-      source: knowledgeSourceToolSummary(source),
+      source: knowledgeSourceToolSummary(source, config),
       query,
       ...normalizeKnowledgeResult(source, payload),
     }
@@ -1724,7 +2300,7 @@ async function runMcpSourceTool(name, args, config) {
     if (!query) throw new HttpError(400, 'llmwiki_search arguments.query is required.', 'bad_request')
     const limit = sourceToolLimit(args, DEFAULT_SOURCE_TOOL_LIMIT, MAX_SOURCE_TOOL_LIMIT)
     const payload = await searchKnowledgeSource(source, query, limit, includeDrafts, config)
-    const search = normalizeSearchToolResult(source, query, payload)
+    const search = normalizeSearchToolResult(source, query, payload, config)
     return {
       summary: sourceSearchSummary(search),
       structuredKey: 'llmwiki_search',
@@ -1736,7 +2312,7 @@ async function runMcpSourceTool(name, args, config) {
     const limit = sourceToolLimit(args, DEFAULT_GRAPH_TOOL_LIMIT, MAX_GRAPH_TOOL_LIMIT)
     const payload = await graphKnowledgeSource(source, limit, includeDrafts, config)
     const graph = {
-      source: knowledgeSourceToolSummary(source),
+      source: knowledgeSourceToolSummary(source, config),
       limit,
       graph: namespaceGraph(normalizeGraphPayload(payload), source),
     }
@@ -1752,7 +2328,7 @@ async function runMcpSourceTool(name, args, config) {
     const diagnostics = []
     const sourceBundle = await readSourceBundle(source, config, steps, 'mcp-source-bundle', diagnostics)
     const result = {
-      source: knowledgeSourceToolSummary(source),
+      source: knowledgeSourceToolSummary(source, config),
       sourceBundle,
       steps,
       diagnostics,
@@ -1864,6 +2440,7 @@ async function runGraphNeighborsMcpSourceTool(args, config) {
       relations,
       limit,
       payload,
+      config,
     }))
   }
 
@@ -1892,7 +2469,7 @@ async function runGraphNeighborsMcpSourceTool(args, config) {
 
 function listMcpKnowledgeSources(args, config) {
   const sources = mcpToolSources(args, config)
-  const sourceSummaries = sources.map(knowledgeSourceToolSummary)
+  const sourceSummaries = sources.map((source) => knowledgeSourceToolSummary(source, config))
   const result = {
     sources: sourceSummaries,
     totalSourceCount: sourceSummaries.length,
@@ -1967,7 +2544,7 @@ function sourceToolSupportsProtocol(toolName, protocol) {
   return ['llmwiki-http', 'mcp'].includes(protocol)
 }
 
-async function contextKnowledgeSource(source, query, limit, includeDrafts, config) {
+async function contextKnowledgeSource(source, query, limit, includeDrafts, config, runContext = {}) {
   assertAllowedKnowledgeSourceFetchUrl(source.url, config)
 
   if (source.protocol === 'llmwiki-http') {
@@ -1975,7 +2552,7 @@ async function contextKnowledgeSource(source, query, limit, includeDrafts, confi
       query,
       limit,
       include_drafts: includeDrafts,
-    }, 'llmwiki-http query', config)
+    }, 'llmwiki-http query', config, ioLogSourceContext(source, runContext, 'llmwiki-http query'))
   }
 
   if (source.protocol === 'mcp') {
@@ -1983,17 +2560,17 @@ async function contextKnowledgeSource(source, query, limit, includeDrafts, confi
       query,
       limit,
       include_drafts: includeDrafts,
-    }, config)
+    }, config, runContext)
   }
 
   if (source.protocol === 'a2a') {
-    return queryA2aSource(source, query, config)
+    return queryA2aSource(source, query, config, runContext)
   }
 
   throw new Error(`Unsupported Knowledge Source protocol: ${source.protocol}`)
 }
 
-async function searchKnowledgeSource(source, query, limit, includeDrafts, config) {
+async function searchKnowledgeSource(source, query, limit, includeDrafts, config, runContext = {}) {
   assertAllowedKnowledgeSourceFetchUrl(source.url, config)
 
   if (source.protocol === 'llmwiki-http') {
@@ -2001,7 +2578,7 @@ async function searchKnowledgeSource(source, query, limit, includeDrafts, config
       query,
       limit,
       include_drafts: includeDrafts,
-    }, 'llmwiki-http search', config)
+    }, 'llmwiki-http search', config, ioLogSourceContext(source, runContext, 'llmwiki-http search'))
   }
 
   if (source.protocol === 'mcp') {
@@ -2009,33 +2586,33 @@ async function searchKnowledgeSource(source, query, limit, includeDrafts, config
       query,
       limit,
       include_drafts: includeDrafts,
-    }, config)
+    }, config, runContext)
   }
 
   throw new Error(`Unsupported Knowledge Source protocol for search: ${source.protocol}`)
 }
 
-async function readKnowledgeSourcePage(source, pageId, includeDrafts, config) {
+async function readKnowledgeSourcePage(source, pageId, includeDrafts, config, runContext = {}) {
   assertAllowedKnowledgeSourceFetchUrl(source.url, config)
 
   if (source.protocol === 'llmwiki-http') {
     const url = urlWithQuery(joinUrl(source.url, `/read/${encodeURIComponent(pageId)}`), {
       include_drafts: includeDrafts,
     })
-    return fetchKnowledgeSourceJson(url, { method: 'GET' }, 'llmwiki-http read', config)
+    return fetchKnowledgeSourceJson(url, { method: 'GET' }, 'llmwiki-http read', config, ioLogSourceContext(source, runContext, 'llmwiki-http read'))
   }
 
   if (source.protocol === 'mcp') {
     return callMcpTool(source, 'llmwiki_read', {
       page_id: pageId,
       include_drafts: includeDrafts,
-    }, config)
+    }, config, runContext)
   }
 
   throw new Error(`Unsupported Knowledge Source protocol for read: ${source.protocol}`)
 }
 
-async function graphKnowledgeSource(source, limit, includeDrafts, config) {
+async function graphKnowledgeSource(source, limit, includeDrafts, config, runContext = {}) {
   assertAllowedKnowledgeSourceFetchUrl(source.url, config)
 
   if (source.protocol === 'llmwiki-http') {
@@ -2043,20 +2620,20 @@ async function graphKnowledgeSource(source, limit, includeDrafts, config) {
       limit,
       include_drafts: includeDrafts,
     })
-    return fetchKnowledgeSourceJson(url, { method: 'GET' }, 'llmwiki-http graph', config)
+    return fetchKnowledgeSourceJson(url, { method: 'GET' }, 'llmwiki-http graph', config, ioLogSourceContext(source, runContext, 'llmwiki-http graph'))
   }
 
   if (source.protocol === 'mcp') {
     return callMcpTool(source, 'llmwiki_graph', {
       limit,
       include_drafts: includeDrafts,
-    }, config)
+    }, config, runContext)
   }
 
   throw new Error(`Unsupported Knowledge Source protocol for graph: ${source.protocol}`)
 }
 
-async function graphNeighborhoodKnowledgeSource(source, nodeIds, { depth, direction, relations, limit, includeDrafts, config }) {
+async function graphNeighborhoodKnowledgeSource(source, nodeIds, { depth, direction, relations, limit, includeDrafts, config, runContext = {} }) {
   assertAllowedKnowledgeSourceFetchUrl(source.url, config)
 
   if (source.protocol === 'llmwiki-http') {
@@ -2068,7 +2645,7 @@ async function graphNeighborhoodKnowledgeSource(source, nodeIds, { depth, direct
       limit,
       include_drafts: includeDrafts,
     })
-    return fetchKnowledgeSourceJson(url, { method: 'GET' }, 'llmwiki-http graph neighborhood', config)
+    return fetchKnowledgeSourceJson(url, { method: 'GET' }, 'llmwiki-http graph neighborhood', config, ioLogSourceContext(source, runContext, 'llmwiki-http graph-neighborhood'))
   }
 
   if (source.protocol === 'mcp') {
@@ -2080,7 +2657,7 @@ async function graphNeighborhoodKnowledgeSource(source, nodeIds, { depth, direct
       relations,
       limit,
       include_drafts: includeDrafts,
-    }, config)
+    }, config, runContext)
   }
 
   throw new Error(`Unsupported Knowledge Source protocol for graph neighbors: ${source.protocol}`)
@@ -2110,7 +2687,7 @@ function graphNeighborRelations(args) {
   ])
 }
 
-function knowledgeSourceToolSummary(source) {
+function knowledgeSourceToolSummary(source, config = null) {
   return removeUndefinedProperties({
     id: source.id,
     name: source.name,
@@ -2119,25 +2696,30 @@ function knowledgeSourceToolSummary(source) {
     status: source.status,
     selected: source.selected !== false,
     url: source.url,
-    readiness: knowledgeSourceReadiness(source),
+    readiness: knowledgeSourceReadiness(source, config),
     capabilities: source.capabilities,
     adapter: source.adapter,
     implementation: source.implementation,
   })
 }
 
-function knowledgeSourceReadiness(source) {
-  if (source.selected === false) return { ready: false, reason: 'not_selected' }
-  if (source.status !== 'ready') return { ready: false, reason: 'status_not_ready' }
-  if (!source.url) return { ready: false, reason: 'missing_url' }
-  if (!['llmwiki-http', 'mcp', 'a2a'].includes(source.protocol)) return { ready: false, reason: 'unsupported_protocol' }
-  return { ready: true }
+function knowledgeSourceReadiness(source, config = null) {
+  if (source.selected === false) return { ready: false, reason: 'not_selected', basis: 'selection' }
+  if (source.status !== 'ready') return { ready: false, reason: 'status_not_ready', basis: 'last_known_status' }
+  if (!source.url) return { ready: false, reason: 'missing_url', basis: 'descriptor' }
+  if (!['llmwiki-http', 'mcp', 'a2a'].includes(source.protocol)) {
+    return { ready: false, reason: 'unsupported_protocol', basis: 'descriptor' }
+  }
+  if (config && !isAllowedKnowledgeSourceFetchUrl(source.url, config)) {
+    return { ready: false, reason: 'source_policy_blocked', basis: 'bridge_policy' }
+  }
+  return { ready: true, basis: config ? 'last_known_status_bridge_policy' : 'last_known_status' }
 }
 
-function normalizeSearchToolResult(source, query, payload) {
+function normalizeSearchToolResult(source, query, payload, config = null) {
   const rawResults = searchResultsFromPayload(payload)
   return {
-    source: knowledgeSourceToolSummary(source),
+    source: knowledgeSourceToolSummary(source, config),
     query,
     results: rawResults.map((item, index) => normalizeSearchToolItem(source, item, index)),
   }
@@ -2157,11 +2739,11 @@ function normalizeSearchToolItem(source, item, index) {
   })
 }
 
-function normalizeGraphNeighborsToolResult(source, nodeIds, { depth, direction, relations, limit, payload }) {
+function normalizeGraphNeighborsToolResult(source, nodeIds, { depth, direction, relations, limit, payload, config = null }) {
   const graph = namespaceGraph(graphFromKnowledgePayload(payload) || emptyGraph(), source)
   const citations = normalizeCitations(source, payload)
   return {
-    source: knowledgeSourceToolSummary(source),
+    source: knowledgeSourceToolSummary(source, config),
     nodeIds: nodeIds.map((nodeId) => sourcePrefixedId(source, nodeId)),
     depth,
     direction,
@@ -2196,10 +2778,11 @@ function listSourcesSummary(sources) {
   return [
     `Registered Knowledge Sources: ${sources.length}.`,
     ...sources.map((source) => {
+      const sourceId = diagnosticSubject(source.id)
       const readiness = source.readiness?.ready
         ? 'ready'
         : `unavailable: ${source.readiness?.reason || 'unknown'}`
-      return `- ${source.id}: ${source.name} (${source.protocol}, ${source.status}, ${readiness}${source.selected === false ? ', not selected' : ''})`
+      return `- ${sourceId}: ${safeSourceLabel(source)} (${source.protocol}, ${source.status}, ${readiness}${source.selected === false ? ', not selected' : ''})`
     }),
   ].join('\n')
 }
@@ -2236,20 +2819,21 @@ function sourceBundleSummary(result) {
   return `Source bundle from ${result.source.name}: ${title}.`
 }
 
-async function readSourceBundle(source, config, steps, parentId, diagnostics = []) {
+async function readSourceBundle(source, config, steps, parentId, diagnostics = [], runContext = {}) {
   if (source.protocol === 'llmwiki-http') {
-    return readLlmwikiHttpSourceBundle(source, config, steps, parentId, diagnostics)
+    return readLlmwikiHttpSourceBundle(source, config, steps, parentId, diagnostics, runContext)
   }
 
   if (source.protocol === 'mcp') {
-    return readMcpSourceBundle(source, config, steps, parentId, diagnostics)
+    return readMcpSourceBundle(source, config, steps, parentId, diagnostics, runContext)
   }
 
   return null
 }
 
-async function readLlmwikiHttpSourceBundle(source, config, steps, parentId, diagnostics = []) {
+async function readLlmwikiHttpSourceBundle(source, config, steps, parentId, diagnostics = [], runContext = {}) {
   if (source.protocol !== 'llmwiki-http') return null
+  const sourceLabel = safeSourceLabel(source)
 
   const discoveryUrls = [
     { url: joinUrl(source.url, '/source-bundle'), label: 'source bundle' },
@@ -2259,7 +2843,7 @@ async function readLlmwikiHttpSourceBundle(source, config, steps, parentId, diag
 
   const manifestStep = step({
     id: `source-manifest-${safeId(source.id)}`,
-    label: `Read ${source.name} source bundle`,
+    label: `Read ${sourceLabel} source bundle`,
     status: 'running',
     connectionId: source.id,
     detail: 'Reading llmwiki-http source bundle discovery metadata.',
@@ -2271,7 +2855,13 @@ async function readLlmwikiHttpSourceBundle(source, config, steps, parentId, diag
 
   for (const candidate of discoveryUrls) {
     try {
-      const manifest = await fetchKnowledgeSourceJson(candidate.url, { method: 'GET' }, `llmwiki-http ${candidate.label}`, config)
+      const manifest = await fetchKnowledgeSourceJson(
+        candidate.url,
+        { method: 'GET' },
+        `llmwiki-http ${candidate.label}`,
+        config,
+        ioLogSourceContext(source, runContext, `llmwiki-http ${candidate.label}`),
+      )
       const sourceBundle = normalizeSourceBundleManifest(source, manifest)
       if (!sourceBundle) {
         lastError = new Error(`${candidate.label} did not include source bundle metadata.`)
@@ -2286,7 +2876,7 @@ async function readLlmwikiHttpSourceBundle(source, config, steps, parentId, diag
       return sourceBundle
     } catch (error) {
       lastError = error
-      config.logger.warn(redactedLogLine(`source ${source.id} ${candidate.label} unavailable`, error))
+      config.logger.warn(redactedLogLine(`source ${safeId(source.id)} ${candidate.label} unavailable`, error))
     }
   }
 
@@ -2300,11 +2890,11 @@ async function readLlmwikiHttpSourceBundle(source, config, steps, parentId, diag
     diagnostic,
     latencyMs: Math.round(performance.now() - started),
   })
-  if (lastError) config.logger.warn(redactedLogLine(`source ${source.id} source bundle discovery unavailable`, lastError))
+  if (lastError) config.logger.warn(redactedLogLine(`source ${safeId(source.id)} source bundle discovery unavailable`, lastError))
   return null
 }
 
-async function readMcpSourceBundle(source, config, steps, parentId, diagnostics = []) {
+async function readMcpSourceBundle(source, config, steps, parentId, diagnostics = [], runContext = {}) {
   if (
     Array.isArray(source.capabilities)
     && source.capabilities.length > 0
@@ -2315,7 +2905,7 @@ async function readMcpSourceBundle(source, config, steps, parentId, diagnostics 
 
   const manifestStep = step({
     id: `source-manifest-${safeId(source.id)}`,
-    label: `Read ${source.name} source bundle`,
+    label: `Read ${safeSourceLabel(source)} source bundle`,
     status: 'running',
     connectionId: source.id,
     detail: 'Reading MCP source bundle discovery metadata.',
@@ -2325,7 +2915,7 @@ async function readMcpSourceBundle(source, config, steps, parentId, diagnostics 
   const started = performance.now()
 
   try {
-    const manifest = await callMcpTool(source, 'llmwiki_source_bundle', {}, config)
+    const manifest = await callMcpTool(source, 'llmwiki_source_bundle', {}, config, runContext)
     const sourceBundle = normalizeSourceBundleManifest(source, manifest)
     if (!sourceBundle) throw new Error('MCP source bundle response did not include source bundle metadata.')
     replaceStep(steps, {
@@ -2336,7 +2926,7 @@ async function readMcpSourceBundle(source, config, steps, parentId, diagnostics 
     })
     return sourceBundle
   } catch (error) {
-    config.logger.warn(redactedLogLine(`source ${source.id} MCP source bundle unavailable`, error))
+    config.logger.warn(redactedLogLine(`source ${safeId(source.id)} MCP source bundle unavailable`, error))
     const diagnostic = sourceBundleDiagnostic(source, error, config)
     diagnostics.push(diagnostic)
     replaceStep(steps, {
@@ -2351,29 +2941,29 @@ async function readMcpSourceBundle(source, config, steps, parentId, diagnostics 
   }
 }
 
-async function queryKnowledgeSource(source, query, config) {
+async function queryKnowledgeSource(source, query, config, runContext = {}) {
   assertAllowedKnowledgeSourceFetchUrl(source.url, config)
 
   if (source.protocol === 'llmwiki-http') {
-    return queryLlmwikiHttpSource(source, query, config)
+    return queryLlmwikiHttpSource(source, query, config, runContext)
   }
 
   if (source.protocol === 'mcp') {
-    return callMcpTool(source, 'llmwiki_context', { query, limit: MAX_EVIDENCE_ITEMS_PER_SOURCE }, config)
+    return callMcpTool(source, 'llmwiki_context', { query, limit: MAX_EVIDENCE_ITEMS_PER_SOURCE }, config, runContext)
   }
 
   if (source.protocol === 'a2a') {
-    return queryA2aSource(source, query, config)
+    return queryA2aSource(source, query, config, runContext)
   }
 
   throw new Error(`Unsupported Knowledge Source protocol: ${source.protocol}`)
 }
 
-async function queryLlmwikiHttpSource(source, query, config) {
+async function queryLlmwikiHttpSource(source, query, config, runContext = {}) {
   const primaryPayload = await postKnowledgeSourceJson(joinUrl(source.url, '/query'), {
     query,
     limit: MAX_EVIDENCE_ITEMS_PER_SOURCE,
-  }, 'llmwiki-http query', config)
+  }, 'llmwiki-http query', config, ioLogSourceContext(source, runContext, 'llmwiki-http query'))
   const searchResults = []
 
   for (const variant of compactSearchQueryVariants(query)) {
@@ -2381,23 +2971,23 @@ async function queryLlmwikiHttpSource(source, query, config) {
       const searchPayload = await postKnowledgeSourceJson(joinUrl(source.url, '/search'), {
         query: variant,
         limit: MAX_SEARCH_AUGMENT_RESULTS_PER_QUERY,
-      }, 'llmwiki-http search', config)
+      }, 'llmwiki-http search', config, ioLogSourceContext(source, runContext, 'llmwiki-http search-augment'))
       searchResults.push(...searchResultsFromPayload(searchPayload))
     } catch (error) {
-      config.logger.warn(redactedLogLine(`source ${source.id} search augmentation failed`, error))
+      config.logger.warn(redactedLogLine(`source ${safeId(source.id)} search augmentation failed`, error))
     }
   }
 
   return mergeSearchResultsIntoKnowledgePayload(primaryPayload, searchResults)
 }
 
-async function callMcpTool(source, name, args, config) {
+async function callMcpTool(source, name, args, config, runContext = {}) {
   const envelope = await postKnowledgeSourceJson(mcpEndpointUrl(source.url), {
     jsonrpc: '2.0',
     id: ++mcpRequestId,
     method: 'tools/call',
     params: { name, arguments: args },
-  }, `mcp ${name}`, config)
+  }, `mcp ${name}`, config, ioLogSourceContext(source, runContext, `mcp ${name}`))
   const error = asRecord(envelope.error)
   if (error) throw new Error('MCP tool returned a JSON-RPC error.')
   const result = asRecord(envelope.result)
@@ -2414,14 +3004,14 @@ async function callMcpTool(source, name, args, config) {
     || result
 }
 
-async function queryA2aSource(source, query, config) {
+async function queryA2aSource(source, query, config, runContext = {}) {
   const cardUrl = a2aAgentCardUrl(source.url)
-  const card = await fetchKnowledgeSourceJson(cardUrl, {}, 'a2a agent card', config)
+  const card = await fetchKnowledgeSourceJson(cardUrl, {}, 'a2a agent card', config, ioLogSourceContext(source, runContext, 'a2a agent-card'))
   const messageUrl = resolveA2aMessageUrl(card, cardUrl)
   if (!isAllowedA2aKnowledgeSourceMessageUrl(messageUrl, config)) {
     throw new Error('A2A source agent card message URL is not allowed.')
   }
-  const message = await postKnowledgeSourceJson(messageUrl, { data: { query } }, 'a2a message', config)
+  const message = await postKnowledgeSourceJson(messageUrl, { data: { query } }, 'a2a message', config, ioLogSourceContext(source, runContext, 'a2a message'))
   assertNoA2aError(message)
   return extractA2aContextPayload(message) || fallbackA2aContextPayload(source, message)
 }
@@ -2453,6 +3043,15 @@ function evidenceOnlyAnswer({ sourceResults, sourceFailures, citations, graph, s
   }
 
   return lines.join('\n')
+}
+
+function sourceFailClosedAnswer({ sourceFailures }) {
+  return [
+    `Source readiness diagnostic: ${sourceFailures.length} selected Knowledge Source(s) could not be queried.`,
+    'Persisted ready status is treated as last-known only until a live source query succeeds.',
+    'The bridge did not call the configured runtime because no selected Knowledge Source returned evidence.',
+    'See trace steps and diagnostics for redacted source failure details.',
+  ].join('\n')
 }
 
 function answerWithFallbackCitationAnchors(answer, citations) {
@@ -2494,10 +3093,10 @@ function hasValidCitationAnchor(answer, citations) {
   return false
 }
 
-async function callHermesChatCompletions({ query, sourceResults, sourceFailures, citations, graph, config }) {
+async function callHermesChatCompletions({ query, conversation, sourceResults, sourceFailures, citations, graph, config, runContext = {} }) {
   const body = {
     ...(config.hermesModel ? { model: config.hermesModel } : {}),
-    messages: hermesMessages({ query, sourceResults, sourceFailures, citations, graph }),
+    messages: hermesMessages({ query, conversation, sourceResults, sourceFailures, citations, graph }),
     temperature: 0.2,
     stream: false,
   }
@@ -2508,20 +3107,33 @@ async function callHermesChatCompletions({ query, sourceResults, sourceFailures,
     method: 'POST',
     headers,
     body: JSON.stringify(body),
-  }, 'chat completions', config)
+  }, 'chat completions', config, {
+    flow: 'runtime',
+    operation: 'chat-completions',
+    requestId: runContext?.requestId,
+    traceId: runContext?.traceId,
+    requestBody: body,
+  })
   return extractHermesAnswer(payload) || 'The chat completions endpoint returned no answer text.'
 }
 
-function hermesMessages({ query, sourceResults, sourceFailures, citations, graph }) {
+function renderEvidenceBundleForPrompt(evidenceBundle) {
+  return JSON.stringify(evidenceBundle)
+}
+
+function hermesMessages({ query, conversation = emptyConversationContext(), sourceResults, sourceFailures, citations, graph }) {
   const sourceCorpusSummaries = sourceResults.map(({ source, result }) => sourceCorpusSummary(source, result))
   const mergedCorpusSummary = mergeCorpusSummaries(sourceCorpusSummaries)
   const citationIndexById = new Map(citations.map((citation, index) => [citation.id, index + 1]))
+  const runtimeConversationMessages = conversation.runtimeMessages || []
+  const runtimeConversationContext = conversationRuntimeContextForPrompt(conversation)
   const evidenceBundle = {
     schema: 'llmwiki-agent-bridge.answer-evidence.v1',
     runtimeContract: {
       citations: 'Use the top-level citations array as the only citation anchor source.',
       graph: 'Graph and source bundle details are returned in the bridge artifact and source tools, not in this answer prompt.',
     },
+    ...(runtimeConversationContext ? { conversationContext: runtimeConversationContext } : {}),
     citationDigest: rankedCitationDigest(query, citations),
     citations,
     sources: sourceResults.map(({ result }, index) => ({
@@ -2555,7 +3167,7 @@ function hermesMessages({ query, sourceResults, sourceFailures, citations, graph
     citationCount: citations.length,
   }
 
-  return [
+  const messages = [
     {
       role: 'system',
       content: [
@@ -2568,17 +3180,21 @@ function hermesMessages({ query, sourceResults, sourceFailures, citations, graph
         'Do not expose API keys, request headers, or bridge internals.',
       ].join(' '),
     },
-    {
-      role: 'user',
-      content: [
-        '# User question',
-        query,
-        '',
-        '# LLMWiki evidence bundle',
-        JSON.stringify(evidenceBundle, null, 2),
-      ].join('\n'),
-    },
   ]
+
+  messages.push(...runtimeConversationMessages)
+  messages.push({
+    role: 'user',
+    content: [
+      '# User question',
+      query,
+      '',
+      '# LLMWiki evidence bundle',
+      renderEvidenceBundleForPrompt(evidenceBundle),
+    ].join('\n'),
+  })
+
+  return messages
 }
 
 function sourceCorpusSummary(source, result) {
@@ -3163,7 +3779,18 @@ function mergeGraphs(graphs) {
   return { nodes, edges }
 }
 
+function safeSourceLabel(source) {
+  return safeTraceTitle(source?.name) || safeTraceIdentifier(source?.id) || 'Knowledge Source'
+}
+
+function isSourceBundleDiagnosticForSource(diagnostic, source) {
+  return diagnostic?.scope === 'source'
+    && diagnostic?.phase === 'source-bundle'
+    && diagnostic?.subject === diagnosticSubject(source?.id)
+}
+
 function sourceQueryDiagnostic(source, error, config) {
+  const sourceLabel = safeSourceLabel(source)
   return diagnostic({
     severity: 'error',
     scope: 'source',
@@ -3185,11 +3812,12 @@ function sourceQueryDiagnostic(source, error, config) {
       ['redaction', 'source URL, credentials, headers, and upstream body omitted'],
     ],
     remediation: sourceQueryRemediation(error),
-    message: `${source.name} could not be queried by the bridge.`,
+    message: `${sourceLabel} could not be queried by the bridge.`,
   })
 }
 
 function sourceBundleDiagnostic(source, error, config) {
+  const sourceLabel = safeSourceLabel(source)
   return diagnostic({
     severity: 'warning',
     scope: 'source',
@@ -3209,7 +3837,7 @@ function sourceBundleDiagnostic(source, error, config) {
       ['redaction', 'source URL, credentials, headers, and upstream body omitted'],
     ],
     remediation: 'The bridge will continue without source bundle metadata. Check the source-bundle or manifest endpoint if bundle metadata is expected.',
-    message: `${source.name} source bundle metadata could not be read.`,
+    message: `${sourceLabel} source bundle metadata could not be read.`,
   })
 }
 
@@ -3321,16 +3949,221 @@ function parseA2aRunRequest(body, config) {
   const data = asRecord(envelope?.data) || envelope
   if (!data) throw new HttpError(400, 'A2A request body must be a JSON object.', 'bad_request')
 
-  const query = readString(data, 'query').trim()
-  if (!query) throw new HttpError(400, 'A2A request data.query is required.', 'bad_request')
+  const a2aMessage = normalizeA2aMessage(data.message ?? envelope?.message)
+  const query = readString(data, 'query').trim() || readString(a2aMessage, 'text').trim()
+  if (!query) throw new HttpError(400, 'A2A request data.query or message text is required.', 'bad_request')
   const orchestrationMode = requestOrchestrationMode(data, envelope)
+  const conversation = normalizeConversationPayload(data, envelope, query, a2aMessage)
 
   const sourceValue = data.knowledgeSources ?? data.knowledge_sources
   const requestSuppliesSources = sourceValue !== undefined
   const rawSources = requestSuppliesSources ? sourceValue : config.registeredSources
   const sources = normalizeKnowledgeSourceDescriptors(rawSources)
 
-  return { query, sources, orchestrationMode }
+  return { query, sources, orchestrationMode, conversation }
+}
+
+function normalizeConversationPayload(data, envelope, query, a2aMessage = null) {
+  const dataMetadata = asRecord(data.metadata)
+  const envelopeMetadata = asRecord(envelope?.metadata)
+  const messageMetadata = asRecord(a2aMessage?.metadata)
+  const messageLlmwikiMetadata = asRecord(messageMetadata?.llmwiki)
+  const dataConfiguration = asRecord(data.configuration)
+  const envelopeConfiguration = asRecord(envelope?.configuration)
+  const runtimeContext = asRecord(data.runtimeContext) || asRecord(envelope?.runtimeContext)
+  const messages = normalizeConversationMessages(data.messages)
+  if (a2aMessage?.text) messages.push({ role: a2aMessage.role === 'agent' ? 'assistant' : 'user', content: a2aMessage.text })
+  const historyLimit = normalizedConversationHistoryLimit(dataConfiguration, envelopeConfiguration)
+  const runtimeMessages = conversationRuntimeMessages(messages, query, historyLimit)
+  const runtimeConversation = normalizeConversationDescriptor(runtimeContext?.conversation)
+  const threadId = conversationIdentifier(
+    readString(data, 'threadId')
+      || readString(dataMetadata, 'threadId')
+      || readString(a2aMessage, 'contextId')
+      || readString(messageLlmwikiMetadata, 'threadId')
+      || readString(envelopeMetadata, 'threadId'),
+  )
+  const sessionId = conversationIdentifier(
+    readString(data, 'sessionId')
+      || readString(dataMetadata, 'sessionId')
+      || readString(messageLlmwikiMetadata, 'sessionId')
+      || readString(envelopeMetadata, 'sessionId'),
+  )
+  const turnId = conversationIdentifier(
+    readString(data, 'turnId')
+      || readString(dataMetadata, 'turnId')
+      || readString(messageLlmwikiMetadata, 'turnId')
+      || readString(a2aMessage, 'messageId')
+      || readString(envelopeMetadata, 'turnId'),
+  )
+  const contextProvided = Boolean(
+    messages.length
+      || threadId
+      || sessionId
+      || turnId
+      || a2aMessage
+      || runtimeConversation,
+  )
+
+  return {
+    messages,
+    runtimeMessages,
+    messageCount: messages.length,
+    historyLength: runtimeMessages.length,
+    historyLimit,
+    threadId,
+    sessionId,
+    turnId,
+    runtimeContextConversation: runtimeConversation,
+    contextProvided,
+  }
+}
+
+function normalizeA2aMessage(value) {
+  const message = asRecord(value)
+  if (!message) return null
+  const role = readString(message, 'role').trim().toLowerCase()
+  if (role !== 'user' && role !== 'agent') return null
+  const text = a2aMessageText(message)
+  const messageId = conversationIdentifier(readString(message, 'messageId'))
+  const contextId = conversationIdentifier(readString(message, 'contextId'))
+  return removeUndefinedProperties({
+    role,
+    text: boundedConversationString(text.trim(), MAX_CONVERSATION_MESSAGE_CONTENT_CHARS),
+    messageId,
+    contextId,
+    metadata: asRecord(message.metadata) || undefined,
+  })
+}
+
+function a2aMessageText(message) {
+  const parts = readRecordArray(message?.parts)
+  return parts
+    .filter((part) => readString(part, 'kind') === 'text' && typeof part.text === 'string')
+    .map((part) => part.text)
+    .join('\n')
+}
+
+function emptyConversationContext() {
+  return {
+    messages: [],
+    runtimeMessages: [],
+    messageCount: 0,
+    historyLength: 0,
+    historyLimit: MAX_CONVERSATION_MESSAGES,
+    threadId: '',
+    sessionId: '',
+    turnId: '',
+    runtimeContextConversation: undefined,
+    contextProvided: false,
+  }
+}
+
+function normalizeConversationMessages(value) {
+  return readRecordArray(value)
+    .map(normalizeConversationMessage)
+    .filter(Boolean)
+}
+
+function normalizeConversationMessage(message) {
+  const role = readString(message, 'role').trim().toLowerCase()
+  if (!conversationMessageRoles.has(role)) return null
+  if (typeof message.content !== 'string') return null
+  const content = boundedConversationString(message.content.trim(), MAX_CONVERSATION_MESSAGE_CONTENT_CHARS)
+  if (!content) return null
+  return { role, content }
+}
+
+function normalizedConversationHistoryLimit(...configurations) {
+  for (const configuration of configurations) {
+    if (!configuration || configuration.historyLength === undefined) continue
+    const value = readNumber(configuration, 'historyLength')
+    if (Number.isInteger(value) && value >= 0) return Math.min(value, MAX_CONVERSATION_MESSAGES)
+  }
+  return MAX_CONVERSATION_MESSAGES
+}
+
+function conversationRuntimeMessages(messages, query, historyLimit) {
+  if (historyLimit <= 0) return []
+  const runtimeMessages = messages
+    .filter((message) => conversationRuntimeRoles.has(message.role))
+    .map(({ role, content }) => ({ role, content }))
+  const historyMessages = [...runtimeMessages]
+  while (
+    historyMessages.at(-1)?.role === 'user'
+    && sameConversationContent(historyMessages.at(-1)?.content, query)
+  ) {
+    historyMessages.pop()
+  }
+  const alternating = []
+  for (const message of historyMessages) {
+    const last = alternating.at(-1)
+    if (!last) {
+      if (message.role === 'user') alternating.push(message)
+    } else if (last.role === message.role) {
+      alternating[alternating.length - 1] = message
+    } else {
+      alternating.push(message)
+    }
+  }
+  if (alternating.at(-1)?.role === 'user') alternating.pop()
+  let bounded = alternating.slice(-historyLimit)
+  while (bounded[0]?.role === 'assistant') bounded = bounded.slice(1)
+  if (bounded.at(-1)?.role === 'user') bounded = bounded.slice(0, -1)
+  return bounded
+}
+
+function sameConversationContent(left, right) {
+  return readStringValue(left).trim() === readStringValue(right).trim()
+}
+
+function conversationIdentifier(value) {
+  return safeRunIdentifier(value)
+}
+
+function normalizeConversationDescriptor(value) {
+  const descriptor = boundedConversationJsonValue(value, 0)
+  return asRecord(descriptor) && Object.keys(descriptor).length ? descriptor : undefined
+}
+
+function boundedConversationJsonValue(value, depth) {
+  if (value === null || typeof value === 'boolean') return value
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined
+  if (typeof value === 'string') return boundedConversationString(value.trim(), MAX_CONVERSATION_DESCRIPTOR_STRING_CHARS)
+  if (depth >= MAX_CONVERSATION_DESCRIPTOR_DEPTH) return undefined
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, MAX_CONVERSATION_DESCRIPTOR_ARRAY_ITEMS)
+      .map((item) => boundedConversationJsonValue(item, depth + 1))
+      .filter((item) => item !== undefined)
+  }
+  const record = asRecord(value)
+  if (!record) return undefined
+  return Object.fromEntries(
+    Object.entries(record)
+      .slice(0, MAX_CONVERSATION_DESCRIPTOR_KEYS)
+      .map(([key, item]) => [boundedConversationString(String(key), 80), boundedConversationJsonValue(item, depth + 1)])
+      .filter(([key, item]) => key && item !== undefined),
+  )
+}
+
+function boundedConversationString(value, maxLength) {
+  const text = readStringValue(value)
+  return text.length > maxLength ? text.slice(0, maxLength) : text
+}
+
+function conversationRuntimeContextForPrompt(conversation) {
+  const context = removeUndefinedProperties({
+    schema: 'llmwiki-agent-bridge.conversation-context.v1',
+    threadId: conversation.threadId || undefined,
+    sessionId: conversation.sessionId || undefined,
+    turnId: conversation.turnId || undefined,
+    messageCount: conversation.messageCount,
+    historyLength: conversation.historyLength,
+    historyLimit: conversation.historyLimit,
+    descriptor: conversation.runtimeContextConversation,
+  })
+  return context.threadId || context.sessionId || context.turnId || context.descriptor ? context : null
 }
 
 function normalizeKnowledgeSourceDescriptors(rawSources) {
@@ -3363,11 +4196,12 @@ function requestOrchestrationMode(data, envelope) {
   )
 }
 
-function isSelectedReadySource(source) {
-  return source.url
-    && source.status === 'ready'
-    && source.selected !== false
-    && ['llmwiki-http', 'mcp', 'a2a'].includes(source.protocol)
+function isSelectedReadySource(source, config = null) {
+  return knowledgeSourceReadiness(source, config).ready
+}
+
+function isSelectedSource(source) {
+  return source.selected !== false
 }
 
 function agentCard(config) {
@@ -3407,7 +4241,7 @@ function agentCard(config) {
 function sourceRegistrySummary(config) {
   const sources = normalizeKnowledgeSourceDescriptors(config.registeredSources)
   const selectedSources = sources.filter((source) => source.selected !== false)
-  const readySources = sources.filter(isSelectedReadySource)
+  const readySources = sources.filter((source) => isSelectedReadySource(source, config))
   return {
     registeredSourceCount: sources.length,
     selectedSourceCount: selectedSources.length,
@@ -3460,6 +4294,12 @@ function redactedBridgeSettings(config, request) {
       policy: config.sourcePolicy,
       configuredAllowedSourceOrigins: config.allowedSourceOrigins.length,
       allowedSourceOrigins: config.allowedSourceOrigins.map(redactedUrlSummary),
+    },
+    observability: {
+      auditLog: Boolean(config.auditLog),
+      ioLog: Boolean(config.ioLog),
+      ioLogMode: config.ioLogMode,
+      ioLogPathConfigured: Boolean(config.ioLogPath),
     },
     persistence: {
       enabled: Boolean(config.configPath),
@@ -3628,6 +4468,46 @@ function normalizeBridgeConfigSettingsInput(input, currentConfig) {
     persisted.sourcePolicy = sourcePolicy
     live.sourcePolicy = sourcePolicy
     markApplied(applied, 'sourcePolicy')
+  }
+
+  const auditLogUpdate = settingValue(input, 'auditLog')
+  if (auditLogUpdate.present) {
+    const auditLog = booleanSetting(auditLogUpdate.value, 'auditLog')
+    persisted.auditLog = auditLog
+    live.auditLog = auditLog
+    markApplied(applied, 'auditLog')
+  }
+
+  const ioLogUpdate = settingValue(input, 'ioLog')
+  if (ioLogUpdate.present) {
+    const ioLogMode = ioLogSetting(ioLogUpdate.value, 'ioLog')
+    persisted.ioLog = ioLogMode !== OFF_IO_LOG_MODE
+    persisted.ioLogMode = ioLogMode
+    live.ioLog = ioLogMode !== OFF_IO_LOG_MODE
+    live.ioLogMode = ioLogMode
+    live.ioLogPath = liveIoLogPathForMode(ioLogMode, currentConfig.ioLogPath)
+    markApplied(applied, 'ioLog', 'ioLogMode')
+  }
+
+  const ioLogModeUpdate = settingValue(input, 'ioLogMode')
+  if (ioLogModeUpdate.present) {
+    const ioLogMode = ioLogSetting(ioLogModeUpdate.value, 'ioLogMode')
+    persisted.ioLog = ioLogMode !== OFF_IO_LOG_MODE
+    persisted.ioLogMode = ioLogMode
+    live.ioLog = ioLogMode !== OFF_IO_LOG_MODE
+    live.ioLogMode = ioLogMode
+    live.ioLogPath = liveIoLogPathForMode(ioLogMode, currentConfig.ioLogPath)
+    markApplied(applied, 'ioLog', 'ioLogMode')
+  }
+
+  const ioLogPathUpdate = settingValue(input, 'ioLogPath')
+  if (ioLogPathUpdate.present) {
+    const ioLogPath = stringSetting(ioLogPathUpdate.value)
+    persisted.ioLogPath = ioLogPath
+    live.ioLogPath = live.ioLogMode === FILE_IO_LOG_MODE || currentConfig.ioLogMode === FILE_IO_LOG_MODE
+      ? ioLogPath || join(process.cwd(), DEFAULT_IO_LOG_FILE_PATH)
+      : ''
+    markApplied(applied, 'ioLogPath')
   }
 
   const bridgeBearerTokenUpdate = firstSettingValue(input, ['bridgeBearerToken', 'bearerToken'])
@@ -3867,6 +4747,22 @@ function booleanSetting(value, field) {
     if (['0', 'false', 'no', 'off'].includes(normalized)) return false
   }
   throw new HttpError(400, `${field} must be a boolean.`, 'invalid_bridge_settings')
+}
+
+function ioLogSetting(value, field) {
+  try {
+    const mode = ioLogModeOption(value)
+    if (mode) return mode
+  } catch (error) {
+    throw new HttpError(400, error instanceof Error ? error.message : String(error), 'invalid_bridge_settings')
+  }
+  throw new HttpError(400, `${field} must be true, false, on, off, logger, stdout, or file.`, 'invalid_bridge_settings')
+}
+
+function liveIoLogPathForMode(mode, currentPath = '') {
+  return mode === FILE_IO_LOG_MODE
+    ? currentPath || join(process.cwd(), DEFAULT_IO_LOG_FILE_PATH)
+    : ''
 }
 
 function originListSetting(value, normalizer, field) {
@@ -5715,6 +6611,27 @@ function bridgeConfig(env, options = {}) {
     ?? sourcePolicyOption(env.HERMES_A2A_BRIDGE_SOURCE_POLICY)
     ?? sourcePolicyOption(persistentConfig.sourcePolicy)
     ?? DEFAULT_SOURCE_POLICY
+  const auditLog = booleanOption(options.auditLog)
+    ?? booleanOption(options.auditLogEnabled)
+    ?? envFlagOption(env[AUDIT_LOG_ENV])
+    ?? booleanOption(persistentConfig.auditLog)
+    ?? booleanOption(persistentConfig.auditLogEnabled)
+    ?? false
+  const configuredIoLogPath = stringOption(options.ioLogPath)
+    || stringOption(env[IO_LOG_PATH_ENV])
+    || stringOption(persistentConfig.ioLogPath)
+    || ''
+  const ioLogMode = ioLogModeOption(options.ioLogMode)
+    ?? ioLogModeOption(options.ioLog)
+    ?? ioLogModeOption(options.ioLogEnabled)
+    ?? ioLogModeOption(env[IO_LOG_ENV])
+    ?? ioLogModeOption(persistentConfig.ioLogMode)
+    ?? ioLogModeOption(persistentConfig.ioLog)
+    ?? ioLogModeOption(persistentConfig.ioLogEnabled)
+    ?? (configuredIoLogPath ? FILE_IO_LOG_MODE : DEFAULT_IO_LOG_MODE)
+  const ioLogPath = ioLogMode === FILE_IO_LOG_MODE
+    ? configuredIoLogPath || join(process.cwd(), DEFAULT_IO_LOG_FILE_PATH)
+    : ''
   const runtimeProfile = runtimeProfileOption(options.runtimeProfile)
     ?? runtimeProfileOption(env.LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE)
     ?? runtimeProfileOption(env.HERMES_A2A_BRIDGE_RUNTIME_PROFILE)
@@ -5778,6 +6695,10 @@ function bridgeConfig(env, options = {}) {
     allowedOrigins,
     allowedSourceOrigins,
     sourcePolicy,
+    auditLog,
+    ioLog: ioLogMode !== OFF_IO_LOG_MODE,
+    ioLogMode,
+    ioLogPath,
     runtimeProfile,
     runtimeId,
     runtimeName,
@@ -5866,6 +6787,18 @@ function runtimeProfileOption(value) {
   throw new Error(`Unsupported LLMWiki Agent Bridge runtime profile: ${value}.`)
 }
 
+function ioLogModeOption(value) {
+  if (typeof value === 'boolean') return value ? DEFAULT_IO_LOG_MODE : OFF_IO_LOG_MODE
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, '')
+  if (!normalized) return undefined
+  if (['0', 'false', 'no', 'off', 'disable', 'disabled', 'none'].includes(normalized)) return OFF_IO_LOG_MODE
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return DEFAULT_IO_LOG_MODE
+  if (['logger', 'log', 'stdout'].includes(normalized)) return LOGGER_IO_LOG_MODE
+  if (['file', 'jsonl'].includes(normalized)) return FILE_IO_LOG_MODE
+  throw new Error(`Unsupported LLMWiki Agent Bridge I/O log mode: ${value}.`)
+}
+
 function envFlagOption(value) {
   if (typeof value !== 'string' || value.trim() === '') return undefined
   return envFlag(value)
@@ -5927,26 +6860,105 @@ async function postJson(url, body, label, config) {
   }, label, config)
 }
 
-async function postKnowledgeSourceJson(url, body, label, config) {
+async function postKnowledgeSourceJson(url, body, label, config, ioLogContext = {}) {
   return fetchKnowledgeSourceJson(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  }, label, config)
+  }, label, config, { ...ioLogContext, requestBody: body })
 }
 
-async function fetchKnowledgeSourceJson(url, init, label, config) {
+async function fetchKnowledgeSourceJson(url, init, label, config, ioLogContext = {}) {
   assertAllowedKnowledgeSourceFetchUrl(url, config)
-  return fetchJson(url, { ...init, redirect: 'error' }, label, config)
+  return fetchJson(url, { ...init, redirect: 'error' }, label, config, { flow: 'source', ...ioLogContext })
 }
 
-async function fetchJson(url, init, label, config) {
-  const response = await fetchWithTimeout(url, init, config.requestTimeoutMs)
-  if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}`)
+async function fetchJson(url, init, label, config, ioLogContext = {}) {
+  const started = performance.now()
+  const method = readStringValue(init?.method).toUpperCase() || 'GET'
+  const context = {
+    flow: ioLogContext.flow || 'http',
+    operation: ioLogContext.operation || label,
+    requestId: ioLogContext.requestId,
+    traceId: ioLogContext.traceId,
+    source: ioLogContext.source,
+  }
+  const target = ioLogHttpTarget(url, context)
+  const requestBody = ioLogContext.requestBody !== undefined ? ioLogContext.requestBody : jsonBodyFromFetchInit(init)
+
+  emitIoLog(config, {
+    phase: `${context.flow}.request`,
+    flow: context.flow,
+    operation: context.operation,
+    requestId: context.requestId,
+    traceId: context.traceId,
+    target,
+    request: {
+      method,
+      headers: redactedHeaderSummary(init?.headers),
+      body: requestBody,
+    },
+  })
+
   try {
-    return await response.json()
+    const response = await fetchWithTimeout(url, init, config.requestTimeoutMs)
+    const responseText = await response.text()
+    const parsed = parseFetchJsonResponseBody(responseText)
+
+    emitIoLog(config, {
+      phase: `${context.flow}.response`,
+      flow: context.flow,
+      operation: context.operation,
+      requestId: context.requestId,
+      traceId: context.traceId,
+      target,
+      response: {
+        statusCode: response.status,
+        ok: response.ok,
+        body: parsed.validJson ? parsed.value : { text: responseText },
+      },
+      durationMs: Math.round(performance.now() - started),
+    })
+
+    if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}`)
+    if (!parsed.validJson) throw new Error(`${label} returned invalid JSON`)
+    return parsed.value
+  } catch (error) {
+    emitIoLog(config, {
+      phase: `${context.flow}.error`,
+      flow: context.flow,
+      operation: context.operation,
+      requestId: context.requestId,
+      traceId: context.traceId,
+      target,
+      request: {
+        method,
+        headers: redactedHeaderSummary(init?.headers),
+        body: requestBody,
+      },
+      error,
+      durationMs: Math.round(performance.now() - started),
+    })
+    throw error
+  }
+}
+
+function jsonBodyFromFetchInit(init) {
+  const body = init?.body
+  if (typeof body !== 'string') return undefined
+  try {
+    return JSON.parse(body)
   } catch {
-    throw new Error(`${label} returned invalid JSON`)
+    return body
+  }
+}
+
+function parseFetchJsonResponseBody(text) {
+  if (!text.trim()) return { validJson: false, value: undefined }
+  try {
+    return { validJson: true, value: JSON.parse(text) }
+  } catch {
+    return { validJson: false, value: undefined }
   }
 }
 

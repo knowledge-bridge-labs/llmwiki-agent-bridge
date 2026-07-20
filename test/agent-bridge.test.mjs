@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer, request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,6 +10,15 @@ import { promisify } from 'node:util'
 
 import { DefaultAgentCardResolver } from '@a2a-js/sdk/client'
 
+import {
+  classifyLiveRunFailureBuckets,
+  classifyLiveRunFailureCodes,
+  buildLiveRendererRecommendation,
+  evaluateAnswerOracle,
+  evaluateExpectedCitationMappings,
+  summarizeAnswerOracleRunMetrics,
+  summarizeExpectedCitationMappingRunMetrics,
+} from '../scripts/benchmark-runtime-prompt.mjs'
 import { agentBridgeOpenApi, startAgentBridge, startHermesA2aBridge } from '../src/index.mjs'
 
 const execFileAsync = promisify(execFile)
@@ -395,6 +404,73 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(persisted.sources[1].selected, false)
   })
 
+  it('fails closed without leaking URLs when a persisted ready registered source is stale', async (t) => {
+    const configPath = await tempConfigPath(t)
+    const staleSource = await startFixtureServer(async () => {})
+    const staleSourceUrl = `${staleSource.url}/private-source?token=source-secret`
+    await closeServer(staleSource.server)
+
+    const hermes = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'Runtime should not be called.' } }],
+      })
+    })
+    t.after(() => closeServer(hermes.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      configPath,
+      hermesBaseUrl: `${hermes.url}/v1`,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const saveResponse = await fetch(`${bridge.url}/settings/sources.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sources: [
+          knowledgeSource('stale-source', 'Stale Source', 'llmwiki-http', staleSourceUrl),
+        ],
+      }),
+    })
+
+    assert.equal(saveResponse.status, 200)
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'source readiness hardening query should stay private',
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts[0].parts[0].data
+    const queryDiagnostics = artifact.diagnostics.filter((diagnostic) => (
+      diagnostic.scope === 'source' && diagnostic.phase === 'query'
+    ))
+    const serialized = JSON.stringify(artifact)
+
+    assert.equal(response.status, 200)
+    assert.equal(a2a.status.state, 'completed')
+    assert.equal(hermes.requests.length, 0)
+    assert.equal(artifact.steps.some((step) => step.id === 'runtime-chat-completions'), false)
+    assert.equal(artifact.steps.find((step) => step.id === 'bridge-source-fail-closed').status, 'done')
+    assert.match(artifact.answer, /Persisted ready status is treated as last-known only/)
+    assert.match(artifact.answer, /did not call the configured runtime/)
+    assert.equal(queryDiagnostics.length, 1)
+    assert.equal(artifact.diagnostics.length, 1)
+    assert.equal(queryDiagnostics[0].subject, 'stale-source')
+    assert.equal(queryDiagnostics[0].redacted, true)
+    assert.equal(observationValue(queryDiagnostics[0], 'sourceStatus'), 'ready')
+    assert.doesNotMatch(serialized, /127\.0\.0\.1/)
+    assert.doesNotMatch(serialized, /private-source/)
+    assert.doesNotMatch(serialized, /source-secret/)
+    assert.doesNotMatch(serialized, /source readiness hardening query/)
+  })
+
   it('appends bounded fallback citation anchors when runtime answer omits anchors', async (t) => {
     const source = await startFixtureServer(async ({ url, response }) => {
       if (url.pathname === '/search') {
@@ -736,6 +812,13 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(
       schema.components.schemas.McpSourceSummary.properties.readiness.$ref,
       '#/components/schemas/McpSourceReadiness',
+    )
+    assert.deepEqual(
+      schema.components.schemas.McpSourceReadiness.required,
+      ['ready', 'basis'],
+    )
+    assert(
+      schema.components.schemas.McpSourceReadiness.properties.reason.enum.includes('source_policy_blocked'),
     )
   })
 
@@ -1139,6 +1222,7 @@ describe('llmwiki-agent-bridge', () => {
     const sourceOrigin = 'http://192.168.50.10:8765'
     const completionsOrigin = 'http://agent-public-policy.example.test'
     const sourceRequests = []
+    const completionsRequests = []
     let bridge
 
     globalThis.fetch = async (input, init = {}) => {
@@ -1151,6 +1235,7 @@ describe('llmwiki-agent-bridge', () => {
       }
 
       if (url.origin === completionsOrigin) {
+        completionsRequests.push({ url, body: parseJsonFetchBody(init.body) })
         return jsonFetchResponse(200, {
           choices: [{ message: { role: 'assistant', content: 'Answer with public-https source skipped.' } }],
         })
@@ -1189,8 +1274,9 @@ describe('llmwiki-agent-bridge', () => {
 
     assert.equal(response.status, 200)
     assert.equal(sourceRequests.length, 0)
+    assert.equal(completionsRequests.length, 0)
     assert.equal(failedStep.status, 'error')
-    assert.equal(artifact.answer, 'Answer with public-https source skipped.')
+    assert.match(artifact.answer, /did not call the configured runtime/)
   })
 
   it('rejects invalid, userinfo, and non-http source URLs under every source policy', async (t) => {
@@ -1249,16 +1335,18 @@ describe('llmwiki-agent-bridge', () => {
 
       assert.equal(response.status, 200)
       assert.equal(failedSteps.length, 3)
-      assert.equal(artifact.answer, 'Answer with invalid sources skipped.')
+      assert.match(artifact.answer, /did not call the configured runtime/)
     }
 
     assert.equal(sourceRequests.length, 0)
-    assert.equal(completionsRequests.length, 3)
+    assert.equal(completionsRequests.length, 0)
   })
 
   it('does not send a default chat completions authorization header when no API key is configured', async (t) => {
-    const hermes = await startFixtureServer(async ({ headers, response }) => {
+    const legacyQuery = 'Can the bridge run without an upstream API key?'
+    const hermes = await startFixtureServer(async ({ headers, body, response }) => {
       assert.equal(headers.authorization, undefined)
+      hermes.lastBody = body
       writeJson(response, 200, {
         choices: [{ message: { role: 'assistant', content: 'No key required.' } }],
       })
@@ -1276,13 +1364,230 @@ describe('llmwiki-agent-bridge', () => {
     const response = await fetch(`${bridge.url}/message:send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data: { query: 'Can the bridge run without an upstream API key?' } }),
+      body: JSON.stringify({ data: { query: legacyQuery } }),
     })
     const a2a = await response.json()
 
     assert.equal(response.status, 200)
     assert.equal(hermes.requests.length, 1)
+    assert.deepEqual(hermes.lastBody.messages.map((message) => message.role), ['system', 'user'])
+    assert.match(hermes.lastBody.messages[1].content, new RegExp(escapeRegExp(legacyQuery)))
     assert.equal(a2a.artifacts[0].parts[0].data.answer, 'No key required.')
+  })
+
+  it('normalizes additive conversation payloads for runtime calls without leaking raw history to sources or audit logs', async (t) => {
+    const queryCanary = 'CONVERSATION_CURRENT_QUERY_CANARY'
+    const priorUserCanary = 'CONVERSATION_PRIOR_USER_CANARY'
+    const assistantCanary = 'CONVERSATION_PRIOR_ASSISTANT_CANARY'
+    const systemCanary = 'CONVERSATION_SYSTEM_CANARY'
+    const descriptorTitleCanary = 'Conversation Descriptor Canary'
+    const threadCanary = 'conversation-thread-canary'
+    const sessionCanary = 'conversation-session-canary'
+    const turnCanary = 'conversation-turn-canary'
+    const messageContextCanary = 'conversation-message-context-canary'
+    const messageIdCanary = 'conversation-a2a-message-canary'
+    const metadataThreadCanary = 'metadata-thread-canary'
+    const metadataSessionCanary = 'metadata-session-canary'
+    const metadataTurnCanary = 'metadata-turn-canary'
+    const runtimeAnswerCanary = 'CONVERSATION_RUNTIME_ANSWER_CANARY'
+
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      assert.equal(request.method, 'POST')
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      assert.equal(body.query, queryCanary)
+      const serializedSourceBody = JSON.stringify(body)
+      assert.doesNotMatch(serializedSourceBody, new RegExp(escapeRegExp(priorUserCanary)))
+      assert.doesNotMatch(serializedSourceBody, new RegExp(escapeRegExp(assistantCanary)))
+      writeJson(response, 200, {
+        wiki_title: 'Conversation Runtime Wiki',
+        evidence: [
+          {
+            page_id: 'conversation-runtime',
+            title: 'Conversation Runtime Context',
+            path: 'conversation-runtime.md',
+            snippet: `Current query evidence for ${body.query}.`,
+            source_refs: ['CONVERSATION-RUNTIME-1'],
+          },
+        ],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      runtime.lastBody = body
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: runtimeAnswerCanary } }],
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const logger = recordingLogger()
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      auditLog: true,
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: queryCanary,
+          messages: [
+            { role: 'system', content: systemCanary },
+            { role: 'user', content: priorUserCanary },
+            { role: 'assistant', content: assistantCanary },
+            { role: 'user', content: queryCanary },
+          ],
+          message: {
+            kind: 'message',
+            messageId: messageIdCanary,
+            contextId: messageContextCanary,
+            role: 'user',
+            parts: [{ kind: 'text', text: queryCanary }],
+            metadata: {
+              llmwiki: {
+                threadId: 'conversation-message-thread-canary',
+                sessionId: 'conversation-message-session-canary',
+                turnId: 'conversation-message-turn-canary',
+              },
+            },
+          },
+          threadId: threadCanary,
+          sessionId: sessionCanary,
+          turnId: turnCanary,
+          runtimeContext: {
+            conversation: {
+              title: descriptorTitleCanary,
+              messageCount: 4,
+            },
+          },
+          knowledgeSources: [
+            knowledgeSource('conversation-source', 'Conversation Source', 'llmwiki-http', source.url),
+          ],
+        },
+        configuration: { historyLength: 2 },
+        metadata: {
+          threadId: metadataThreadCanary,
+          sessionId: metadataSessionCanary,
+          turnId: metadataTurnCanary,
+        },
+      }),
+    })
+    const a2a = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(a2a.artifacts[0].parts[0].data.answer, expectedFallbackAnswer(runtimeAnswerCanary, 1))
+    assert.equal(source.requests.filter((item) => item.url.pathname === '/query').length, 1)
+    assert.equal(source.requests.filter((item) => item.url.pathname === '/search').length, 1)
+    assert.equal(runtime.requests.length, 1)
+
+    const runtimeMessages = runtime.lastBody.messages
+    assert.deepEqual(runtimeMessages.map((message) => message.role), ['system', 'user', 'assistant', 'user'])
+    assert.equal(runtimeMessages[1].content, priorUserCanary)
+    assert.equal(runtimeMessages[2].content, assistantCanary)
+    assert.match(runtimeMessages[3].content, new RegExp(escapeRegExp(queryCanary)))
+    assert.match(runtimeMessages[3].content, /# LLMWiki evidence bundle/)
+    assert.match(runtimeMessages[3].content, /conversationContext/)
+    assert.match(runtimeMessages[3].content, new RegExp(escapeRegExp(threadCanary)))
+    assert.match(runtimeMessages[3].content, new RegExp(escapeRegExp(sessionCanary)))
+    assert.match(runtimeMessages[3].content, new RegExp(escapeRegExp(turnCanary)))
+    assert.match(runtimeMessages[3].content, new RegExp(escapeRegExp(descriptorTitleCanary)))
+    assert.doesNotMatch(runtimeMessages[3].content, new RegExp(escapeRegExp(metadataThreadCanary)))
+    assert.doesNotMatch(runtimeMessages[3].content, new RegExp(escapeRegExp(messageContextCanary)))
+    assert.doesNotMatch(runtimeMessages[3].content, new RegExp(escapeRegExp(messageIdCanary)))
+    assert.doesNotMatch(runtimeMessages.map((message) => message.content).join('\n'), new RegExp(escapeRegExp(systemCanary)))
+
+    const serializedSourceRequests = JSON.stringify(source.requests)
+    assert.doesNotMatch(serializedSourceRequests, new RegExp(escapeRegExp(priorUserCanary)))
+    assert.doesNotMatch(serializedSourceRequests, new RegExp(escapeRegExp(assistantCanary)))
+    assert.doesNotMatch(serializedSourceRequests, new RegExp(escapeRegExp(systemCanary)))
+
+    const events = auditEvents(logger)
+    assert.equal(events.length, 1)
+    assert.equal(events[0].conversationMessageCount, 5)
+    assert.equal(events[0].conversationHistoryLength, 2)
+    assert.equal(events[0].conversationContextProvided, true)
+    const serializedAuditEvents = JSON.stringify(events)
+    for (const canary of [
+      queryCanary,
+      priorUserCanary,
+      assistantCanary,
+      systemCanary,
+      descriptorTitleCanary,
+      threadCanary,
+      sessionCanary,
+      turnCanary,
+      messageContextCanary,
+      messageIdCanary,
+      metadataThreadCanary,
+      metadataSessionCanary,
+      metadataTurnCanary,
+      runtimeAnswerCanary,
+    ]) {
+      assert.doesNotMatch(serializedAuditEvents, new RegExp(escapeRegExp(canary)))
+    }
+  })
+
+  it('accepts top-level A2A message text as the current query when data.query is absent', async (t) => {
+    const queryCanary = 'TOP_LEVEL_A2A_MESSAGE_QUERY_CANARY'
+    const contextCanary = 'top-level-a2a-context-canary'
+    const sessionCanary = 'top-level-a2a-session-canary'
+    const turnCanary = 'top-level-a2a-turn-canary'
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      runtime.lastBody = body
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'A2A message accepted.' } }],
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: {
+          kind: 'message',
+          messageId: turnCanary,
+          contextId: contextCanary,
+          role: 'user',
+          parts: [{ kind: 'text', text: queryCanary }],
+          metadata: {
+            llmwiki: {
+              sessionId: sessionCanary,
+              turnId: turnCanary,
+            },
+          },
+        },
+        configuration: { historyLength: 0 },
+      }),
+    })
+    const a2a = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(a2a.artifacts[0].parts[0].data.answer, 'A2A message accepted.')
+    assert.equal(runtime.requests.length, 1)
+    assert.deepEqual(runtime.lastBody.messages.map((message) => message.role), ['system', 'user'])
+    assert.match(runtime.lastBody.messages[1].content, new RegExp(escapeRegExp(queryCanary)))
+    assert.match(runtime.lastBody.messages[1].content, /conversationContext/)
+    assert.match(runtime.lastBody.messages[1].content, new RegExp(escapeRegExp(contextCanary)))
+    assert.match(runtime.lastBody.messages[1].content, new RegExp(escapeRegExp(sessionCanary)))
+    assert.match(runtime.lastBody.messages[1].content, new RegExp(escapeRegExp(turnCanary)))
   })
 
   it('exposes an MCP llmwiki_agent_run tool backed by the A2A run path', async (t) => {
@@ -1379,6 +1684,487 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(result.steps.find((step) => step.id === 'runtime-chat-completions').status, 'done')
     assert.equal(source.requests.filter((item) => item.url.pathname === '/query').length, 1)
     assert.equal(hermes.requests.length, 1)
+  })
+
+  it('emits safe request audit logs for evidence-only message sends', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, response }) => {
+      if (request.method === 'GET') {
+        writeJson(response, 404, { error: { code: 'not_found' } })
+        return
+      }
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        wiki_title: 'Audit Wiki',
+        evidence: [
+          {
+            page_id: 'audit-safe',
+            title: 'Audit Safe Evidence',
+            path: 'audit-safe.md',
+            snippet: 'Audit evidence is available.',
+            source_refs: ['AUDIT-SAFE-1'],
+          },
+        ],
+        graph: {
+          nodes: [{ id: 'audit-node', label: 'Audit Node' }],
+          edges: [],
+        },
+      })
+    })
+    t.after(() => closeServer(source.server))
+    const logger = recordingLogger()
+    const rawQueryCanary = 'AUDIT_RAW_QUERY_CANARY_evidence_only'
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      auditLog: true,
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-request-id': 'audit-evidence-request',
+        'x-trace-id': 'audit-evidence-trace',
+      },
+      body: JSON.stringify({
+        data: {
+          query: rawQueryCanary,
+          orchestrationMode: 'evidence-only',
+          knowledgeSources: [
+            knowledgeSource('audit-source', 'Audit Source', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+
+    assert.equal(response.status, 200)
+    const events = auditEvents(logger)
+    assert.equal(events.length, 1)
+    assert.equal(events[0].event, 'llmwiki.agent_bridge.request')
+    assert.equal(events[0].schemaVersion, 'llmwiki.agent-bridge.audit.v1')
+    assert.equal(events[0].requestId, 'audit-evidence-request')
+    assert.equal(events[0].traceId, 'audit-evidence-trace')
+    assert.equal(events[0].method, 'POST')
+    assert.equal(events[0].route, '/message:send')
+    assert.equal(events[0].statusCode, 200)
+    assert.equal(events[0].orchestrationMode, 'evidence-only')
+    assert.equal(events[0].runtimeCalled, false)
+    assert.equal(events[0].selectedSourceCount, 1)
+    assert.equal(events[0].selectedReadySourceCount, 1)
+    assert.equal(events[0].citationCount, 1)
+    assert.equal(events[0].graphNodeCount, 1)
+    assert.equal(events[0].artifactCount, 1)
+    assert.equal(events[0].redacted, true)
+    assert.equal(events[0].routePatternOnly, true)
+    assert.equal(events[0].queryStringLogged, false)
+    assert.equal(events[0].requestBodyLogged, false)
+    assert.equal(events[0].responseBodyLogged, false)
+    assert.equal(events[0].credentialsLogged, false)
+    assert.equal(events[0].sourceUrlsLogged, false)
+    assert.match(events[0].timestamp, /^\d{4}-\d{2}-\d{2}T/)
+    assert.equal(typeof events[0].durationMs, 'number')
+    assert(events[0].durationMs >= 0)
+
+    const serialized = JSON.stringify(events)
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(rawQueryCanary)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(source.url)))
+    assert.doesNotMatch(serialized, /audit-safe\.md/)
+    assert.doesNotMatch(serialized, /AUDIT-SAFE-1/)
+  })
+
+  it('emits safe request audit logs for delegated-runtime message sends', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, response }) => {
+      if (request.method === 'GET') {
+        writeJson(response, 404, { error: { code: 'not_found' } })
+        return
+      }
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        wiki_title: 'Delegated Audit Wiki',
+        evidence: [
+          {
+            page_id: 'delegated-audit-safe',
+            title: 'Delegated Audit Safe Evidence',
+            path: 'delegated-audit-safe.md',
+            snippet: 'Delegated audit evidence is available.',
+            source_refs: ['DELEGATED-AUDIT-SAFE-1'],
+          },
+        ],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const runtimeAnswerCanary = 'AUDIT_RUNTIME_ANSWER_CANARY'
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: runtimeAnswerCanary } }],
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const logger = recordingLogger()
+    const rawQueryCanary = 'AUDIT_RAW_QUERY_CANARY_delegated_runtime'
+    const modelCanary = 'AUDIT_SENSITIVE_MODEL_CANARY'
+    const keyCanary = 'sk-audit-secret-canary'
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      hermesModel: modelCanary,
+      hermesApiKey: keyCanary,
+      auditLog: true,
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: rawQueryCanary,
+          orchestrationMode: 'delegated-runtime',
+          knowledgeSources: [
+            knowledgeSource('delegated-audit-source', 'Delegated Audit Source', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+
+    assert.equal(response.status, 200)
+    assert.equal(runtime.requests.length, 1)
+    const events = auditEvents(logger)
+    assert.equal(events.length, 1)
+    assert.equal(events[0].route, '/message:send')
+    assert.equal(events[0].statusCode, 200)
+    assert.equal(events[0].orchestrationMode, 'delegated-runtime')
+    assert.equal(events[0].runtimeCalled, true)
+    assert.equal(events[0].selectedSourceCount, 1)
+    assert.equal(events[0].selectedReadySourceCount, 1)
+    assert.equal(events[0].citationCount, 1)
+    assert.equal(events[0].sourceBundleCount, 0)
+    assert.equal(events[0].artifactCount, 1)
+
+    const serialized = JSON.stringify(events)
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(rawQueryCanary)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(runtimeAnswerCanary)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(source.url)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(modelCanary)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(keyCanary)))
+    assert.doesNotMatch(serialized, /delegated-audit-safe\.md/)
+    assert.doesNotMatch(serialized, /DELEGATED-AUDIT-SAFE-1/)
+  })
+
+  it('audits settings and MCP routes with patterns instead of query strings or request bodies', async (t) => {
+    const logger = recordingLogger()
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      auditLog: true,
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const queryStringCanary = 'AUDIT_QUERY_STRING_CANARY'
+    const mcpBodyCanary = 'AUDIT_MCP_BODY_CANARY'
+    const settingsResponse = await fetch(`${bridge.url}/settings.json?api_key=${queryStringCanary}`)
+    const mcpResponse = await fetch(`${bridge.url}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: mcpBodyCanary,
+        method: 'tools/list',
+      }),
+    })
+
+    assert.equal(settingsResponse.status, 200)
+    assert.equal(mcpResponse.status, 200)
+    const events = auditEvents(logger)
+    assert.deepEqual(events.map((event) => event.route), ['/settings.json', '/mcp'])
+    assert.equal(events[0].method, 'GET')
+    assert.equal(events[1].method, 'POST')
+    assert.equal(events[1].mcpMethod, 'tools/list')
+    assert.equal(events[1].mcpError, false)
+
+    const serialized = JSON.stringify(events)
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(queryStringCanary)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(mcpBodyCanary)))
+    assert.doesNotMatch(serialized, /\?api_key=/)
+  })
+
+  it('emits default redacted IO logs for message sends and honors opt-out', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, response }) => {
+      if (request.method === 'GET') {
+        writeJson(response, 404, { error: { code: 'not_found' } })
+        return
+      }
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        wiki_title: 'IO Log Wiki',
+        evidence: [
+          {
+            page_id: 'io-log-page',
+            title: 'IO Log Evidence',
+            path: 'io-log-page.md',
+            snippet: 'I/O logging evidence is available.',
+            source_refs: ['IO-LOG-1'],
+          },
+        ],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const answerCanary = 'IO_LOG_ANSWER_CANARY_default_on'
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: answerCanary } }],
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const logger = recordingLogger()
+    const ioLogDir = await mkdtemp(join(tmpdir(), 'llmwiki-bridge-io-default-'))
+    const ioLogPath = join(ioLogDir, 'bridge-io.jsonl')
+    t.after(async () => {
+      await rm(ioLogDir, { force: true, recursive: true })
+    })
+    const promptCanary = 'IO_LOG_PROMPT_CANARY_default_on'
+    const secretCanaries = [
+      'io-log-freeform-bearer-secret',
+      'aW8tbG9nLWJhc2ljLXNlY3JldA==',
+      'io-log-cookie-secret',
+      'io-log-set-cookie-secret',
+      'io-log-client-secret',
+      'io-log-signature-secret',
+      'io-log-code-secret',
+      'io-log-sig-secret',
+      'C:\\Users\\angel\\secret.txt',
+      '\\\\server\\share\\secret.txt',
+      '/home/angel/secret.txt',
+      '/var/tmp/secret.txt',
+    ]
+    const promptWithSecrets = [
+      promptCanary,
+      'Bearer io-log-freeform-bearer-secret',
+      'Basic aW8tbG9nLWJhc2ljLXNlY3JldA==',
+      'Cookie: session=io-log-cookie-secret',
+      'Set-Cookie: session=io-log-set-cookie-secret',
+      'https://wiki.example.test/context?client_secret=io-log-client-secret&signature=io-log-signature-secret&code=io-log-code-secret&sig=io-log-sig-secret',
+      'C:\\Users\\angel\\secret.txt',
+      '\\\\server\\share\\secret.txt',
+      '/home/angel/secret.txt',
+      '/var/tmp/secret.txt',
+    ].join(' ')
+    const bridgeBearerToken = 'io-log-bridge-bearer-secret'
+    const runtimeApiKey = 'sk-proj-io-log-runtime-secret-1234567890'
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      hermesApiKey: runtimeApiKey,
+      bridgeBearerToken,
+      ioLogPath,
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${bridgeBearerToken}`,
+      },
+      body: JSON.stringify({
+        data: {
+          query: promptWithSecrets,
+          knowledgeSources: [
+            knowledgeSource('io-log-source', 'IO Log Source', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+    assert.equal(response.status, 200)
+
+    const events = await readJsonLines(ioLogPath)
+    assert(events.length > 0)
+    assert(events.some((event) => event.phase === 'bridge.request'))
+    assert(events.some((event) => event.phase === 'source.request'))
+    assert(events.some((event) => event.phase === 'runtime.request'))
+    assert(events.some((event) => event.phase === 'runtime.response'))
+    assert(events.some((event) => event.phase === 'bridge.response'))
+
+    const serialized = JSON.stringify(events)
+    assert.match(serialized, new RegExp(escapeRegExp(promptCanary)))
+    assert.match(serialized, new RegExp(escapeRegExp(answerCanary)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(bridgeBearerToken)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(runtimeApiKey)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(source.url)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(serialized, /Authorization[^}]+io-log-bridge-bearer-secret/i)
+    for (const canary of secretCanaries) {
+      assert.doesNotMatch(serialized, new RegExp(escapeRegExp(canary)))
+    }
+
+    const optOutLogger = recordingLogger()
+    const optOutIoLogPath = join(ioLogDir, 'bridge-io-off.jsonl')
+    const optOutBridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      hermesApiKey: runtimeApiKey,
+      bridgeBearerToken,
+      env: { LLMWIKI_AGENT_BRIDGE_IO_LOG: 'off' },
+      ioLogPath: optOutIoLogPath,
+      logger: optOutLogger,
+    })
+    t.after(() => closeServer(optOutBridge.server))
+
+    const optOutResponse = await fetch(`${optOutBridge.url}/message:send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${bridgeBearerToken}`,
+      },
+      body: JSON.stringify({
+        data: {
+          query: promptCanary,
+          knowledgeSources: [
+            knowledgeSource('io-log-source', 'IO Log Source', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+
+    assert.equal(optOutResponse.status, 200)
+    assert.rejects(() => readFile(optOutIoLogPath, 'utf8'))
+    assert.equal(ioEvents(optOutLogger).length, 0)
+    assert.doesNotMatch(optOutLogger.lines.join('\n'), new RegExp(escapeRegExp(promptCanary)))
+    assert.doesNotMatch(optOutLogger.lines.join('\n'), new RegExp(escapeRegExp(answerCanary)))
+
+    const explicitLogger = recordingLogger()
+    const explicitLoggerBridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      hermesApiKey: runtimeApiKey,
+      env: { LLMWIKI_AGENT_BRIDGE_IO_LOG: 'logger' },
+      logger: explicitLogger,
+    })
+    t.after(() => closeServer(explicitLoggerBridge.server))
+
+    const explicitLoggerResponse = await fetch(`${explicitLoggerBridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: promptCanary,
+          knowledgeSources: [
+            knowledgeSource('io-log-source', 'IO Log Source', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+
+    assert.equal(explicitLoggerResponse.status, 200)
+    assert(ioEvents(explicitLogger).some((event) => event.phase === 'bridge.request'))
+  })
+
+  it('logs runtime timeout IO request context and error without secrets', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, response }) => {
+      if (request.method === 'GET') {
+        writeJson(response, 404, { error: { code: 'not_found' } })
+        return
+      }
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      writeJson(response, 200, {
+        wiki_title: 'IO Timeout Wiki',
+        evidence: [
+          {
+            page_id: 'io-timeout-page',
+            title: 'IO Timeout Evidence',
+            snippet: 'Runtime timeout evidence is available.',
+          },
+        ],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const runtime = await startFixtureServer(async ({ response }) => {
+      await delay(200)
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'late answer' } }],
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const logger = recordingLogger()
+    const ioLogDir = await mkdtemp(join(tmpdir(), 'llmwiki-bridge-io-timeout-'))
+    const ioLogPath = join(ioLogDir, 'bridge-io.jsonl')
+    t.after(async () => {
+      await rm(ioLogDir, { force: true, recursive: true })
+    })
+    const promptCanary = 'IO_LOG_TIMEOUT_PROMPT_CANARY'
+    const runtimeApiKey = 'sk-proj-io-log-timeout-secret-1234567890'
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      hermesApiKey: runtimeApiKey,
+      requestTimeoutMs: 20,
+      ioLogPath,
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-request-id': 'io-timeout-request',
+        'x-trace-id': 'io-timeout-trace',
+      },
+      body: JSON.stringify({
+        data: {
+          query: promptCanary,
+          knowledgeSources: [
+            knowledgeSource('io-timeout-source', 'IO Timeout Source', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+
+    assert.equal(response.status, 502)
+    const events = await readJsonLines(ioLogPath)
+    const runtimeError = events.find((event) => event.phase === 'runtime.error')
+    assert(runtimeError)
+    assert.equal(runtimeError.requestId, 'io-timeout-request')
+    assert.equal(runtimeError.traceId, 'io-timeout-trace')
+    assert.equal(runtimeError.error.timeout, true)
+
+    const serialized = JSON.stringify(events)
+    assert.match(serialized, new RegExp(escapeRegExp(promptCanary)))
+    assert.match(serialized, /Request timed out/)
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(runtimeApiKey)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(serialized, /Bearer\s+sk-proj-io-log-timeout-secret/)
   })
 
   it('exposes read-only MCP source tools for progressive source exploration without calling runtime', async (t) => {
@@ -1533,10 +2319,10 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(listedSources.unavailableSourceCount, 1)
     assert.equal(listedSources.sources[0].id, 'progressive-source')
     assert.equal(listedSources.sources[0].url, source.url)
-    assert.deepEqual(listedSources.sources[0].readiness, { ready: true })
+    assert.deepEqual(listedSources.sources[0].readiness, { ready: true, basis: 'last_known_status_bridge_policy' })
     assert.equal(listedSources.sources[1].id, 'warming-source')
     assert.equal(listedSources.sources[1].url, `${source.url}/warming-private-path?token=source-secret`)
-    assert.deepEqual(listedSources.sources[1].readiness, { ready: false, reason: 'status_not_ready' })
+    assert.deepEqual(listedSources.sources[1].readiness, { ready: false, reason: 'status_not_ready', basis: 'last_known_status' })
     assert.match(listed.result.content[0].text, /progressive-source: Progressive Source \(llmwiki-http, ready, ready\)/)
     assert.doesNotMatch(listed.result.content[0].text, /127\.0\.0\.1/)
     assert.doesNotMatch(listed.result.content[0].text, /warming-private-path/)
@@ -1685,6 +2471,46 @@ describe('llmwiki-agent-bridge', () => {
       '/alpha/read/topic',
       '/alpha/read/topic',
     ])
+  })
+
+  it('marks persisted ready sources blocked by source policy as unavailable without preflight', async (t) => {
+    const blockedUrl = 'http://127.0.0.1:49152/private-path?token=source-secret'
+    const bridge = await startAgentBridge({
+      port: 0,
+      sourcePolicy: 'allowlist',
+      allowedSourceOrigins: [],
+      registeredSources: [
+        knowledgeSource('policy-blocked', 'Policy Blocked Source', 'llmwiki-http', blockedUrl),
+      ],
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const healthResponse = await fetch(`${bridge.url}/health`)
+    const health = await healthResponse.json()
+    const listed = await callBridgeMcpTool(bridge, 'policy-list', 'llmwiki_list_sources', {})
+    const listedSources = listed.result.structuredContent.llmwiki_sources
+
+    assert.equal(healthResponse.status, 200)
+    assert.deepEqual(health.sourceRegistry, {
+      registeredSourceCount: 1,
+      selectedSourceCount: 1,
+      selectedReadySourceCount: 0,
+      unavailableSourceCount: 1,
+    })
+    assert.equal(listed.result.isError, false)
+    assert.equal(listedSources.totalSourceCount, 1)
+    assert.equal(listedSources.selectedSourceCount, 1)
+    assert.equal(listedSources.readySourceCount, 0)
+    assert.equal(listedSources.unavailableSourceCount, 1)
+    assert.deepEqual(listedSources.sources[0].readiness, {
+      ready: false,
+      reason: 'source_policy_blocked',
+      basis: 'bridge_policy',
+    })
+    assert.doesNotMatch(listed.result.content[0].text, /127\.0\.0\.1/)
+    assert.doesNotMatch(listed.result.content[0].text, /private-path/)
+    assert.doesNotMatch(listed.result.content[0].text, /source-secret/)
   })
 
   it('proxies read-only MCP source tools to MCP Knowledge Source tools', async (t) => {
@@ -2709,6 +3535,7 @@ describe('llmwiki-agent-bridge', () => {
     const a2a = await response.json()
     const artifact = a2a.artifacts[0].parts[0].data
     const hermesUserMessage = hermes.lastBody.messages.find((message) => message.role === 'user').content
+    const renderedEvidenceBundle = extractHermesEvidenceBundleForPrompt(hermesUserMessage)
     const evidenceBundle = parseHermesEvidenceBundle(hermesUserMessage)
     const mcpArtifactBundle = artifact.sourceBundles.find((bundle) => bundle.connectionId === 'mcp-wiki')
     const mcpRuntimeSource = evidenceBundle.sources.find((source) => source.id === 'mcp-wiki')
@@ -2728,6 +3555,9 @@ describe('llmwiki-agent-bridge', () => {
     assert.match(hermesUserMessage, /MCP evidence/)
     assert.match(hermesUserMessage, /A2A evidence/)
     assert.match(hermesUserMessage, /Release Runbook/)
+    assert.equal(renderedEvidenceBundle, JSON.stringify(evidenceBundle))
+    assert.equal(renderedEvidenceBundle.includes('\n'), false)
+    assert.doesNotMatch(renderedEvidenceBundle, /\{\n\s+"/)
     assert.deepEqual(mcpArtifactBundle, {
       connectionId: 'mcp-wiki',
       sourceId: 'mcp-bundle-source',
@@ -3422,10 +4252,11 @@ describe('llmwiki-agent-bridge', () => {
     assert.match(hermesSystemMessage, /1-based index of the matching item in the evidence bundle citations array/)
     assert.match(hermesSystemMessage, /do not use citationDigest order or sourceRefs for numbering/)
 
-    const digestIndex = hermesUserMessage.indexOf('"citationDigest"')
-    const sourcesIndex = hermesUserMessage.indexOf('"sources"')
-    const firstRelevantIndex = hermesUserMessage.indexOf('"id": "adr-wiki:adr-0042"')
-    const firstSourceOrderIndex = hermesUserMessage.indexOf('"id": "adr-wiki:release-notes"')
+    const renderedEvidenceBundle = extractHermesEvidenceBundleForPrompt(hermesUserMessage)
+    const digestIndex = renderedEvidenceBundle.indexOf('"citationDigest"')
+    const sourcesIndex = renderedEvidenceBundle.indexOf('"sources"')
+    const firstRelevantIndex = renderedEvidenceBundle.indexOf('"id":"adr-wiki:adr-0042"')
+    const firstSourceOrderIndex = renderedEvidenceBundle.indexOf('"id":"adr-wiki:release-notes"')
     assert(digestIndex >= 0)
     assert(digestIndex < sourcesIndex)
     assert(firstRelevantIndex >= 0)
@@ -3472,18 +4303,15 @@ describe('llmwiki-agent-bridge', () => {
     const a2a = await response.json()
     const artifact = a2a.artifacts[0].parts[0].data
     const failedStep = artifact.steps.find((step) => step.connectionId === 'unsafe-a2a')
-    const hermesUserMessage = hermes.lastBody.messages.find((message) => message.role === 'user').content
 
     assert.equal(response.status, 200)
     assert.equal(a2aSource.requests.length, 1)
     assert.equal(a2aSource.requests[0].url.pathname, '/.well-known/agent-card.json')
-    assert.equal(hermes.requests.length, 1)
+    assert.equal(hermes.requests.length, 0)
     assert.equal(failedStep.status, 'error')
     assert.equal(failedStep.error, 'Source query failed.')
-    assert.equal(artifact.answer, 'Answer with unsafe source skipped.')
+    assert.match(artifact.answer, /did not call the configured runtime/)
     assert.doesNotMatch(JSON.stringify(artifact.steps), /tailnet-source/)
-    assert.match(hermesUserMessage, /"sourceFailures"/)
-    assert.doesNotMatch(hermesUserMessage, /tailnet-source/)
   })
 
   it('does not expose fixture handler error details in JSON responses', async (t) => {
@@ -3562,21 +4390,18 @@ describe('llmwiki-agent-bridge', () => {
     const artifact = a2a.artifacts[0].parts[0].data
     const failedSteps = artifact.steps.filter((step) => step.status === 'error')
     const queryFailedSteps = failedSteps.filter((step) => step.error === 'Source query failed.')
-    const completionsUserMessage = completionsRequests[0].body.messages.find((message) => message.role === 'user').content
 
     assert.equal(response.status, 200)
     assert.equal(sourceRequests.length, 0)
-    assert.equal(completionsRequests.length, 1)
+    assert.equal(completionsRequests.length, 0)
     assert.equal(failedSteps.length, 3)
     assert.deepEqual(queryFailedSteps.map((step) => step.error), [
       'Source query failed.',
       'Source query failed.',
       'Source query failed.',
     ])
-    assert.equal(artifact.answer, 'Answer with blocked sources skipped.')
+    assert.match(artifact.answer, /did not call the configured runtime/)
     assert.doesNotMatch(JSON.stringify(artifact.steps), /192\.168\.70\.10/)
-    assert.match(completionsUserMessage, /"sourceFailures"/)
-    assert.doesNotMatch(completionsUserMessage, /192\.168\.70\.10/)
     assert.doesNotMatch(logger.lines.join('\n'), /192\.168\.70\.10/)
   })
 
@@ -3631,7 +4456,15 @@ describe('llmwiki-agent-bridge', () => {
   })
 
   it('continues with redacted source failure steps when one selected source fails', async (t) => {
-    const goodSource = await startFixtureServer(async ({ response }) => {
+    const goodSource = await startFixtureServer(async ({ url, response }) => {
+      if (url.pathname === '/source-bundle') {
+        writeJson(response, 200, {
+          source_id: 'good',
+          bundle_id: 'good-bundle',
+          capabilities: ['llmwiki_context'],
+        })
+        return
+      }
       writeJson(response, 200, {
         wiki_title: 'Good Wiki',
         evidence: [
@@ -3686,14 +4519,17 @@ describe('llmwiki-agent-bridge', () => {
     const artifact = a2a.artifacts[0].parts[0].data
     const failedStep = artifact.steps.find((step) => step.connectionId === 'bad')
     const hermesUserMessage = hermes.lastBody.messages.find((message) => message.role === 'user').content
+    const evidenceBundle = parseHermesEvidenceBundle(hermesUserMessage)
 
     assert.equal(response.status, 200)
     assert.equal(typeof a2a.requestId, 'string')
     assert.equal(typeof a2a.traceId, 'string')
     assert.equal(artifact.requestId, a2a.requestId)
     assert.equal(artifact.traceId, a2a.traceId)
+    assert.equal(hermes.requests.length, 1)
     assert.equal(artifact.answer, expectedFallbackAnswer('Answer from surviving evidence.', 1))
     assert.deepEqual(artifact.citations.map((citation) => citation.id), ['good:good'])
+    assert.deepEqual(evidenceBundle.sources.map((source) => source.id), ['good'])
     assert.equal(failedStep.status, 'error')
     assert.equal(failedStep.error, 'Source query failed.')
     assert.equal(failedStep.diagnostic.schemaVersion, 'llmwiki.agent-bridge.diagnostic.v1')
@@ -3710,15 +4546,3091 @@ describe('llmwiki-agent-bridge', () => {
       artifact.diagnostics.filter((diagnostic) => diagnostic.subject === 'bad' && diagnostic.phase === 'query'),
       [failedStep.diagnostic],
     )
+    assert.equal(artifact.diagnostics.length, 1)
     assert.doesNotMatch(JSON.stringify(failedStep), /backend exposed detail/)
     assert.doesNotMatch(JSON.stringify(failedStep), /127\.0\.0\.1/)
     assert.match(hermesUserMessage, /"sourceFailures"/)
-    assert.match(hermesUserMessage, /"error": "Source query failed\."/)
-    assert.match(hermesUserMessage, /"message": "Bad Wiki could not be queried by the bridge\."/)
+    assert.deepEqual(evidenceBundle.sourceFailures.map((failure) => ({
+      id: failure.id,
+      error: failure.error,
+      message: failure.message,
+    })), [
+      {
+        id: 'bad',
+        error: 'Source query failed.',
+        message: 'Bad Wiki could not be queried by the bridge.',
+      },
+    ])
     assert.doesNotMatch(hermesUserMessage, /"diagnostic"/)
     assert.doesNotMatch(hermesUserMessage, /"httpStatus"/)
     assert.doesNotMatch(hermesUserMessage, /backend exposed detail/)
     assert.doesNotMatch(hermesUserMessage, /127\.0\.0\.1/)
+  })
+
+  it('evaluates runtime prompt rendering offline as size-only with compact JSON, markdown summary, and TOON candidates', async () => {
+    const { stdout } = await execFileAsync(process.execPath, ['scripts/benchmark-runtime-prompt.mjs'], {
+      cwd: packageRoot,
+      maxBuffer: 1024 * 1024,
+    })
+    const report = JSON.parse(stdout)
+    const evidenceComparison = report.totals.comparisons.compactVsPrettyEvidenceJson
+    const promptComparison = report.totals.comparisons.compactVsPrettyRuntimeUserPrompt
+    const markdownComparison = report.totals.comparisons.markdownSummaryVsCompactRuntimeUserPrompt
+    const toonComparison = report.totals.comparisons.toonVsCompactRuntimeUserPrompt
+    const fixtureIds = report.fixtures.map((fixture) => fixture.id)
+    const strictEvidenceFixture = report.fixtures.find((fixture) => fixture.id === 'graph-strict-evidence-fidelity')
+    const forbiddenOfflineRecommendationPaths = []
+    const collectForbiddenRecommendationKeys = (value, path = '$') => {
+      if (!value || typeof value !== 'object') return
+      for (const [key, child] of Object.entries(value)) {
+        const nextPath = `${path}.${key}`
+        if (key === 'recommendation' || key === 'recommendedRendererId') {
+          forbiddenOfflineRecommendationPaths.push(nextPath)
+        }
+        collectForbiddenRecommendationKeys(child, nextPath)
+      }
+    }
+    collectForbiddenRecommendationKeys(report)
+
+    assert.equal(report.schema, 'llmwiki-agent-bridge.runtime-prompt-evaluation.v1')
+    assert.equal(report.mode, 'offline')
+    assert.equal(report.offlineComparisonBasis, 'size-only')
+    assert.equal(report.rendererBaseline, 'pretty-json')
+    assert.deepEqual(report.rendererCandidates, ['compact-json', 'markdown-summary', 'toon'])
+    assert.deepEqual(report.renderers.map((renderer) => renderer.id), ['pretty-json', 'compact-json', 'markdown-summary', 'toon'])
+    assert.match(report.note, /markdown-summary is a lossy prompt projection/)
+    assert.equal(report.live.enabled, false)
+    assert.deepEqual(forbiddenOfflineRecommendationPaths, [])
+    assert.equal(report.validation.ok, true)
+    assert.equal(report.fixtures.length, 7)
+    assert(fixtureIds.includes('insufficient-evidence'))
+    assert(fixtureIds.includes('graph-linear-chain'))
+    assert(fixtureIds.includes('graph-strict-evidence-fidelity'))
+    assert(fixtureIds.includes('graph-dense-crossrefs'))
+    assert(fixtureIds.includes('graph-mixed-nested-metadata'))
+    assert(strictEvidenceFixture)
+    assert.equal(strictEvidenceFixture.citationCount, 5)
+    assert.equal(strictEvidenceFixture.graphNodeCount, 7)
+    assert.equal(strictEvidenceFixture.graphEdgeCount, 5)
+    assert.equal(strictEvidenceFixture.quality.ok, true)
+    assert.equal(strictEvidenceFixture.quality.metrics.graphNodeCitationCoveragePct, 100)
+    assert.equal(strictEvidenceFixture.quality.metrics.graphEdgeCitationCoveragePct, 100)
+    assert.equal(strictEvidenceFixture.quality.metrics.nonPortableSourcePathCount, 0)
+    assert.doesNotMatch(
+      JSON.stringify(report),
+      /(?:[A-Za-z]:[\\/]|\\\\|\/Users\/|\/home\/|\/var\/|127\.0\.0\.1|localhost|https?:\/\/|sk-(?:proj-)?[A-Za-z0-9_-]{8,}|(?:api[_-]?key|bearer|token)=)/i,
+    )
+    assert(evidenceComparison.utf8BytesSaved > 0)
+    assert(promptComparison.utf8BytesSaved > 0)
+    assert.equal(markdownComparison.baseline, 'compact-json')
+    assert.equal(markdownComparison.candidate, 'markdown-summary')
+    assert.equal(toonComparison.baseline, 'compact-json')
+    assert.equal(toonComparison.candidate, 'toon')
+
+    const comparisonGroups = [
+      ['totals', report.totals.comparisons],
+      ...report.fixtures.map((fixture) => [`fixture:${fixture.id}`, fixture.comparisons]),
+    ]
+    for (const [groupName, comparisons] of comparisonGroups) {
+      assert(Object.keys(comparisons).length > 0, `${groupName} should include offline comparisons`)
+      for (const [comparisonName, comparison] of Object.entries(comparisons)) {
+        assert.equal(comparison.basis, 'size-only', `${groupName}.${comparisonName}`)
+      }
+    }
+  })
+
+  it('adds an eval-only Graphify graph fixture to the runtime prompt benchmark', async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), 'llmwiki-agent-bridge-graphify-'))
+    t.after(() => rm(dir, { recursive: true, force: true }))
+    const graphPath = join(dir, 'graph.json')
+    await writeFile(graphPath, JSON.stringify({
+      nodes: [
+        {
+          id: 'graphify-overview',
+          label: 'Graphify Optional Fixture',
+          file_type: 'doc',
+          source_file: 'docs/runtime-prompt-evaluation.md',
+          source_location: 'heading:graphify',
+        },
+        {
+          id: 'primary-metric',
+          label: 'Omission Distortion Metric',
+          source_file: 'docs/runtime-prompt-evaluation.md',
+          source_location: 'heading:metrics',
+        },
+        {
+          label: 'Missing Field Defaults',
+          source_file: join(dir, 'absolute-source.md'),
+          source_location: 'line:99',
+        },
+      ],
+      edges: [
+        {
+          source: 'graphify-overview',
+          target: 'primary-metric',
+          relation: 'defines',
+          context: 'Primary evaluation checks omission and distortion before token saving.',
+          confidence: 0.91,
+          weight: 0.83,
+          source_file: 'docs/runtime-prompt-evaluation.md',
+          source_location: 'line:12',
+        },
+        {
+          source: 'primary-metric',
+          target: 'markdown-summary',
+          context: 'Markdown summary is lossy and must be evaluated separately.',
+          confidence: 'INFERRED',
+          confidence_score: 0.65,
+          source_file: 'docs/runtime-prompt-renderers.md',
+        },
+      ],
+    }), 'utf8')
+
+    const { stdout } = await execFileAsync(process.execPath, [
+      'scripts/benchmark-runtime-prompt.mjs',
+      '--graphify-graph',
+      graphPath,
+      '--graphify-query',
+      'Which Graphify graph evidence should the runtime cite?',
+    ], {
+      cwd: packageRoot,
+      maxBuffer: 1024 * 1024,
+    })
+    const report = JSON.parse(stdout)
+    const graphifyFixture = report.fixtures.find((fixture) => fixture.id === 'graphify-graph')
+
+    assert.equal(report.validation.ok, true)
+    assert.equal(report.totals.fixtureCount, 8)
+    assert(graphifyFixture)
+    assert.equal(graphifyFixture.sourceCount, 1)
+    assert.equal(graphifyFixture.sourceSummaryCount, 1)
+    assert.equal(graphifyFixture.graphNodeCount, 3)
+    assert.equal(graphifyFixture.graphEdgeCount, 2)
+    assert.equal(graphifyFixture.mergedGraphSummary.nodeCount, 3)
+    assert.equal(graphifyFixture.mergedGraphSummary.edgeCount, 2)
+    assert.equal(graphifyFixture.citationCount, 5)
+    assert.equal(graphifyFixture.quality.ok, true)
+    assert.equal(graphifyFixture.quality.metrics.graphNodeCitationCoveragePct, 100)
+    assert.equal(graphifyFixture.quality.metrics.graphEdgeCitationCoveragePct, 100)
+    assert.equal(graphifyFixture.quality.metrics.nonPortableSourcePathCount, 0)
+    assert.deepEqual(Object.keys(graphifyFixture.renderers), ['pretty-json', 'compact-json', 'markdown-summary', 'toon'])
+    for (const renderer of Object.values(graphifyFixture.renderers)) {
+      assert.equal(renderer.validation.ok, true)
+      assert(renderer.evidenceJson.utf8Bytes > 0)
+      assert(renderer.runtimeUserPrompt.utf8Bytes > renderer.evidenceJson.utf8Bytes)
+    }
+    assert.doesNotMatch(JSON.stringify(report), new RegExp(escapeRegExp(dir)))
+  })
+
+  it('rejects Graphify query configuration without a Graphify graph fixture', async () => {
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--graphify-query',
+        'This query has no graph input.',
+      ], {
+        cwd: packageRoot,
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /--graphify-query requires --graphify-graph/)
+  })
+
+  it('rejects live runtime prompt benchmark responses without exact citation anchors', async (t) => {
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      const userPrompt = body.messages.find((message) => message.role === 'user')?.content || ''
+      const isMarkdownSummary = userPrompt.includes('## Citation digest')
+      writeJson(response, 200, {
+        choices: [
+          {
+            message: {
+              content: isMarkdownSummary
+                ? localSingleSourceAnswer()
+                : 'Compact JSON output uses a bare citation [1].',
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 10,
+          completion_tokens: 5,
+          total_tokens: 15,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'single-source',
+        '--renderer',
+        'compact-json,markdown-summary',
+        '--max-tokens',
+        '32',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /single-source\/compact-json: live response must complete/)
+
+    const report = JSON.parse(error.stdout)
+    const liveFixture = report.live.fixtures[0]
+
+    assert.equal(report.mode, 'offline+live')
+    assert.equal(report.live.validation.ok, false)
+    assert.equal(report.live.status, 'failed')
+    assert.equal(liveFixture.renderers['compact-json'].pass, false)
+    assert.deepEqual(liveFixture.renderers['compact-json'].citationAnchorsFound, [])
+    assert.equal(liveFixture.renderers['markdown-summary'].pass, true)
+    assert.deepEqual(
+      [...new Set(liveFixture.renderers['markdown-summary'].citationAnchorsFound.map((anchor) => anchor.anchor))],
+      ['[1](#citation-1)', '[2](#citation-2)'],
+    )
+    assert.equal(runtime.requests.length, 2)
+  })
+
+  it('rejects live runtime prompt benchmark responses that omit answer oracle relations', async (t) => {
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      const userPrompt = body.messages.find((message) => message.role === 'user')?.content || ''
+      const isMarkdownSummary = userPrompt.includes('## Graph edges')
+      writeJson(response, 200, {
+        choices: [
+          {
+            message: {
+              content: isMarkdownSummary
+                ? 'Runtime Prompt Decision and Runtime Prompt Validation are mentioned with all citations [1](#citation-1) [2](#citation-2) [3](#citation-3).'
+                : 'Runtime Prompt Decision requires Prompt Codec Implementation [2](#citation-2), and Prompt Codec Implementation measured by Prompt renderer benchmark [3](#citation-3) before Runtime Prompt Validation [1](#citation-1).',
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 10,
+          total_tokens: 30,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'graph-linear-chain',
+        '--renderer',
+        'compact-json,markdown-summary',
+        '--max-tokens',
+        '64',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /answer oracle failed/)
+
+    const report = JSON.parse(error.stdout)
+    const liveFixture = report.live.fixtures[0]
+
+    assert.equal(report.live.validation.ok, false)
+    assert.equal(liveFixture.renderers['compact-json'].pass, true)
+    assert.equal(liveFixture.renderers['compact-json'].answerOracle.ok, true)
+    assert.equal(liveFixture.renderers['compact-json'].expectedCitationMappings.ok, true)
+    assert.equal(liveFixture.renderers['compact-json'].expectedCitationMappings.metrics.coveragePct, 100)
+    assert.equal(liveFixture.renderers['compact-json'].expectedCitationMappings.metrics.satisfiedMappingCount, 2)
+    assert.equal(liveFixture.renderers['compact-json'].averageExpectedCitationMappingCoveragePct, 100)
+    assert.equal(liveFixture.renderers['compact-json'].aggregate.expectedCitationMappings.claimOccurrenceCount, 2)
+    assert.equal(liveFixture.renderers['compact-json'].aggregate.expectedCitationMappings.satisfiedOccurrenceCount, 2)
+    assert.equal(liveFixture.renderers['compact-json'].aggregate.expectedCitationMappings.unsatisfiedOccurrenceCount, 0)
+    assert.equal(liveFixture.renderers['compact-json'].aggregate.expectedCitationMappings.averageOccurrenceCoveragePct, 100)
+    assert.equal(liveFixture.renderers['compact-json'].averageExpectedCitationOccurrenceCoveragePct, 100)
+    assert.equal(report.live.totals.renderers['compact-json'].expectedCitationMappings.claimOccurrenceCount, 2)
+    assert.equal(report.live.totals.renderers['compact-json'].expectedCitationMappings.satisfiedOccurrenceCount, 2)
+    assert.equal(report.live.totals.renderers['compact-json'].expectedCitationMappings.unsatisfiedOccurrenceCount, 0)
+    assert.equal(report.live.totals.renderers['compact-json'].averageExpectedCitationOccurrenceCoveragePct, 100)
+    assert.equal(liveFixture.renderers['markdown-summary'].pass, false)
+    assert.equal(liveFixture.renderers['markdown-summary'].allRequiredCitationAnchorsCovered, true)
+    assert.equal(liveFixture.renderers['markdown-summary'].answerOracle.ok, false)
+    assert(liveFixture.renderers['markdown-summary'].answerOracle.metrics.missingRequiredRelationCount > 0)
+    assert(liveFixture.renderers['markdown-summary'].aggregate.answerOracle.averageOmissionRate > 0)
+    assert(liveFixture.renderers['markdown-summary'].aggregate.answerOracle.averageRequiredItemCoveragePct < 100)
+    assert.equal(runtime.requests.length, 2)
+  })
+
+  it('aggregates expected citation occurrence coverage across repeated live runs', async (t) => {
+    let requestCount = 0
+    const runtime = await startFixtureServer(async ({ response }) => {
+      requestCount += 1
+      const passingRun = requestCount === 1
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: passingRun
+                ? 'Runtime Prompt Decision requires Prompt Codec Implementation [2](#citation-2), and Prompt Codec Implementation measured by Prompt renderer benchmark [3](#citation-3) before Runtime Prompt Validation [1](#citation-1).'
+                : [
+                    'Runtime Prompt Decision requires Prompt Codec Implementation.',
+                    'Prompt Codec Implementation measured by Prompt renderer benchmark before Runtime Prompt Validation.',
+                    'Padding separates mapped claims from citation anchors.',
+                    'x'.repeat(260),
+                    '[1](#citation-1) [2](#citation-2) [3](#citation-3).',
+                  ].join(' '),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: passingRun ? 28 : 34,
+          total_tokens: passingRun ? 48 : 54,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--live-runs',
+        '2',
+        '--fixture',
+        'graph-linear-chain',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '128',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+
+    assert.equal(rendererReport.runCount, 2)
+    assert.equal(rendererReport.passRatePct, 50)
+    assert.equal(rendererReport.aggregate.expectedCitationMappings.enabledRunCount, 2)
+    assert.equal(rendererReport.aggregate.expectedCitationMappings.expectedMappingCount, 4)
+    assert.equal(rendererReport.aggregate.expectedCitationMappings.satisfiedMappingCount, 2)
+    assert.equal(rendererReport.aggregate.expectedCitationMappings.claimOccurrenceCount, 4)
+    assert.equal(rendererReport.aggregate.expectedCitationMappings.satisfiedOccurrenceCount, 2)
+    assert.equal(rendererReport.aggregate.expectedCitationMappings.unsatisfiedOccurrenceCount, 2)
+    assert.equal(rendererReport.aggregate.expectedCitationMappings.occurrenceCoveragePct, 50)
+    assert.equal(rendererReport.aggregate.expectedCitationMappings.averageOccurrenceCoveragePct, 50)
+    assert.equal(rendererReport.expectedCitationOccurrenceCoveragePct, 50)
+    assert.equal(rendererReport.averageExpectedCitationOccurrenceCoveragePct, 50)
+    assert.equal(rendererTotals.expectedCitationMappings.claimOccurrenceCount, 4)
+    assert.equal(rendererTotals.expectedCitationMappings.satisfiedOccurrenceCount, 2)
+    assert.equal(rendererTotals.expectedCitationMappings.unsatisfiedOccurrenceCount, 2)
+    assert.equal(rendererTotals.expectedCitationMappings.occurrenceCoveragePct, 50)
+    assert.equal(rendererTotals.expectedCitationMappings.averageOccurrenceCoveragePct, 50)
+    assert.equal(report.live.totals.expectedCitationMappings.claimOccurrenceCount, 4)
+    assert.equal(report.live.totals.expectedCitationOccurrenceCoveragePct, 50)
+    assert.equal(report.live.totals.averageExpectedCitationOccurrenceCoveragePct, 50)
+    assert.equal(runtime.requests.length, 2)
+  })
+
+  it('does not recommend a smaller live renderer that fails strict quality gates', async (t) => {
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      const userPrompt = body.messages.find((message) => message.role === 'user')?.content || ''
+      const isMarkdownSummary = userPrompt.includes('## Graph edges')
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: isMarkdownSummary
+                ? 'Markdown mentions Runtime Prompt Decision and Runtime Prompt Validation with citation anchors [1](#citation-1) [2](#citation-2) [3](#citation-3), but omits the required implementation relation.'
+                : 'Runtime Prompt Decision requires Prompt Codec Implementation [2](#citation-2), and Prompt Codec Implementation measured by Prompt renderer benchmark [3](#citation-3) before Runtime Prompt Validation [1](#citation-1).',
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: isMarkdownSummary ? 18 : 28,
+          total_tokens: isMarkdownSummary ? 38 : 48,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'graph-linear-chain',
+        '--renderer',
+        'compact-json,markdown-summary',
+        '--max-tokens',
+        '128',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+
+    const report = JSON.parse(error.stdout)
+    const recommendation = report.live.recommendation
+    const compact = recommendation.ranking.find((entry) => entry.id === 'compact-json')
+    const markdown = recommendation.ranking.find((entry) => entry.id === 'markdown-summary')
+
+    assert.equal(report.live.validation.ok, false)
+    assert.equal(recommendation.basis, 'quality-first-live')
+    assert.equal(recommendation.sizeMetric, 'runtimeUserPrompt.estimatedTokens')
+    assert.equal(recommendation.status, 'recommended')
+    assert.equal(recommendation.recommendedRendererId, 'compact-json')
+    assert.equal(markdown.sizeRank < compact.sizeRank, true)
+    assert.equal(compact.eligible, true)
+    assert.deepEqual(compact.blockingReasons, [])
+    assert.equal(compact.strictLive.passRatePct, 100)
+    assert.equal(compact.strictLive.strictQualityFailureCount, 0)
+    assert.equal(markdown.eligible, false)
+    assert.match(markdown.blockingReasons.join('; '), /strict live passRate is 0%, not 100%/)
+    assert.match(markdown.blockingReasons.join('; '), /strict failure codes present:/)
+    assert.equal(markdown.strictLive.passRatePct, 0)
+    assert(markdown.strictLive.strictQualityFailureCount > 0)
+    assert.equal(report.live.totals.renderers['markdown-summary'].runtimeUserPrompt.estimatedTokens < report.live.totals.renderers['compact-json'].runtimeUserPrompt.estimatedTokens, true)
+    assert.equal(runtime.requests.length, 2)
+  })
+
+  it('recommends a size-saving live renderer after strict quality gates pass', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: 'Runtime Prompt Decision requires Prompt Codec Implementation [2](#citation-2), and Prompt Codec Implementation measured by Prompt renderer benchmark [3](#citation-3) before Runtime Prompt Validation [1](#citation-1).',
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 28,
+          total_tokens: 48,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const { stdout } = await execFileAsync(process.execPath, [
+      'scripts/benchmark-runtime-prompt.mjs',
+      '--live',
+      '--fixture',
+      'graph-linear-chain',
+      '--renderer',
+      'compact-json,markdown-summary',
+      '--max-tokens',
+      '128',
+      '--timeout-ms',
+      '10000',
+    ], {
+      cwd: packageRoot,
+      env: {
+        ...process.env,
+        LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+        LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+        LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+      },
+      maxBuffer: 1024 * 1024,
+    })
+
+    const report = JSON.parse(stdout)
+    const recommendation = report.live.recommendation
+    const compact = recommendation.ranking.find((entry) => entry.id === 'compact-json')
+    const markdown = recommendation.ranking.find((entry) => entry.id === 'markdown-summary')
+
+    assert.equal(report.live.validation.ok, true)
+    assert.equal(recommendation.status, 'recommended')
+    assert.equal(recommendation.recommendedRendererId, 'markdown-summary')
+    assert.equal(markdown.eligible, true)
+    assert.deepEqual(markdown.blockingReasons, [])
+    assert.equal(markdown.sizeRank, 1)
+    assert.equal(markdown.rank, 1)
+    assert.equal(markdown.strictLive.passRatePct, 100)
+    assert.equal(markdown.strictLive.strictQualityFailureCount, 0)
+    assert.equal(compact.eligible, true)
+    assert.equal(compact.strictLive.strictQualityFailureCount, 0)
+    assert.equal(runtime.requests.length, 2)
+  })
+
+  it('passes graph-strict-evidence-fidelity strict evidence-fidelity live mock answers', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: strictEvidenceFidelityAnswer(),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 40,
+          completion_tokens: 70,
+          total_tokens: 110,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const { stdout } = await runRuntimePromptBenchmark([
+      '--live',
+      '--fixture',
+      'graph-strict-evidence-fidelity',
+      '--renderer',
+      'compact-json',
+      '--max-tokens',
+      '256',
+      '--timeout-ms',
+      '10000',
+    ], {
+      env: mockRuntimeEnv(runtime),
+    })
+
+    const report = JSON.parse(stdout)
+    const liveFixture = report.live.fixtures[0]
+    const rendererReport = liveFixture.renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+    const recommendationEntry = report.live.recommendation.ranking.find((entry) => entry.id === 'compact-json')
+
+    assert.equal(report.live.validation.ok, true)
+    assert.equal(liveFixture.id, 'graph-strict-evidence-fidelity')
+    assert.equal(rendererReport.pass, true)
+    assert.equal(rendererReport.passRatePct, 100)
+    assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
+    assert.equal(rendererReport.answerOracle.ok, true)
+    assert.equal(rendererReport.answerOracle.metrics.requiredRelationCoveragePct, 100)
+    assert.equal(rendererReport.expectedCitationMappings.ok, true)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.expectedMappingCount, 4)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.satisfiedMappingCount, 4)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.coveragePct, 100)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.occurrenceCoveragePct, 100)
+    assert.equal(rendererReport.aggregate.expectedCitationMappings.claimOccurrenceCount, 5)
+    assert.equal(rendererReport.aggregate.expectedCitationMappings.satisfiedOccurrenceCount, 5)
+    assert.equal(rendererReport.aggregate.expectedCitationMappings.unsatisfiedOccurrenceCount, 0)
+    assert.equal(rendererReport.aggregate.expectedCitationMappings.averageOccurrenceCoveragePct, 100)
+    assert.equal(rendererTotals.expectedCitationMappings.claimOccurrenceCount, 5)
+    assert.equal(rendererTotals.expectedCitationMappings.satisfiedOccurrenceCount, 5)
+    assert.equal(rendererTotals.expectedCitationMappings.unsatisfiedOccurrenceCount, 0)
+    assert.equal(rendererTotals.expectedCitationMappings.averageOccurrenceCoveragePct, 100)
+    assert.equal(report.live.recommendation.status, 'recommended')
+    assert.equal(report.live.recommendation.recommendedRendererId, 'compact-json')
+    assert(recommendationEntry)
+    assert.equal(recommendationEntry.eligible, true)
+    assert.deepEqual(recommendationEntry.blockingReasons, [])
+    assert.equal(recommendationEntry.strictLive.strictQualityFailureCount, 0)
+    assert.equal(runtime.requests.length, 1)
+  })
+
+  it('passes row-shaped strict answer format mock answers with oracle coverage for both strict fixtures', async (t) => {
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      const userPrompt = body.messages.find((message) => message.role === 'user')?.content || ''
+      const hasValidationOracleCoverageRow = (
+        /^- Oracle coverage row: .*Runtime Prompt Validation.*\[3\]\(#citation-3\)$/m.test(userPrompt)
+      )
+      const content = userPrompt.includes('Promotion Decision requires Citation Fidelity Gate')
+        ? strictEvidenceFidelityRowAnswer()
+        : linearChainRowAnswer({ includeValidation: hasValidationOracleCoverageRow })
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { content },
+          },
+        ],
+        usage: {
+          prompt_tokens: 60,
+          completion_tokens: 80,
+          total_tokens: 140,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const { stdout } = await runRuntimePromptBenchmark([
+      '--live',
+      '--fixture',
+      'graph-linear-chain,graph-strict-evidence-fidelity',
+      '--renderer',
+      'compact-json',
+      '--max-tokens',
+      '384',
+      '--timeout-ms',
+      '10000',
+    ], {
+      env: mockRuntimeEnv(runtime),
+    })
+
+    const report = JSON.parse(stdout)
+
+    assert.equal(report.live.validation.ok, true)
+    assert.equal(report.live.status, 'ok')
+    assert.equal(runtime.requests.length, 2)
+    assert(
+      runtime.requests.some((request) => (
+        /^- Oracle coverage row: .*Runtime Prompt Validation.*\[3\]\(#citation-3\)$/m.test(
+          request.body.messages.find((message) => message.role === 'user')?.content || '',
+        )
+      )),
+    )
+
+    for (const fixture of report.live.fixtures) {
+      const rendererReport = fixture.renderers['compact-json']
+      assert.equal(rendererReport.pass, true, fixture.id)
+      assert.deepEqual(rendererReport.failureCodes, [], fixture.id)
+      assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true, fixture.id)
+      assert.equal(rendererReport.answerOracle.ok, true, fixture.id)
+      assert.equal(rendererReport.expectedCitationMappings.ok, true, fixture.id)
+    }
+  })
+
+  it('sends claim-preserving live prompt contract, strict claim checklist, allowed citation anchor guidance, and strict answer format to the mock runtime', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: strictEvidenceFidelityAnswer(),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 40,
+          completion_tokens: 70,
+          total_tokens: 110,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    await runRuntimePromptBenchmark([
+      '--live',
+      '--fixture',
+      'graph-strict-evidence-fidelity',
+      '--renderer',
+      'compact-json',
+      '--max-tokens',
+      '256',
+      '--timeout-ms',
+      '10000',
+    ], {
+      env: mockRuntimeEnv(runtime),
+    })
+
+    assert.equal(runtime.requests.length, 1)
+    const systemMessage = runtime.requests[0].body.messages.find((message) => message.role === 'system')
+    const userMessage = runtime.requests[0].body.messages.find((message) => message.role === 'user')
+    assert(systemMessage)
+    assert(userMessage)
+    assert.match(systemMessage.content, /preserve configured claim phrases/i)
+    assert.match(systemMessage.content, /graph relation phrases/i)
+    assert.match(systemMessage.content, /instead of paraphrasing/i)
+    assert.match(systemMessage.content, /measured_by as "measured by"/i)
+    assert.match(systemMessage.content, /\[n\]\(#citation-n\)/)
+    assert.match(systemMessage.content, /cite every occurrence/i)
+    assert.match(systemMessage.content, /repeated-citation gates/i)
+    assert.match(systemMessage.content, /do not use evidence-free claims/i)
+
+    assert.match(userMessage.content, /# Benchmark-only strict claim checklist/)
+    assert.match(userMessage.content, /generated only for live benchmark strict expected citation mappings/i)
+    assert.match(userMessage.content, /Expected claim phrase: "Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation"/)
+    assert.match(userMessage.content, /Expected citation anchor\(s\): \[1\]\(#citation-1\), \[2\]\(#citation-2\)/)
+    assert.match(userMessage.content, /Mapping gate: strict \(required for live pass\)/)
+    assert.match(userMessage.content, /Target requirement: all expected anchors/)
+    assert.match(userMessage.content, /Occurrence intent: any occurrence/)
+    assert.match(userMessage.content, /Nearby\/window intent: expected anchor\(s\) within 120 chars/)
+    assert.match(userMessage.content, /Expected claim phrase: "Citation Fidelity Gate enforces Repeated Citation Gate"/)
+    assert.match(userMessage.content, /Expected citation anchor\(s\): \[4\]\(#citation-4\)/)
+    assert.match(userMessage.content, /Occurrence intent: every occurrence/)
+    assert.match(userMessage.content, /Nearby\/window intent: expected anchor\(s\) within 90 chars/)
+
+    assert.match(userMessage.content, /# Benchmark-only strict answer format/)
+    assert.match(userMessage.content, /row-shaped skeleton only for this live benchmark run/i)
+    assert.match(
+      userMessage.content,
+      /Allowed exact citation anchors are only \[1\]\(#citation-1\) \[2\]\(#citation-2\) \[3\]\(#citation-3\) \[4\]\(#citation-4\) \[5\]\(#citation-5\)\./,
+    )
+    assert.match(userMessage.content, /do not invent or use any other citation anchor/i)
+    assert.match(userMessage.content, /omit that unsupported claim rather than creating a new anchor/i)
+    assert.match(userMessage.content, /every Expected claim row exactly once/)
+    assert.match(userMessage.content, /Expected claim rows are not optional/)
+    assert.match(userMessage.content, /must not be omitted, split, merged, or rephrased/)
+    assert.match(userMessage.content, /multi-hop Expected claim rows must stay intact/)
+    assert.match(userMessage.content, /all shown anchors on the same row/)
+    assert.match(userMessage.content, /anchors must remain on or near the same claim row/)
+    assert.match(
+      userMessage.content,
+      /^- Expected claim row: Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation \[1\]\(#citation-1\) \[2\]\(#citation-2\)$/m,
+    )
+    assert.match(
+      userMessage.content,
+      /^- Expected claim row: Live Prompt Evaluation checks Exact Citation Anchor \[3\]\(#citation-3\)$/m,
+    )
+    assert.match(
+      userMessage.content,
+      /^- Expected claim row: Citation Fidelity Gate enforces Repeated Citation Gate \[4\]\(#citation-4\)$/m,
+    )
+    assert.match(
+      userMessage.content,
+      /^- Expected claim row: Privacy Redaction Gate blocks Source Path Leak \[5\]\(#citation-5\)$/m,
+    )
+    assert.doesNotMatch(userMessage.content, /Required citation coverage row:/)
+    assert.doesNotMatch(userMessage.content, /Oracle coverage row:/)
+    assert(
+      userMessage.content.indexOf('- Expected claim row: Privacy Redaction Gate blocks Source Path Leak [5](#citation-5)')
+        < userMessage.content.indexOf('- Limitations:'),
+    )
+    assert.match(userMessage.content, /^- Limitations: .*factual limitations also need exact markdown citation anchors\.$/m)
+  })
+
+  it('adds strict answer format coverage row for graph-linear-chain otherwise-unforced required citation anchors', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: linearChainRowAnswer(),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 40,
+          completion_tokens: 54,
+          total_tokens: 94,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    await runRuntimePromptBenchmark([
+      '--live',
+      '--fixture',
+      'graph-linear-chain',
+      '--renderer',
+      'compact-json',
+      '--max-tokens',
+      '256',
+      '--timeout-ms',
+      '10000',
+    ], {
+      env: mockRuntimeEnv(runtime),
+    })
+
+    assert.equal(runtime.requests.length, 1)
+    const userMessage = runtime.requests[0].body.messages.find((message) => message.role === 'user')
+    assert(userMessage)
+    assert.match(userMessage.content, /# Benchmark-only strict answer format/)
+    assert.match(
+      userMessage.content,
+      /^- Expected claim row: Runtime Prompt Decision requires Prompt Codec Implementation \[2\]\(#citation-2\)$/m,
+    )
+    assert.match(
+      userMessage.content,
+      /^- Expected claim row: Prompt Codec Implementation measured by Prompt renderer benchmark \[3\]\(#citation-3\)$/m,
+    )
+    assert.match(
+      userMessage.content,
+      /^- Required citation coverage row: write one evidence-supported sentence for this otherwise-unforced top-level citation and end it with \[1\]\(#citation-1\)$/m,
+    )
+    assert.match(
+      userMessage.content,
+      /^- Oracle coverage row: write one evidence-supported sentence including the required term "Runtime Prompt Validation \(or validation\)" and end it with \[3\]\(#citation-3\)$/m,
+    )
+    assert(
+      userMessage.content.indexOf('Required citation coverage row:')
+        < userMessage.content.indexOf('Oracle coverage row:'),
+    )
+    assert(
+      userMessage.content.indexOf('Oracle coverage row:')
+        < userMessage.content.indexOf('- Limitations:'),
+    )
+    assert.doesNotMatch(userMessage.content, /otherwise-unforced top-level citation and end it with \[2\]\(#citation-2\)/)
+    assert.doesNotMatch(userMessage.content, /otherwise-unforced top-level citation and end it with \[3\]\(#citation-3\)/)
+  })
+
+  it('fails graph-linear-chain when strict oracle validation coverage is omitted despite covered anchors and mappings', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: linearChainRowAnswer({ includeValidation: false }),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 40,
+          completion_tokens: 54,
+          total_tokens: 94,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'graph-linear-chain',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '256',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          ...mockRuntimeEnv(runtime),
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /oracle_omission/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+
+    assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
+    assert.equal(rendererReport.expectedCitationMappings.ok, true)
+    assert.equal(rendererReport.answerOracle.ok, false)
+    assert.equal(rendererReport.answerOracle.metrics.missingRequiredTermCount, 1)
+    assert.deepEqual(rendererReport.failureCodes, ['oracle_omission'])
+    assert(
+      rendererReport.answerOracle.missingTerms.some((term) => /Runtime Prompt Validation|validation/.test(term)),
+    )
+  })
+
+  it('omits strict claim checklist and strict answer format for live fixtures without strict expected citation mappings', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: graphDenseAnswer(),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 14,
+          total_tokens: 34,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const { stdout } = await runRuntimePromptBenchmark([
+      '--live',
+      '--fixture',
+      'graph-dense-crossrefs',
+      '--renderer',
+      'compact-json',
+      '--max-tokens',
+      '128',
+      '--timeout-ms',
+      '10000',
+    ], {
+      env: mockRuntimeEnv(runtime),
+    })
+
+    const report = JSON.parse(stdout)
+    const userMessage = runtime.requests[0].body.messages.find((message) => message.role === 'user')
+
+    assert.equal(report.live.validation.ok, true)
+    assert(userMessage)
+    assert.doesNotMatch(userMessage.content, /# Benchmark-only strict claim checklist/)
+    assert.doesNotMatch(userMessage.content, /# Benchmark-only strict answer format/)
+    assert.doesNotMatch(userMessage.content, /Allowed exact citation anchors are only/)
+    assert.doesNotMatch(userMessage.content, /Expected claim phrase:/)
+    assert.doesNotMatch(userMessage.content, /Mandatory completeness checklist:/)
+    assert.doesNotMatch(userMessage.content, /Expected claim row:/)
+    assert.doesNotMatch(userMessage.content, /Required citation coverage row:/)
+    assert.doesNotMatch(userMessage.content, /Oracle coverage row:/)
+  })
+
+  it('emits a safe diagnostic summary for failing live mock runs', async (t) => {
+    const syntheticPrivateModelName = 'loop-13-private-model-canary'
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: strictEvidenceFidelityAnswer({ omitMultiHopRelation: true }),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 40,
+          completion_tokens: 68,
+          total_tokens: 108,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await runRuntimePromptBenchmark([
+        '--live',
+        '--fixture',
+        'graph-strict-evidence-fidelity',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '256',
+        '--timeout-ms',
+        '10000',
+      ], {
+        env: {
+          ...mockRuntimeEnv(runtime),
+          LLMWIKI_AGENT_BRIDGE_MODEL: syntheticPrivateModelName,
+        },
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+    const diagnostic = rendererReport.diagnosticSummary
+    const totalsDiagnostic = rendererTotals.diagnosticSummary
+
+    assert(diagnostic)
+    assert.equal(diagnostic.fixtureId, 'graph-strict-evidence-fidelity')
+    assert.equal(diagnostic.rendererId, 'compact-json')
+    assert.deepEqual(diagnostic.failureCodes, ['oracle_omission', 'expected_claim_missing'])
+    assert.equal(diagnostic.finishReasonCounts.stop, 1)
+    assert.equal(diagnostic.truncation.truncatedCount, 0)
+    assert.equal(diagnostic.outputTextLength.average, rendererReport.outputTextLength)
+    assert.equal(diagnostic.citationCoverage.averageRequiredCitationAnchorCoveragePct, 100)
+    assert(diagnostic.answerOracle.missingRequiredRelationCount > 0)
+    assert(
+      diagnostic.answerOracle.missingRelations.some((relation) => (
+        relation.includes('Citation Fidelity Gate') && relation.includes('Live Prompt Evaluation')
+      )),
+    )
+    assert.equal(diagnostic.expectedCitationMappings.missingClaimCount, 1)
+    assert.deepEqual(diagnostic.expectedCitationMappings.missingExpectedClaimPhrases, [
+      'Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation',
+    ])
+    assert.equal(diagnostic.failingRuns.length, 1)
+    assert.equal(diagnostic.failingRuns[0].outputTextLength, rendererReport.runs[0].outputTextLength)
+
+    assert(totalsDiagnostic)
+    assert.equal(totalsDiagnostic.fixtureId, null)
+    assert.equal(totalsDiagnostic.rendererId, 'compact-json')
+    assert.deepEqual(totalsDiagnostic.failureCodes, ['oracle_omission', 'expected_claim_missing'])
+    assert.equal(totalsDiagnostic.failureCodeCounts.oracle_omission, 1)
+    assert.equal(totalsDiagnostic.failureCodeCounts.expected_claim_missing, 1)
+    assert.equal(totalsDiagnostic.finishReasonCounts.stop, 1)
+    assert.equal(totalsDiagnostic.truncation.truncatedCount, 0)
+    assert.equal(totalsDiagnostic.outputTextLength.average, rendererTotals.outputTextLength.average)
+    assert.equal(totalsDiagnostic.citationCoverage.averageRequiredCitationAnchorCoveragePct, 100)
+    assert.equal(totalsDiagnostic.answerOracle.missingRequiredRelationCount, 1)
+    assert.deepEqual(totalsDiagnostic.expectedCitationMappings.missingExpectedClaimPhrases, [
+      'Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation',
+    ])
+    assert.equal(totalsDiagnostic.failingRuns.length, 1)
+    assert.equal(totalsDiagnostic.failingRuns[0].outputTextLength, rendererReport.runs[0].outputTextLength)
+
+    assert.equal(runtime.requests[0].body.model, syntheticPrivateModelName)
+    assert.equal(report.live.runtime.modelConfigured, true)
+
+    const serialized = JSON.stringify(report)
+    assert.doesNotMatch(serialized, /"outputText"\s*:/)
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(syntheticPrivateModelName)))
+    assert.doesNotMatch(serialized, /mock-runtime-key/)
+    assert.doesNotMatch(serialized, /sk-[A-Za-z0-9_-]{8,}/)
+    assert.doesNotMatch(serialized, /[A-Za-z]:\\\\/)
+    assert.doesNotMatch(serialized, /\/(?:Users|home)\//)
+  })
+
+  it('reports private-safe invalid anchor diagnostics without weakening strict validation', async (t) => {
+    const invalidAnchorToken = '[6](#citation-6)'
+    const rawAnswerCanary = 'loop-19-invalid-anchor-raw-answer-canary'
+    const syntheticPrivateModelName = 'loop-19-invalid-anchor-model-canary'
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: [
+                strictEvidenceFidelityRowAnswer(),
+                `${rawAnswerCanary} ${invalidAnchorToken}.`,
+              ].join('\n'),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 48,
+          completion_tokens: 82,
+          total_tokens: 130,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await runRuntimePromptBenchmark([
+        '--live',
+        '--fixture',
+        'graph-strict-evidence-fidelity',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '384',
+        '--timeout-ms',
+        '10000',
+      ], {
+        env: {
+          ...mockRuntimeEnv(runtime),
+          LLMWIKI_AGENT_BRIDGE_MODEL: syntheticPrivateModelName,
+        },
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+    const diagnostic = rendererReport.diagnosticSummary
+    const totalsDiagnostic = rendererTotals.diagnosticSummary
+
+    assert.equal(report.live.validation.ok, false)
+    assert.equal(rendererReport.pass, false)
+    assert.deepEqual(rendererReport.failureCodes, ['citation_anchor_invalid'])
+    assert.equal(rendererReport.requiredCitationAnchors.coveragePct, 100)
+    assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
+    assert.equal(rendererReport.answerOracle.ok, true)
+    assert.equal(rendererReport.expectedCitationMappings.ok, true)
+    assert.equal(rendererReport.invalidCitationAnchorCount, 1)
+    assert.deepEqual(rendererReport.invalidCitationAnchors, [invalidAnchorToken])
+    assert.deepEqual(rendererReport.invalidCitationAnchorCounts, { [invalidAnchorToken]: 1 })
+
+    assert.equal(diagnostic.citationCoverage.invalidCitationAnchorCount, 1)
+    assert.deepEqual(diagnostic.citationCoverage.invalidCitationAnchors, [invalidAnchorToken])
+    assert.deepEqual(diagnostic.citationCoverage.invalidCitationAnchorCounts, { [invalidAnchorToken]: 1 })
+    assert.equal(diagnostic.failingRuns.length, 1)
+    assert.deepEqual(diagnostic.failingRuns[0].failureCodes, ['citation_anchor_invalid'])
+    assert.equal(diagnostic.failingRuns[0].citationCoverage.coveragePct, 100)
+    assert.deepEqual(diagnostic.failingRuns[0].citationCoverage.invalidCitationAnchors, [invalidAnchorToken])
+    assert.deepEqual(diagnostic.failingRuns[0].citationCoverage.invalidCitationAnchorCounts, { [invalidAnchorToken]: 1 })
+    assert.equal(totalsDiagnostic.citationCoverage.invalidCitationAnchorCount, 1)
+    assert.deepEqual(totalsDiagnostic.citationCoverage.invalidCitationAnchors, [invalidAnchorToken])
+    assert.deepEqual(totalsDiagnostic.citationCoverage.invalidCitationAnchorCounts, { [invalidAnchorToken]: 1 })
+
+    const diagnosticSerialized = JSON.stringify(diagnostic)
+    assert.doesNotMatch(diagnosticSerialized, new RegExp(escapeRegExp(rawAnswerCanary)))
+    assert.doesNotMatch(diagnosticSerialized, /"outputText"\s*:/)
+    assert.doesNotMatch(diagnosticSerialized, /"start"\s*:/)
+    assert.doesNotMatch(diagnosticSerialized, /"end"\s*:/)
+
+    assert.equal(runtime.requests[0].body.model, syntheticPrivateModelName)
+    const serialized = JSON.stringify(report)
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(rawAnswerCanary)))
+    assert.doesNotMatch(serialized, /"outputText"\s*:/)
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(syntheticPrivateModelName)))
+    assert.doesNotMatch(serialized, /mock-runtime-key/)
+    assert.doesNotMatch(serialized, /sk-[A-Za-z0-9_-]{8,}/)
+    assert.doesNotMatch(serialized, /[A-Za-z]:\\\\/)
+    assert.doesNotMatch(serialized, /\/(?:Users|home)\//)
+  })
+
+  it('live safe profile wrapper emits sanitized aggregate JSON without raw runtime values', async (t) => {
+    const modelName = 'loop-17-live-safe-model-canary'
+    const apiKey = 'sk-proj-live-safe-success-canary-1234567890'
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      const userPrompt = body.messages.find((message) => message.role === 'user')?.content || ''
+      const content = userPrompt.includes('Promotion Decision requires Citation Fidelity Gate')
+        ? strictEvidenceFidelityRowAnswer()
+        : linearChainRowAnswer()
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { content },
+          },
+        ],
+        usage: {
+          prompt_tokens: 60,
+          completion_tokens: 80,
+          total_tokens: 140,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const { stdout, stderr } = await runRuntimePromptLiveSafe([
+      '--overall-timeout-ms',
+      '30000',
+      '--timeout-ms',
+      '10000',
+      '--max-tokens',
+      '384',
+    ], {
+      env: mockRuntimeEnv(runtime, { model: modelName, apiKey }),
+    })
+
+    const summary = JSON.parse(stdout)
+
+    assert.equal(stderr, '')
+    assert.equal(summary.schema, 'llmwiki-agent-bridge.runtime-prompt-live-safe.v1')
+    assert.equal(summary.profile.id, 'loop17-smoke')
+    assert.equal(summary.child.status, 'ok')
+    assert.equal(summary.child.exitCode, 0)
+    assert.equal(summary.child.jsonParse.ok, true)
+    assert.equal(summary.live.status, 'ok')
+    assert.equal(summary.live.validation.ok, true)
+    assert.equal(summary.live.recommendation.status, 'recommended')
+    assert.equal(summary.live.recommendation.recommendedRendererId, 'compact-json')
+    assert.equal(summary.live.totals.requestCount, 2)
+    assert.equal(summary.live.totals.passCount, 2)
+    assert.equal(summary.live.totals.passRatePct, 100)
+    assert.deepEqual(summary.live.totals.failureCodeCounts, {})
+    assert.equal(summary.live.totals.finishReasonCounts.stop, 2)
+    assert.equal(summary.live.renderers['compact-json'].passRatePct, 100)
+    assert.equal(summary.live.renderers['compact-json'].outputTextLength.min > 0, true)
+    assert.equal(summary.sensitiveScan.ok, true)
+    assert.equal(summary.sensitiveScan.totalMatches, 0)
+    assert.equal(runtime.requests.length, 2)
+    assert(runtime.requests.every((request) => request.body.model === modelName))
+
+    assert.doesNotMatch(stdout, /"outputText"\s*:/)
+    assert.doesNotMatch(stdout, /Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation/)
+    assert.doesNotMatch(stdout, /Runtime Prompt Validation preserves the top-level Runtime Prompt Decision evidence/)
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(modelName)))
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(apiKey)))
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(tmpdir())))
+    assert.doesNotMatch(stdout, /[A-Za-z]:\\\\/)
+    assert.doesNotMatch(stdout, /\/(?:Users|home|tmp)\//)
+  })
+
+  it('live safe profile wrapper preserves invalid anchor aggregates in sanitized failure summary', async (t) => {
+    const modelName = 'loop-17-live-safe-failure-model-canary'
+    const apiKey = 'sk-proj-live-safe-failure-canary-1234567890'
+    const invalidAnchorToken = '[6](#citation-6)'
+    const rawAnswerCanary = 'loop-19-live-safe-invalid-anchor-raw-canary'
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: [
+                strictEvidenceFidelityRowAnswer(),
+                `${rawAnswerCanary} ${invalidAnchorToken}.`,
+              ].join('\n'),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 10,
+          total_tokens: 30,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await runRuntimePromptLiveSafe([
+        '--profile',
+        'none',
+        '--overall-timeout-ms',
+        '30000',
+        '--fixture',
+        'graph-strict-evidence-fidelity',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '384',
+        '--timeout-ms',
+        '10000',
+      ], {
+        env: mockRuntimeEnv(runtime, { model: modelName, apiKey }),
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.equal(error.stderr, '')
+
+    const summary = JSON.parse(error.stdout)
+
+    assert.equal(summary.child.status, 'failed')
+    assert.equal(summary.child.exitCode, 1)
+    assert.equal(summary.child.jsonParse.ok, true)
+    assert.equal(summary.live.status, 'failed')
+    assert.equal(summary.live.validation.ok, false)
+    assert.equal(summary.live.totals.requestCount, 1)
+    assert.equal(summary.live.totals.passCount, 0)
+    assert.equal(summary.live.totals.failCount, 1)
+    assert.deepEqual(summary.live.totals.failureCodeCounts, { citation_anchor_invalid: 1 })
+    assert.equal(summary.live.totals.citationCoverage.averageRequiredCitationAnchorCoveragePct, 100)
+    assert.equal(summary.live.totals.citationCoverage.invalidCitationAnchorCount, 1)
+    assert.deepEqual(summary.live.totals.citationCoverage.invalidCitationAnchors, [invalidAnchorToken])
+    assert.deepEqual(summary.live.totals.citationCoverage.invalidCitationAnchorCounts, { [invalidAnchorToken]: 1 })
+    assert.equal(summary.live.renderers['compact-json'].citationCoverage.invalidCitationAnchorCount, 1)
+    assert.deepEqual(summary.live.renderers['compact-json'].citationCoverage.invalidCitationAnchors, [invalidAnchorToken])
+    assert.deepEqual(summary.live.renderers['compact-json'].citationCoverage.invalidCitationAnchorCounts, { [invalidAnchorToken]: 1 })
+    assert.equal(summary.live.recommendation.status, 'blocked')
+    assert.equal(summary.live.recommendation.recommendedRendererId, null)
+    assert.equal(summary.sensitiveScan.ok, true)
+
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(rawAnswerCanary)))
+    assert.doesNotMatch(error.stdout, /"outputText"\s*:/)
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(modelName)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(apiKey)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(tmpdir())))
+  })
+
+  it('live safe profile wrapper fails closed on overall timeout without printing runtime values', async () => {
+    const endpointCanary = 'http://127.0.0.1:1/v1'
+    const modelName = 'loop-17-live-safe-timeout-model-canary'
+    const apiKey = 'sk-proj-live-safe-timeout-canary-1234567890'
+
+    let error
+    try {
+      await runRuntimePromptLiveSafe([
+        '--profile',
+        'none',
+        '--overall-timeout-ms',
+        '1',
+        '--fixture',
+        'single-source',
+        '--renderer',
+        'compact-json',
+        '--timeout-ms',
+        '10000',
+      ], {
+        env: {
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: endpointCanary,
+          LLMWIKI_AGENT_BRIDGE_MODEL: modelName,
+          LLMWIKI_AGENT_BRIDGE_API_KEY: apiKey,
+        },
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.equal(error.stderr, '')
+
+    const summary = JSON.parse(error.stdout)
+
+    assert.equal(summary.child.status, 'timeout')
+    assert.equal(summary.child.timedOut, true)
+    assert.equal(summary.child.overallTimeoutMs, 1)
+    assert.equal(summary.child.jsonParse.ok, false)
+    assert.equal(summary.live, null)
+    assert.equal(summary.sensitiveScan.ok, true)
+
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(endpointCanary)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(modelName)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(apiKey)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(tmpdir())))
+  })
+
+  it('production approval e2e approves compact-json across local global insufficient and graph fixture classes', async (t) => {
+    const modelName = 'prod-approval-e2e-model-canary'
+    const apiKey = 'sk-proj-prod-approval-e2e-canary-1234567890'
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      const userPrompt = body.messages.find((message) => message.role === 'user')?.content || ''
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: productionApprovalAnswerForPrompt(userPrompt),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 80,
+          completion_tokens: 120,
+          total_tokens: 200,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const { stdout, stderr } = await runRuntimePromptProductionApproval([
+      '--runtime-alias',
+      'mock-private-runtime',
+      '--model-class',
+      'mock-model-class',
+      '--required-model-class',
+      'mock-model-class',
+      '--overall-timeout-ms',
+      '30000',
+      '--',
+      '--timeout-ms',
+      '10000',
+      '--max-tokens',
+      '768',
+    ], {
+      env: mockRuntimeEnv(runtime, { model: modelName, apiKey }),
+      maxBuffer: 2 * 1024 * 1024,
+    })
+
+    const report = JSON.parse(stdout)
+
+    assert.equal(stderr, '')
+    assert.equal(report.schema, 'llmwiki-agent-bridge.runtime-prompt-production-approval.v1')
+    assert.equal(report.wrapper.status, 'ok')
+    assert.equal(report.sensitiveScan.ok, true)
+    assert.equal(report.sensitiveScan.totalMatches, 0)
+    assert.equal(report.sourceSummary.sensitiveScan.ok, true)
+    assert.equal(report.defaultApproval.status, 'approved')
+    assert.equal(report.defaultApproval.approved, true)
+    assert.equal(report.defaultApproval.rendererId, 'compact-json')
+    assert.equal(report.defaultApproval.modelClass, 'mock-model-class')
+    assert.deepEqual(report.defaultApproval.blockingReasons, [])
+    assert.equal(report.defaultApproval.metrics.runCount, 5)
+    assert.equal(report.defaultApproval.metrics.passRatePct, 100)
+    assert.deepEqual(report.defaultApproval.metrics.failureCodeCounts, {})
+    assert.equal(report.defaultApproval.metrics.answerOracle.strictFailureCount, 0)
+    assert.equal(report.defaultApproval.metrics.expectedCitationMappings.strictFailureCount, 0)
+    assert.deepEqual(report.defaultApproval.fixtureCoverage.missingFixtureClasses, [])
+    assert.deepEqual(report.defaultApproval.fixtureCoverage.missingQueryClasses, [])
+    assert.deepEqual(report.defaultApproval.fixtureCoverage.missingModelClasses, [])
+    assert.deepEqual(report.defaultApproval.fixtureCoverage.modelClasses, ['mock-model-class'])
+    assert.deepEqual(report.defaultApproval.fixtureCoverage.fixtureClasses, [
+      'global-multi-source',
+      'graph-relation',
+      'insufficient-evidence',
+      'local-single-source',
+      'strict-evidence-fidelity',
+    ])
+    assert.deepEqual(report.defaultApproval.fixtureCoverage.queryClasses, [
+      'global-query',
+      'graph-query',
+      'insufficient-evidence-query',
+      'local-query',
+    ])
+    assert.equal(runtime.requests.length, 5)
+
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(modelName)))
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(apiKey)))
+    assert.doesNotMatch(stdout, /"outputText"\s*:/)
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(tmpdir())))
+  })
+
+  it('production approval e2e blocks default approval on invalid citation anchors', async (t) => {
+    const invalidAnchorToken = '[6](#citation-6)'
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: `${strictEvidenceFidelityRowAnswer()}\nInvalid extra anchor ${invalidAnchorToken}.`,
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 40,
+          completion_tokens: 90,
+          total_tokens: 130,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await runRuntimePromptProductionApproval([
+        '--runtime-alias',
+        'mock-private-runtime',
+        '--overall-timeout-ms',
+        '30000',
+        '--required-fixture',
+        'graph-strict-evidence-fidelity',
+        '--required-fixture-class',
+        'strict-evidence-fidelity',
+        '--required-query-class',
+        'graph-query',
+        '--',
+        '--profile',
+        'none',
+        '--fixture',
+        'graph-strict-evidence-fidelity',
+        '--renderer',
+        'compact-json',
+        '--timeout-ms',
+        '10000',
+        '--max-tokens',
+        '768',
+      ], {
+        env: mockRuntimeEnv(runtime),
+        maxBuffer: 2 * 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.equal(error.stderr, '')
+
+    const report = JSON.parse(error.stdout)
+
+    assert.equal(report.defaultApproval.approved, false)
+    assert.equal(report.defaultApproval.status, 'blocked')
+    assert.deepEqual(report.defaultApproval.metrics.failureCodeCounts, { citation_anchor_invalid: 1 })
+    assert.equal(report.defaultApproval.metrics.citationCoverage.invalidCitationAnchorCount, 1)
+    assert.deepEqual(report.defaultApproval.metrics.citationCoverage.invalidCitationAnchors, [invalidAnchorToken])
+    assert(report.defaultApproval.blockingReasons.includes('default renderer failureCodeCounts must be empty'))
+    assert(report.defaultApproval.blockingReasons.includes('default renderer invalid citation anchors must be 0'))
+    assert.equal(report.sourceSummary.sensitiveScan.ok, true)
+  })
+
+  it('production approval e2e rejects unsafe runtime aliases in final sanitized output', async (t) => {
+    const modelName = 'prod-approval-unsafe-alias-model-canary'
+    const apiKey = 'sk-proj-prod-approval-unsafe-alias-canary-1234567890'
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      const userPrompt = body.messages.find((message) => message.role === 'user')?.content || ''
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: productionApprovalAnswerForPrompt(userPrompt),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 80,
+          completion_tokens: 120,
+          total_tokens: 200,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const { stdout } = await runRuntimePromptProductionApproval([
+      '--runtime-alias',
+      apiKey,
+      '--overall-timeout-ms',
+      '30000',
+      '--',
+      '--timeout-ms',
+      '10000',
+      '--max-tokens',
+      '768',
+    ], {
+      env: mockRuntimeEnv(runtime, { model: modelName, apiKey }),
+      maxBuffer: 2 * 1024 * 1024,
+    })
+
+    const report = JSON.parse(stdout)
+
+    assert.equal(report.runtimeAlias, 'configured-runtime')
+    assert.equal(report.defaultApproval.runtimeAlias, 'configured-runtime')
+    assert.equal(report.sensitiveScan.ok, true)
+    assert.equal(report.defaultApproval.approved, true)
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(modelName)))
+    assert.doesNotMatch(stdout, new RegExp(escapeRegExp(apiKey)))
+    assert.doesNotMatch(stdout, /"outputText"\s*:/)
+  })
+
+  it('redaction scan catches synthetic raw outputText, keys, bearer tokens, query keys, and local paths without printing values', async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), 'llmwiki-live-safe-scan-test-'))
+    t.after(() => rm(dir, { recursive: true, force: true }))
+    const scanInputPath = join(dir, 'raw-output.txt')
+    const outputTextCanary = 'raw-output-text-canary-loop17'
+    const keyCanary = 'sk-proj-live-safe-redaction-canary-ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    const bearerCanary = 'Bearer liveSafeBearerCanary1234567890'
+    const apiKeyQueryCanary = 'api_key=live-safe-query-canary'
+    const endpointCanary = 'https://runtime.loop17.example.test/v1'
+    const modelCanary = 'loop-17-redaction-scan-model-canary'
+    const localPathCanary = 'C:\\Users\\Loop17\\AppData\\Local\\Temp\\live-safe-canary.txt'
+    await writeFile(scanInputPath, [
+      JSON.stringify({ outputText: outputTextCanary }),
+      keyCanary,
+      bearerCanary,
+      `${endpointCanary}?${apiKeyQueryCanary}`,
+      modelCanary,
+      localPathCanary,
+    ].join('\n'))
+
+    let error
+    try {
+      await runRuntimePromptLiveSafe(['--scan-file', scanInputPath], {
+        env: {
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: endpointCanary,
+          LLMWIKI_AGENT_BRIDGE_MODEL: modelCanary,
+          LLMWIKI_AGENT_BRIDGE_API_KEY: keyCanary,
+        },
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.equal(error.stderr, '')
+
+    const summary = JSON.parse(error.stdout)
+    const categories = summary.sensitiveScan.raw.categories
+
+    assert.equal(summary.mode, 'scan-only')
+    assert.equal(summary.sensitiveScan.ok, false)
+    assert.equal(summary.sensitiveScan.raw.ok, false)
+    assert.equal(summary.sensitiveScan.sanitizedOutput.ok, true)
+    assert.equal(categories.rawOutputTextField, 1)
+    assert(categories.configuredEnvValue >= 3)
+    assert(categories.keyLikeToken >= 1)
+    assert.equal(categories.bearerToken, 1)
+    assert.equal(categories.apiKeyQueryValue, 1)
+    assert(categories.tempPath >= 1)
+    assert(categories.absoluteLocalPath >= 1)
+
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(outputTextCanary)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(keyCanary)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(bearerCanary)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(apiKeyQueryCanary)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(endpointCanary)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(modelCanary)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(localPathCanary)))
+    assert.doesNotMatch(error.stdout, new RegExp(escapeRegExp(scanInputPath)))
+    assert.doesNotMatch(error.stdout, /"outputText"\s*:/)
+  })
+
+  it('flags strict evidence-fidelity omissions for graph-strict-evidence-fidelity multi-hop relations', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: strictEvidenceFidelityAnswer({ omitMultiHopRelation: true }),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 40,
+          completion_tokens: 68,
+          total_tokens: 108,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await runRuntimePromptBenchmark([
+        '--live',
+        '--fixture',
+        'graph-strict-evidence-fidelity',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '256',
+        '--timeout-ms',
+        '10000',
+      ], {
+        env: mockRuntimeEnv(runtime),
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /oracle_omission/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+
+    assert.equal(rendererReport.pass, false)
+    assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
+    assert.equal(rendererReport.answerOracle.ok, false)
+    assert(rendererReport.answerOracle.metrics.missingRequiredRelationCount > 0)
+    assert.equal(rendererReport.expectedCitationMappings.ok, false)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.missingClaimCount, 1)
+    assert(rendererReport.failureCodes.includes('expected_claim_missing'))
+    assert(rendererReport.failureCodes.includes('oracle_omission'))
+    assert.equal(runtime.requests.length, 1)
+  })
+
+  it('flags strict evidence-fidelity wrong nearby expected citations for graph-strict-evidence-fidelity', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: strictEvidenceFidelityAnswer({ wrongExactAnchor: true }),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 40,
+          completion_tokens: 76,
+          total_tokens: 116,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await runRuntimePromptBenchmark([
+        '--live',
+        '--fixture',
+        'graph-strict-evidence-fidelity',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '256',
+        '--timeout-ms',
+        '10000',
+      ], {
+        env: mockRuntimeEnv(runtime),
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /expected_citation_mismatch/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+
+    assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
+    assert.equal(rendererReport.answerOracle.ok, true)
+    assert.equal(rendererReport.expectedCitationMappings.ok, false)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.expectedMappingCount, 4)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.satisfiedMappingCount, 3)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.expectedCitationMismatchCount, 1)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.proximityFailureCount, 0)
+    assert.deepEqual(rendererReport.failureCodes, ['expected_citation_mismatch'])
+    assert.equal(runtime.requests.length, 1)
+  })
+
+  it('flags strict evidence-fidelity repeated citations not cited every occurrence', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: strictEvidenceFidelityAnswer({ citeFirstRepeatedOccurrence: false }),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 40,
+          completion_tokens: 74,
+          total_tokens: 114,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await runRuntimePromptBenchmark([
+        '--live',
+        '--fixture',
+        'graph-strict-evidence-fidelity',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '256',
+        '--timeout-ms',
+        '10000',
+      ], {
+        env: mockRuntimeEnv(runtime),
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /expected_citation_every_occurrence_failed/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+
+    assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
+    assert.equal(rendererReport.answerOracle.ok, true)
+    assert.equal(rendererReport.expectedCitationMappings.ok, false)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.everyOccurrenceFailureCount, 1)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.strictEveryOccurrenceFailureCount, 1)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.claimOccurrenceCount, 5)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.satisfiedOccurrenceCount, 4)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.unsatisfiedOccurrenceCount, 1)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.occurrenceCoveragePct, 80)
+    assert.deepEqual(rendererReport.failureCodes, ['expected_citation_every_occurrence_failed'])
+    assert.equal(runtime.requests.length, 1)
+  })
+
+  it('classifies strict evidence-fidelity unsupported and contradictory claims for graph-strict-evidence-fidelity', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: strictEvidenceFidelityAnswer({ includeUnsupportedAndContradictory: true }),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 40,
+          completion_tokens: 88,
+          total_tokens: 128,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await runRuntimePromptBenchmark([
+        '--live',
+        '--fixture',
+        'graph-strict-evidence-fidelity',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '256',
+        '--timeout-ms',
+        '10000',
+      ], {
+        env: mockRuntimeEnv(runtime),
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /oracle_unsupported_claim/)
+    assert.match(error.stderr, /oracle_contradiction/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+
+    assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
+    assert.equal(rendererReport.expectedCitationMappings.ok, true)
+    assert.equal(rendererReport.answerOracle.ok, false)
+    assert.equal(rendererReport.answerOracle.metrics.unsupportedClaimHitCount, 2)
+    assert.equal(rendererReport.answerOracle.metrics.contradictoryClaimHitCount, 2)
+    assert.equal(rendererReport.answerOracle.metrics.distortionCount, 4)
+    assert.deepEqual(rendererReport.failureCodes, [
+      'oracle_distortion',
+      'oracle_unsupported_claim',
+      'oracle_contradiction',
+    ])
+    assert.equal(rendererReport.aggregate.answerOracle.strictUnsupportedClaimHitCount, 2)
+    assert.equal(rendererReport.aggregate.answerOracle.strictContradictoryClaimHitCount, 2)
+    assert.equal(rendererReport.aggregate.answerOracle.strictDistortionCount, 4)
+    assert.equal(runtime.requests.length, 1)
+  })
+
+  it('blocks live recommendation when every renderer fails strict quality gates', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: 'This answer omits exact citation anchors and the required graph relations.',
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 10,
+          total_tokens: 30,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'graph-linear-chain',
+        '--renderer',
+        'compact-json,markdown-summary',
+        '--max-tokens',
+        '128',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+
+    const report = JSON.parse(error.stdout)
+    const recommendation = report.live.recommendation
+
+    assert.equal(recommendation.status, 'blocked')
+    assert.equal(recommendation.recommendedRendererId, null)
+    assert.equal(recommendation.blockedReasons.length > 0, true)
+    assert.deepEqual(recommendation.ranking.map((entry) => entry.eligible), [false, false])
+    for (const entry of recommendation.ranking) {
+      assert.match(entry.blockingReasons.join('; '), /strict live passRate is 0%, not 100%/)
+      assert(entry.strictLive.failureCodeCount > 0)
+      assert(entry.strictLive.strictQualityFailureCount > 0)
+    }
+    assert.equal(runtime.requests.length, 2)
+  })
+
+  it('classifies unsupported answer-oracle claims distinctly', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: [
+                'Runtime Prompt Decision requires Prompt Codec Implementation [2](#citation-2),',
+                'and Prompt Codec Implementation measured by Prompt renderer benchmark [3](#citation-3) before Runtime Prompt Validation [1](#citation-1).',
+                'Prompt Codec Implementation is the production default [2](#citation-2).',
+              ].join(' '),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 28,
+          total_tokens: 48,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'graph-linear-chain',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '128',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /unsupported claims present/)
+    assert.match(error.stderr, /oracle_unsupported_claim/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+
+    assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
+    assert.equal(rendererReport.expectedCitationMappings.ok, true)
+    assert.equal(rendererReport.answerOracle.ok, false)
+    assert.equal(rendererReport.answerOracle.metrics.unsupportedClaimCount, 1)
+    assert.equal(rendererReport.answerOracle.metrics.unsupportedClaimHitCount, 1)
+    assert.equal(rendererReport.answerOracle.metrics.contradictoryClaimHitCount, 0)
+    assert.equal(rendererReport.answerOracle.metrics.distortionCount, 1)
+    assert.equal(rendererReport.aggregate.answerOracle.unsupportedClaimHitCount, 1)
+    assert.equal(rendererReport.aggregate.answerOracle.contradictoryClaimHitCount, 0)
+    assert.equal(rendererReport.aggregate.answerOracle.distortionCount, 1)
+    assert.equal(rendererReport.aggregate.answerOracle.strictUnsupportedClaimHitCount, 1)
+    assert.equal(rendererReport.aggregate.answerOracle.strictContradictoryClaimHitCount, 0)
+    assert.equal(rendererReport.aggregate.answerOracle.strictDistortionCount, 1)
+    assert.equal(rendererReport.aggregate.answerOracle.averageOmissionRate, 0)
+    assert.equal(rendererReport.aggregate.answerOracle.averageRequiredItemCoveragePct, 100)
+    assert.deepEqual(rendererReport.failureBuckets, ['answer-oracle-distortion', 'answer-oracle-unsupported'])
+    assert.deepEqual(rendererReport.failureCodes, ['oracle_distortion', 'oracle_unsupported_claim'])
+    assert.equal(rendererReport.aggregate.failureBucketCounts['answer-oracle-distortion'], 1)
+    assert.equal(rendererReport.aggregate.failureBucketCounts['answer-oracle-unsupported'], 1)
+    assert.equal(rendererReport.aggregate.failureCodeCounts.oracle_distortion, 1)
+    assert.equal(rendererReport.aggregate.failureCodeCounts.oracle_unsupported_claim, 1)
+    assert.equal(rendererTotals.answerOracle.unsupportedClaimHitCount, 1)
+    assert.equal(rendererTotals.answerOracle.contradictoryClaimHitCount, 0)
+    assert.equal(rendererTotals.answerOracle.distortionCount, 1)
+    assert.equal(rendererTotals.answerOracle.strictUnsupportedClaimHitCount, 1)
+    assert.equal(rendererTotals.answerOracle.strictContradictoryClaimHitCount, 0)
+    assert.equal(rendererTotals.answerOracle.strictDistortionCount, 1)
+    assert.equal(rendererTotals.averageAnswerOracleOmissionRate, 0)
+    assert.equal(rendererTotals.averageAnswerOracleRequiredItemCoveragePct, 100)
+    assert.equal(report.live.totals.answerOracle.strictUnsupportedClaimHitCount, 1)
+    assert.equal(report.live.totals.answerOracle.strictDistortionCount, 1)
+    assert.equal(rendererTotals.failureBucketCounts['answer-oracle-distortion'], 1)
+    assert.equal(rendererTotals.failureBucketCounts['answer-oracle-unsupported'], 1)
+    assert.equal(rendererTotals.failureCodeCounts.oracle_distortion, 1)
+    assert.equal(rendererTotals.failureCodeCounts.oracle_unsupported_claim, 1)
+  })
+
+  it('classifies contradictory answer-oracle claims distinctly', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: [
+                'Runtime Prompt Decision requires Prompt Codec Implementation [2](#citation-2),',
+                'and Prompt Codec Implementation measured by Prompt renderer benchmark [3](#citation-3) before Runtime Prompt Validation [1](#citation-1).',
+                'Runtime Prompt Decision does not require Prompt Codec Implementation [2](#citation-2).',
+              ].join(' '),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 28,
+          total_tokens: 48,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'graph-linear-chain',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '128',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /contradictory claims present/)
+    assert.match(error.stderr, /oracle_contradiction/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+
+    assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
+    assert.equal(rendererReport.expectedCitationMappings.ok, true)
+    assert.equal(rendererReport.answerOracle.ok, false)
+    assert.equal(rendererReport.answerOracle.metrics.unsupportedClaimHitCount, 0)
+    assert.equal(rendererReport.answerOracle.metrics.contradictoryClaimCount, 1)
+    assert.equal(rendererReport.answerOracle.metrics.contradictoryClaimHitCount, 1)
+    assert.equal(rendererReport.answerOracle.metrics.distortionCount, 1)
+    assert.equal(rendererReport.aggregate.answerOracle.unsupportedClaimHitCount, 0)
+    assert.equal(rendererReport.aggregate.answerOracle.contradictoryClaimHitCount, 1)
+    assert.equal(rendererReport.aggregate.answerOracle.distortionCount, 1)
+    assert.equal(rendererReport.aggregate.answerOracle.strictUnsupportedClaimHitCount, 0)
+    assert.equal(rendererReport.aggregate.answerOracle.strictContradictoryClaimHitCount, 1)
+    assert.equal(rendererReport.aggregate.answerOracle.strictDistortionCount, 1)
+    assert.deepEqual(rendererReport.failureBuckets, ['answer-oracle-distortion', 'answer-oracle-contradiction'])
+    assert.deepEqual(rendererReport.failureCodes, ['oracle_distortion', 'oracle_contradiction'])
+    assert.equal(rendererReport.aggregate.failureBucketCounts['answer-oracle-distortion'], 1)
+    assert.equal(rendererReport.aggregate.failureBucketCounts['answer-oracle-contradiction'], 1)
+    assert.equal(rendererReport.aggregate.failureCodeCounts.oracle_distortion, 1)
+    assert.equal(rendererReport.aggregate.failureCodeCounts.oracle_contradiction, 1)
+    assert.equal(rendererTotals.failureBucketCounts['answer-oracle-distortion'], 1)
+    assert.equal(rendererTotals.failureBucketCounts['answer-oracle-contradiction'], 1)
+    assert.equal(rendererTotals.failureCodeCounts.oracle_distortion, 1)
+    assert.equal(rendererTotals.failureCodeCounts.oracle_contradiction, 1)
+    assert.equal(rendererTotals.answerOracle.contradictoryClaimHitCount, 1)
+    assert.equal(rendererTotals.answerOracle.strictContradictoryClaimHitCount, 1)
+    assert.equal(rendererTotals.answerOracle.strictDistortionCount, 1)
+  })
+
+  it('keeps report-only unsupported and contradictory answer-oracle claims out of strict failure classification', () => {
+    const oracleReport = evaluateAnswerOracle(
+      'A report-only answer says Alpha claim is unsupported and Beta claim contradicts the fixture.',
+      {
+        gate: 'report-only',
+        unsupportedClaims: [{ allOf: ['Alpha claim', 'unsupported'] }],
+        contradictoryClaims: [{ allOf: ['Beta claim', 'contradicts'] }],
+      },
+    )
+
+    assert.equal(oracleReport.enabled, true)
+    assert.equal(oracleReport.gate, 'report-only')
+    assert.equal(oracleReport.ok, false)
+    assert.equal(oracleReport.metrics.unsupportedClaimHitCount, 1)
+    assert.equal(oracleReport.metrics.contradictoryClaimHitCount, 1)
+    assert.equal(oracleReport.metrics.distortionCount, 2)
+    assert.match(oracleReport.failures.join('; '), /unsupported claims present/)
+    assert.match(oracleReport.failures.join('; '), /contradictory claims present/)
+    assert.deepEqual(classifyLiveRunFailureBuckets({
+      status: 'ok',
+      answerOracle: oracleReport,
+    }), [])
+    assert.deepEqual(classifyLiveRunFailureCodes({
+      status: 'ok',
+      answerOracle: oracleReport,
+    }), [])
+  })
+
+  it('keeps report-only aggregate diagnostics visible without blocking recommendation eligibility', () => {
+    const answerOracle = summarizeAnswerOracleRunMetrics([
+      {
+        answerOracle: evaluateAnswerOracle(
+          'A report-only answer says Alpha claim is unsupported and Beta claim contradicts the fixture.',
+          {
+            gate: 'report-only',
+            unsupportedClaims: [{ allOf: ['Alpha claim', 'unsupported'] }],
+            contradictoryClaims: [{ allOf: ['Beta claim', 'contradicts'] }],
+          },
+        ),
+      },
+    ])
+    const expectedCitationMappings = summarizeExpectedCitationMappingRunMetrics([
+      {
+        expectedCitationMappings: evaluateExpectedCitationMappings(
+          'Report-only mapped claim appears without a nearby citation anchor.',
+          [
+            {
+              claim: 'Report-only mapped claim',
+              expectedCitationIds: ['fixture:alpha'],
+              gate: 'report-only',
+              windowChars: 30,
+            },
+          ],
+          expectedCitationMappingEvidenceBundle(),
+        ),
+      },
+    ])
+    const recommendation = buildLiveRendererRecommendation({
+      renderers: [
+        {
+          id: 'compact-json',
+          label: 'Compact JSON',
+          mediaType: 'application/json',
+        },
+      ],
+      totals: {
+        renderers: {
+          'compact-json': {
+            runCount: 1,
+            passCount: 1,
+            failCount: 0,
+            passRatePct: 100,
+            failureCodeCounts: {},
+            truncatedCount: 0,
+            inferredTruncatedCount: 0,
+            runtimeUserPrompt: {
+              utf8Bytes: 120,
+              chars: 120,
+              estimatedTokens: 30,
+            },
+            answerOracle,
+            expectedCitationMappings,
+          },
+        },
+      },
+    })
+    const [entry] = recommendation.ranking
+
+    assert.equal(answerOracle.distortionCount, 2)
+    assert.equal(answerOracle.strictDistortionCount, 0)
+    assert.equal(answerOracle.reportOnlyDistortionCount, 2)
+    assert.equal(expectedCitationMappings.reportOnlyFailureCount, 1)
+    assert.equal(expectedCitationMappings.strictProximityFailureCount, 0)
+    assert.equal(recommendation.status, 'recommended')
+    assert.equal(recommendation.recommendedRendererId, 'compact-json')
+    assert.equal(entry.eligible, true)
+    assert.deepEqual(entry.blockingReasons, [])
+    assert.equal(entry.strictLive.strictOracleHitCount, 0)
+    assert.equal(entry.strictLive.strictCitationMappingFailureCount, 0)
+    assert.equal(entry.quality.answerOracle.reportOnlyDistortionCount, 2)
+    assert.equal(entry.quality.expectedCitationMappings.reportOnlyFailureCount, 1)
+  })
+
+  it('preserves oracle distortion classification for forbidden configured patterns', () => {
+    const oracleReport = evaluateAnswerOracle(
+      'The answer says citations are optional and the production default is approved despite the fixture gate.',
+      {
+        forbiddenTerms: ['citations are optional'],
+        forbiddenClaims: [{ allOf: ['production default', 'approved'] }],
+      },
+    )
+
+    assert.equal(oracleReport.enabled, true)
+    assert.equal(oracleReport.gate, 'strict')
+    assert.equal(oracleReport.ok, false)
+    assert.equal(oracleReport.metrics.forbiddenTermHitCount, 1)
+    assert.equal(oracleReport.metrics.forbiddenClaimHitCount, 1)
+    assert.equal(oracleReport.metrics.distortionCount, 2)
+    assert.equal(oracleReport.metrics.unsupportedClaimHitCount, 0)
+    assert.equal(oracleReport.metrics.contradictoryClaimHitCount, 0)
+    assert.deepEqual(classifyLiveRunFailureBuckets({
+      status: 'ok',
+      answerOracle: oracleReport,
+    }), ['answer-oracle-distortion'])
+    assert.deepEqual(classifyLiveRunFailureCodes({
+      status: 'ok',
+      answerOracle: oracleReport,
+    }), ['oracle_distortion'])
+  })
+
+  it('reports repeated live runtime pass variance and fails on any strict failed run', async (t) => {
+    let callCount = 0
+    const runtime = await startFixtureServer(async ({ response }) => {
+      callCount += 1
+      const passingRun = callCount % 2 === 1
+      writeJson(response, 200, {
+        choices: [
+          {
+            message: {
+              content: passingRun
+                ? 'Runtime Prompt Decision requires Prompt Codec Implementation [2](#citation-2), and Prompt Codec Implementation measured by Prompt renderer benchmark [3](#citation-3) before Runtime Prompt Validation [1](#citation-1).'
+                : 'Runtime Prompt Decision is mentioned without the required relation or exact citation anchors.',
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: passingRun ? 10 : 6,
+          total_tokens: passingRun ? 30 : 26,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--live-runs',
+        '2',
+        '--fixture',
+        'graph-linear-chain',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '64',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /graph-linear-chain\/compact-json run 2\/2: live response must complete/)
+
+    const report = JSON.parse(error.stdout)
+    const liveRenderer = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+
+    assert.equal(report.live.status, 'failed')
+    assert.equal(report.live.validation.ok, false)
+    assert.equal(report.live.runCount, 2)
+    assert.equal(report.live.runtime.liveRuns, 2)
+    assert.equal(report.live.totals.requestCount, 2)
+    assert.equal(liveRenderer.runCount, 2)
+    assert.equal(liveRenderer.passCount, 1)
+    assert.equal(liveRenderer.passRatePct, 50)
+    assert.equal(liveRenderer.pass, false)
+    assert.equal(liveRenderer.representativeRunIndex, 2)
+    assert.deepEqual(liveRenderer.runs.map((run) => run.pass), [true, false])
+    assert.equal(liveRenderer.runs[1].requiredCitationAnchors.coveragePct, 0)
+    assert.equal(liveRenderer.allRequiredCitationAnchorsCovered, false)
+    assert.equal(liveRenderer.aggregate.runCount, 2)
+    assert.equal(liveRenderer.aggregate.passCount, 1)
+    assert.equal(liveRenderer.aggregate.passRatePct, 50)
+    assert.equal(liveRenderer.aggregate.averageRequiredCitationAnchorCoveragePct, 50)
+    assert.equal(Number.isFinite(liveRenderer.aggregate.averageAnswerOracleRequiredTermCoveragePct), true)
+    assert.equal(liveRenderer.aggregate.averageAnswerOracleRequiredRelationCoveragePct, 50)
+    assert.equal(liveRenderer.aggregate.variance.mixedPassStatus, true)
+    assert.equal(liveRenderer.aggregate.variance.requiredCitationAnchorCoverageRangePct, 100)
+    assert(liveRenderer.aggregate.latencyMs.min <= liveRenderer.aggregate.latencyMs.max)
+    assert.equal(rendererTotals.runCount, 2)
+    assert.equal(rendererTotals.passRatePct, 50)
+    assert.equal(rendererTotals.variance.mixedPassStatus, true)
+    assert.equal(runtime.requests.length, 2)
+  })
+
+  it('reports repeated live runtime prompt benchmark variance and fails any strict run', async (t) => {
+    let requestCount = 0
+    const runtime = await startFixtureServer(async ({ response }) => {
+      requestCount += 1
+      const isFailingRun = requestCount === 2
+      writeJson(response, 200, {
+        choices: [
+          {
+            message: {
+              content: isFailingRun
+                ? localSingleSourceAnswer({ includeRuntimeProfilesCitation: false })
+                : localSingleSourceAnswer(),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 12,
+          completion_tokens: isFailingRun ? 5 : 7,
+          total_tokens: isFailingRun ? 17 : 19,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--live-runs',
+        '3',
+        '--fixture',
+        'single-source',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '32',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /single-source\/compact-json run 2\/3/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+
+    assert.equal(report.live.runtime.liveRuns, 3)
+    assert.equal(report.live.runCount, 3)
+    assert.equal(report.live.totals.requestCount, 3)
+    assert.equal(rendererReport.runCount, 3)
+    assert.equal(rendererReport.passCount, 2)
+    assert.equal(rendererReport.passRatePct, 66.67)
+    assert.equal(rendererReport.pass, false)
+    assert.equal(rendererReport.representativeRunIndex, 2)
+    assert.equal(rendererReport.runs.length, 3)
+    assert.equal(rendererReport.aggregate.variance.mixedPassStatus, true)
+    assert.equal(rendererReport.aggregate.variance.requiredCitationAnchorCoverageRangePct, 50)
+    assert.equal(rendererReport.averageRequiredCitationAnchorCoveragePct, 83.33)
+    assert.deepEqual(rendererReport.averageUsage, {
+      promptTokens: 12,
+      completionTokens: 6.33,
+      totalTokens: 18.33,
+    })
+    assert.equal(rendererTotals.requestCount, 3)
+    assert.equal(rendererTotals.passRatePct, 66.67)
+    assert.equal(rendererTotals.variance.mixedPassStatus, true)
+    assert.equal(runtime.requests.length, 3)
+  })
+
+  it('classifies live runtime truncation from finish reason', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'length',
+            message: {
+              content: localSingleSourceAnswer(),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 12,
+          completion_tokens: 32,
+          total_tokens: 44,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'single-source',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '32',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /finish_reason indicates truncation: length/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+
+    assert.equal(rendererReport.pass, false)
+    assert.equal(rendererReport.finishReason, 'length')
+    assert.equal(rendererReport.truncated, true)
+    assert.deepEqual(rendererReport.truncation, {
+      detected: true,
+      inferred: false,
+      reason: 'finish_reason_length',
+      finishReason: 'length',
+      completionTokens: 32,
+      maxTokens: 32,
+    })
+    assert.deepEqual(rendererReport.failureBuckets, ['truncated'])
+    assert.deepEqual(rendererReport.failureCodes, ['runtime_output_incomplete'])
+    assert.equal(rendererReport.aggregate.truncatedCount, 1)
+    assert.equal(rendererReport.aggregate.finishReasonCounts.length, 1)
+    assert.equal(rendererReport.aggregate.failureBucketCounts.truncated, 1)
+    assert.equal(rendererReport.aggregate.failureCodeCounts.runtime_output_incomplete, 1)
+    assert.equal(rendererTotals.truncatedCount, 1)
+    assert.equal(rendererTotals.finishReasonCounts.length, 1)
+    assert.equal(rendererTotals.failureBucketCounts.truncated, 1)
+    assert.equal(rendererTotals.failureCodeCounts.runtime_output_incomplete, 1)
+  })
+
+  it('infers live runtime truncation when finish reason is missing and max tokens are exhausted', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            message: {
+              content: localSingleSourceAnswer(),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 12,
+          completion_tokens: 32,
+          total_tokens: 44,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'single-source',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '32',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /inferred truncation: completion_tokens 32 reached max_tokens 32/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+
+    assert.equal(rendererReport.pass, false)
+    assert.equal(rendererReport.finishReason, null)
+    assert.equal(rendererReport.truncated, true)
+    assert.deepEqual(rendererReport.truncation, {
+      detected: true,
+      inferred: true,
+      reason: 'completion_tokens_reached_max_tokens',
+      finishReason: null,
+      completionTokens: 32,
+      maxTokens: 32,
+    })
+    assert.deepEqual(rendererReport.failureCodes, ['runtime_output_incomplete'])
+    assert.equal(rendererReport.aggregate.finishReasonCounts.none, 1)
+    assert.equal(rendererReport.aggregate.failureCodeCounts.runtime_output_incomplete, 1)
+    assert.equal(rendererTotals.truncatedCount, 1)
+    assert.equal(rendererTotals.failureCodeCounts.runtime_output_incomplete, 1)
+  })
+
+  it('rejects citation stuffing away from expected claim mappings', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: [
+                'Runtime Prompt Decision requires Prompt Codec Implementation.',
+                'Prompt Codec Implementation measured by Prompt renderer benchmark before Runtime Prompt Validation.',
+                'Padding separates claims from citation anchors.',
+                'x'.repeat(260),
+                '[1](#citation-1) [2](#citation-2) [3](#citation-3).',
+              ].join(' '),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 20,
+          total_tokens: 40,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'graph-linear-chain',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '128',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /expected citation mappings failed/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+
+    assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
+    assert.equal(rendererReport.answerOracle.ok, true)
+    assert.equal(rendererReport.expectedCitationMappings.ok, false)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.expectedMappingCount, 2)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.satisfiedMappingCount, 0)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.coveragePct, 0)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.proximityFailureCount, 2)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.expectedCitationMismatchCount, 0)
+    assert.deepEqual(rendererReport.failureBuckets, ['citation-proximity'])
+    assert.deepEqual(rendererReport.failureCodes, ['claim_citation_proximity_failed'])
+    assert.equal(rendererReport.aggregate.failureBucketCounts['citation-proximity'], 1)
+    assert.equal(rendererReport.aggregate.failureCodeCounts.claim_citation_proximity_failed, 1)
+    assert.equal(rendererReport.averageExpectedCitationMappingCoveragePct, 0)
+    assert.equal(rendererTotals.averageExpectedCitationMappingCoveragePct, 0)
+    assert.equal(rendererTotals.failureBucketCounts['citation-proximity'], 1)
+    assert.equal(rendererTotals.failureCodeCounts.claim_citation_proximity_failed, 1)
+  })
+
+  it('rejects nearby wrong citation anchors for expected claim mappings', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: [
+                'Runtime Prompt Decision requires Prompt Codec Implementation [1](#citation-1).',
+                'Padding separates the first expected claim from other anchors.',
+                'x'.repeat(260),
+                'Prompt Codec Implementation measured by Prompt renderer benchmark [2](#citation-2) before Runtime Prompt Validation.',
+                'Padding separates the second expected claim from the complete anchor list.',
+                'y'.repeat(260),
+                'All required anchors exist away from the mapped claims: [1](#citation-1) [2](#citation-2) [3](#citation-3).',
+              ].join(' '),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 28,
+          total_tokens: 48,
+        },
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    let error
+    try {
+      await execFileAsync(process.execPath, [
+        'scripts/benchmark-runtime-prompt.mjs',
+        '--live',
+        '--fixture',
+        'graph-linear-chain',
+        '--renderer',
+        'compact-json',
+        '--max-tokens',
+        '128',
+        '--timeout-ms',
+        '10000',
+      ], {
+        cwd: packageRoot,
+        env: {
+          ...process.env,
+          LLMWIKI_AGENT_BRIDGE_BASE_URL: `${runtime.url}/v1`,
+          LLMWIKI_AGENT_BRIDGE_MODEL: 'mock-runtime-model',
+          LLMWIKI_AGENT_BRIDGE_API_KEY: 'mock-runtime-key',
+        },
+        maxBuffer: 1024 * 1024,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    assert(error)
+    assert.equal(error.code, 1)
+    assert.match(error.stderr, /expected-citation-mismatch/)
+    assert.match(error.stderr, /expected_citation_mismatch/)
+
+    const report = JSON.parse(error.stdout)
+    const rendererReport = report.live.fixtures[0].renderers['compact-json']
+    const rendererTotals = report.live.totals.renderers['compact-json']
+
+    assert.equal(rendererReport.allRequiredCitationAnchorsCovered, true)
+    assert.equal(rendererReport.answerOracle.ok, true)
+    assert.equal(rendererReport.expectedCitationMappings.ok, false)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.expectedMappingCount, 2)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.satisfiedMappingCount, 0)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.coveragePct, 0)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.expectedCitationMismatchCount, 2)
+    assert.equal(rendererReport.expectedCitationMappings.metrics.proximityFailureCount, 0)
+    assert.deepEqual(rendererReport.failureBuckets, ['expected-citation-mismatch'])
+    assert.deepEqual(rendererReport.failureCodes, ['expected_citation_mismatch'])
+    assert.equal(rendererReport.aggregate.failureBucketCounts['expected-citation-mismatch'], 1)
+    assert.equal(rendererReport.aggregate.failureCodeCounts.expected_citation_mismatch, 1)
+    assert.equal(rendererTotals.failureBucketCounts['expected-citation-mismatch'], 1)
+    assert.equal(rendererTotals.failureCodeCounts.expected_citation_mismatch, 1)
+  })
+
+  it('reports missing expected claims for expected citation mappings', () => {
+    const report = evaluateExpectedCitationMappings(
+      'An unrelated answer still cites a valid source [1](#citation-1).',
+      [
+        {
+          claim: 'Mapped claim that is absent',
+          expectedCitationIds: ['fixture:alpha'],
+          windowChars: 40,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+    )
+
+    assert.equal(report.ok, false)
+    assert.equal(report.metrics.expectedMappingCount, 1)
+    assert.equal(report.metrics.missingClaimCount, 1)
+    assert.equal(report.metrics.strictMissingClaimCount, 1)
+    assert.match(report.failures[0], /expected claim missing/)
+    assert.equal(report.mappingResults[0].occurrenceCount, 0)
+  })
+
+  it('exposes unknown expectedCitationId and invalid citation index details', () => {
+    const report = evaluateExpectedCitationMappings(
+      'Known mapped claim [1](#citation-1).',
+      [
+        {
+          claim: 'Known mapped claim',
+          expectedCitationIds: ['fixture:missing'],
+          citationIndexes: [99],
+          windowChars: 40,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+    )
+
+    assert.equal(report.ok, false)
+    assert.equal(report.metrics.expectedCitationMismatchCount, 0)
+    assert.equal(report.metrics.targetResolutionFailureCount, 1)
+    assert.equal(report.metrics.strictTargetResolutionFailureCount, 1)
+    assert.equal(report.metrics.unresolvedExpectedCitationIdCount, 1)
+    assert.equal(report.metrics.invalidExpectedCitationIndexCount, 1)
+    assert.deepEqual(report.targetResolutionFailures[0].unresolvedCitationIds, ['fixture:missing'])
+    assert.deepEqual(report.targetResolutionFailures[0].invalidCitationIndexes, ['99'])
+    assert.equal(report.mappingResults[0].failureCode, 'expected_citation_target_unresolved')
+    assert.deepEqual(classifyLiveRunFailureBuckets({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), ['expected-citation-target-unresolved'])
+    assert.deepEqual(classifyLiveRunFailureCodes({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), ['expected_citation_target_unresolved'])
+    assert.match(report.failures[0], /unknown citation id fixture:missing/)
+    assert.match(report.failures[0], /invalid citation index 99/)
+  })
+
+  it('keeps report-only expected citation mappings from failing strict pass', () => {
+    const report = evaluateExpectedCitationMappings(
+      'Report-only mapped claim appears without a nearby citation anchor.',
+      [
+        {
+          claim: 'Report-only mapped claim',
+          expectedCitationIds: ['fixture:alpha'],
+          gate: 'report-only',
+          windowChars: 30,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+      'strict',
+    )
+
+    assert.equal(report.gate, 'strict')
+    assert.equal(report.ok, true)
+    assert.deepEqual(report.failures, [])
+    assert.equal(report.metrics.strictFailureCount, 0)
+    assert.equal(report.metrics.reportOnlyFailureCount, 1)
+    assert.equal(report.metrics.proximityFailureCount, 1)
+    assert.equal(report.metrics.strictProximityFailureCount, 0)
+    assert.deepEqual(classifyLiveRunFailureBuckets({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), [])
+    assert.deepEqual(classifyLiveRunFailureCodes({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), [])
+    assert.match(report.reportOnlyFailures[0], /not within 30 chars/)
+    assert.equal(report.mappingResults[0].gate, 'report-only')
+  })
+
+  it('keeps fixture-level report-only expected citation mappings report-only despite strict mapping overrides', () => {
+    const report = evaluateExpectedCitationMappings(
+      [
+        'Fixture report-only mapped claim appears without a nearby citation anchor.',
+        'Second fixture report-only mapped claim also appears without nearby support.',
+      ].join(' '),
+      [
+        {
+          claim: 'Fixture report-only mapped claim',
+          expectedCitationIds: ['fixture:alpha'],
+          gate: 'strict',
+          windowChars: 30,
+        },
+        {
+          claim: 'Second fixture report-only mapped claim',
+          citationIndex: 2,
+          reportOnly: false,
+          windowChars: 30,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+      'report-only',
+    )
+
+    assert.equal(report.gate, 'report-only')
+    assert.equal(report.ok, true)
+    assert.deepEqual(report.failures, [])
+    assert.equal(report.metrics.strictMappingCount, 0)
+    assert.equal(report.metrics.reportOnlyMappingCount, 2)
+    assert.equal(report.metrics.strictFailureCount, 0)
+    assert.equal(report.metrics.reportOnlyFailureCount, 2)
+    assert.equal(report.metrics.proximityFailureCount, 2)
+    assert.equal(report.metrics.strictProximityFailureCount, 0)
+    assert.deepEqual(report.mappingResults.map((mapping) => mapping.gate), ['report-only', 'report-only'])
+    assert.deepEqual(classifyLiveRunFailureBuckets({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), [])
+    assert.deepEqual(classifyLiveRunFailureCodes({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), [])
+  })
+
+  it('supports any and all require semantics for expected citation mappings', () => {
+    const partialReport = evaluateExpectedCitationMappings(
+      'Combined mapped claim [1](#citation-1).',
+      [
+        {
+          claim: 'Combined mapped claim',
+          expectedCitationIds: ['fixture:alpha', 'fixture:beta'],
+          require: 'any',
+          windowChars: 30,
+        },
+        {
+          claim: 'Combined mapped claim',
+          expectedCitationIds: ['fixture:alpha', 'fixture:beta'],
+          require: 'all',
+          windowChars: 30,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+    )
+
+    assert.equal(partialReport.ok, false)
+    assert.equal(partialReport.metrics.satisfiedMappingCount, 1)
+    assert.equal(partialReport.metrics.expectedCitationMismatchCount, 1)
+    assert.equal(partialReport.mappingResults[0].require, 'any')
+    assert.equal(partialReport.mappingResults[0].satisfied, true)
+    assert.deepEqual(partialReport.mappingResults[0].satisfiedOccurrence.matchedCitationIndexes, [1])
+    assert.equal(partialReport.mappingResults[1].require, 'all')
+    assert.equal(partialReport.mappingResults[1].satisfied, false)
+    assert.deepEqual(partialReport.mappingResults[1].occurrences[0].missingCitationIndexes, [2])
+    assert.match(partialReport.failures[0], /require=all/)
+
+    const allReport = evaluateExpectedCitationMappings(
+      'Combined mapped claim [1](#citation-1) [2](#citation-2).',
+      [
+        {
+          claim: 'Combined mapped claim',
+          expectedCitationIds: ['fixture:alpha', 'fixture:beta'],
+          require: 'all',
+          windowChars: 30,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+    )
+
+    assert.equal(allReport.ok, true)
+    assert.equal(allReport.metrics.satisfiedMappingCount, 1)
+    assert.deepEqual(allReport.mappingResults[0].satisfiedOccurrence.matchedCitationIndexes, [1, 2])
+  })
+
+  it('passes expected citation mappings when a later repeated claim occurrence is cited', () => {
+    const report = evaluateExpectedCitationMappings(
+      [
+        'Repeated mapped claim is initially uncited.',
+        'x'.repeat(140),
+        'Repeated mapped claim is supported here [2](#citation-2).',
+      ].join(' '),
+      [
+        {
+          claim: 'Repeated mapped claim',
+          expectedCitationIds: ['fixture:beta'],
+          windowChars: 35,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+    )
+
+    assert.equal(report.ok, true)
+    assert.equal(report.metrics.satisfiedMappingCount, 1)
+    assert.equal(report.metrics.anyOccurrenceMappingCount, 1)
+    assert.equal(report.metrics.everyOccurrenceMappingCount, 0)
+    assert.equal(report.metrics.claimOccurrenceCount, 2)
+    assert.equal(report.metrics.satisfiedOccurrenceCount, 1)
+    assert.equal(report.metrics.unsatisfiedOccurrenceCount, 1)
+    assert.equal(report.metrics.occurrenceCoveragePct, 50)
+    assert.equal(report.mappingResults[0].occurrenceMode, 'any')
+    assert.equal(report.mappingResults[0].occurrenceCount, 2)
+    assert.equal(report.mappingResults[0].occurrences[0].satisfied, false)
+    assert.equal(report.mappingResults[0].occurrences[1].satisfied, true)
+    assert.deepEqual(report.mappingResults[0].satisfiedOccurrence.matchedCitationIndexes, [2])
+  })
+
+  it('requires every repeated claim occurrence when occurrenceMode is every', () => {
+    const report = evaluateExpectedCitationMappings(
+      [
+        'Repeated mapped claim is supported first [2](#citation-2).',
+        'x'.repeat(140),
+        'Repeated mapped claim is supported again [2](#citation-2).',
+      ].join(' '),
+      [
+        {
+          claim: 'Repeated mapped claim',
+          expectedCitationIds: ['fixture:beta'],
+          occurrenceMode: 'every',
+          windowChars: 35,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+    )
+
+    assert.equal(report.ok, true)
+    assert.equal(report.metrics.everyOccurrenceMappingCount, 1)
+    assert.equal(report.metrics.anyOccurrenceMappingCount, 0)
+    assert.equal(report.metrics.satisfiedMappingCount, 1)
+    assert.equal(report.metrics.everyOccurrenceFailureCount, 0)
+    assert.equal(report.metrics.claimOccurrenceCount, 2)
+    assert.equal(report.metrics.satisfiedOccurrenceCount, 2)
+    assert.equal(report.metrics.unsatisfiedOccurrenceCount, 0)
+    assert.equal(report.metrics.occurrenceCoveragePct, 100)
+    assert.equal(report.mappingResults[0].occurrenceMode, 'every')
+    assert.equal(report.mappingResults[0].occurrenceCount, 2)
+    assert.equal(report.mappingResults[0].everyOccurrenceSatisfied, true)
+    assert.deepEqual(report.mappingResults[0].occurrences.map((occurrence) => occurrence.satisfied), [true, true])
+  })
+
+  it('fails every-occurrence expected citation mappings when one repeated claim is uncited', () => {
+    const report = evaluateExpectedCitationMappings(
+      [
+        'Repeated mapped claim is initially uncited.',
+        'x'.repeat(140),
+        'Repeated mapped claim is supported here [2](#citation-2).',
+      ].join(' '),
+      [
+        {
+          claim: 'Repeated mapped claim',
+          expectedCitationIds: ['fixture:beta'],
+          occurrenceMode: 'every',
+          windowChars: 35,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+    )
+
+    assert.equal(report.ok, false)
+    assert.equal(report.metrics.everyOccurrenceMappingCount, 1)
+    assert.equal(report.metrics.satisfiedMappingCount, 0)
+    assert.equal(report.metrics.everyOccurrenceFailureCount, 1)
+    assert.equal(report.metrics.strictEveryOccurrenceFailureCount, 1)
+    assert.equal(report.metrics.proximityFailureCount, 0)
+    assert.equal(report.metrics.claimOccurrenceCount, 2)
+    assert.equal(report.metrics.satisfiedOccurrenceCount, 1)
+    assert.equal(report.metrics.unsatisfiedOccurrenceCount, 1)
+    assert.equal(report.metrics.occurrenceCoveragePct, 50)
+    assert.equal(report.mappingResults[0].occurrenceMode, 'every')
+    assert.equal(report.mappingResults[0].satisfied, false)
+    assert.equal(report.mappingResults[0].anyOccurrenceSatisfied, true)
+    assert.equal(report.mappingResults[0].everyOccurrenceSatisfied, false)
+    assert.equal(report.mappingResults[0].unsatisfiedOccurrenceCount, 1)
+    assert.equal(report.mappingResults[0].failureCode, 'expected_citation_every_occurrence_failed')
+    assert.match(report.failures[0], /occurrenceMode=every/)
+    assert.deepEqual(classifyLiveRunFailureBuckets({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), ['expected-citation-every-occurrence'])
+    assert.deepEqual(classifyLiveRunFailureCodes({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), ['expected_citation_every_occurrence_failed'])
+  })
+
+  it('keeps report-only every-occurrence mapping failures out of strict classification', () => {
+    const report = evaluateExpectedCitationMappings(
+      [
+        'Report-only repeated mapped claim is initially uncited.',
+        'x'.repeat(140),
+        'Report-only repeated mapped claim is supported here [1](#citation-1).',
+      ].join(' '),
+      [
+        {
+          claim: 'Report-only repeated mapped claim',
+          expectedCitationIds: ['fixture:alpha'],
+          occurrenceMode: 'every',
+          gate: 'report-only',
+          windowChars: 35,
+        },
+      ],
+      expectedCitationMappingEvidenceBundle(),
+    )
+
+    assert.equal(report.ok, true)
+    assert.deepEqual(report.failures, [])
+    assert.equal(report.metrics.everyOccurrenceFailureCount, 1)
+    assert.equal(report.metrics.strictEveryOccurrenceFailureCount, 0)
+    assert.equal(report.metrics.reportOnlyFailureCount, 1)
+    assert.equal(report.metrics.claimOccurrenceCount, 2)
+    assert.equal(report.metrics.satisfiedOccurrenceCount, 1)
+    assert.equal(report.metrics.unsatisfiedOccurrenceCount, 1)
+    assert.equal(report.metrics.occurrenceCoveragePct, 50)
+    assert.equal(report.mappingResults[0].failureCode, 'expected_citation_every_occurrence_failed')
+    assert.match(report.reportOnlyFailures[0], /occurrenceMode=every/)
+    assert.deepEqual(classifyLiveRunFailureBuckets({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), [])
+    assert.deepEqual(classifyLiveRunFailureCodes({
+      status: 'ok',
+      expectedCitationMappings: report,
+    }), [])
   })
 
   it('dry packs the npm tarball with expected files', async () => {
@@ -3736,6 +7648,10 @@ describe('llmwiki-agent-bridge', () => {
     assert(files.has('bin/llmwiki-agent-bridge.mjs'))
     assert(files.has('docs/openapi.json'))
     assert(files.has('scripts/export-openapi.mjs'))
+    assert(files.has('scripts/benchmark-runtime-prompt.mjs'))
+    assert(files.has('scripts/validate-runtime-prompt-live-safe.mjs'))
+    assert(files.has('scripts/e2e-runtime-prompt-production-approval.mjs'))
+    assert(files.has('scripts/e2e-chat-api-query-matrix.mjs'))
     assert(files.has('README.md'))
     assert(files.has('LICENSE'))
     assert(files.has('integrations/README.md'))
@@ -3744,6 +7660,168 @@ describe('llmwiki-agent-bridge', () => {
     assert(files.has('integrations/copilot/copilot-instructions.md'))
   })
 })
+
+async function runRuntimePromptBenchmark(args, { env = {}, maxBuffer = 1024 * 1024 } = {}) {
+  return await execFileAsync(process.execPath, ['scripts/benchmark-runtime-prompt.mjs', ...args], {
+    cwd: packageRoot,
+    env: {
+      ...process.env,
+      ...env,
+    },
+    maxBuffer,
+  })
+}
+
+async function runRuntimePromptLiveSafe(args, { env = {}, maxBuffer = 1024 * 1024 } = {}) {
+  return await execFileAsync(process.execPath, ['scripts/validate-runtime-prompt-live-safe.mjs', ...args], {
+    cwd: packageRoot,
+    env: {
+      ...process.env,
+      ...env,
+    },
+    maxBuffer,
+  })
+}
+
+async function runRuntimePromptProductionApproval(args, { env = {}, maxBuffer = 1024 * 1024 } = {}) {
+  return await execFileAsync(process.execPath, ['scripts/e2e-runtime-prompt-production-approval.mjs', ...args], {
+    cwd: packageRoot,
+    env: {
+      ...process.env,
+      ...env,
+    },
+    maxBuffer,
+  })
+}
+
+function mockRuntimeEnv(runtime, {
+  model = 'mock-runtime-model',
+  apiKey = 'mock-runtime-key',
+  baseUrl = `${runtime.url}/v1`,
+} = {}) {
+  return {
+    LLMWIKI_AGENT_BRIDGE_BASE_URL: baseUrl,
+    LLMWIKI_AGENT_BRIDGE_MODEL: model,
+    LLMWIKI_AGENT_BRIDGE_API_KEY: apiKey,
+  }
+}
+
+function strictEvidenceFidelityAnswer({
+  omitMultiHopRelation = false,
+  wrongExactAnchor = false,
+  citeFirstRepeatedOccurrence = true,
+  includeUnsupportedAndContradictory = false,
+} = {}) {
+  const multiHopClaim = omitMultiHopRelation
+    ? [
+        'Promotion Decision requires Citation Fidelity Gate [1](#citation-1).',
+        'Live Prompt Evaluation is part of the review evidence [2](#citation-2).',
+      ].join(' ')
+    : 'Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation [1](#citation-1) [2](#citation-2).'
+  const exactAnchorClaim = wrongExactAnchor
+    ? [
+        'Live Prompt Evaluation checks Exact Citation Anchor [2](#citation-2).',
+        'Padding keeps the correct exact-anchor evidence away from the claim.',
+        'x'.repeat(220),
+        'The exact-anchor citation is only listed later [3](#citation-3).',
+      ].join(' ')
+    : 'Live Prompt Evaluation checks Exact Citation Anchor [3](#citation-3).'
+  const repeatedClaim = [
+    `Citation Fidelity Gate enforces Repeated Citation Gate${citeFirstRepeatedOccurrence ? ' [4](#citation-4)' : ''}.`,
+    'Padding keeps repeated-claim occurrences independently testable.',
+    'y'.repeat(220),
+    'Citation Fidelity Gate enforces Repeated Citation Gate [4](#citation-4).',
+  ].join(' ')
+  const privacyClaim = 'Privacy Redaction Gate blocks Source Path Leak [5](#citation-5).'
+  const distortionClaims = includeUnsupportedAndContradictory
+    ? [
+        'Token savings alone promote renderer [2](#citation-2).',
+        'Raw source paths should be cited [5](#citation-5).',
+        'Promotion Decision does not require Citation Fidelity Gate [1](#citation-1).',
+        'Privacy Redaction Gate allows Source Path Leak [5](#citation-5).',
+      ].join(' ')
+    : ''
+
+  return [
+    multiHopClaim,
+    exactAnchorClaim,
+    repeatedClaim,
+    privacyClaim,
+    distortionClaims,
+  ].filter(Boolean).join(' ')
+}
+
+function localSingleSourceAnswer({ includeRuntimeProfilesCitation = true } = {}) {
+  return [
+    'Expected claim row: Release readiness depends on local checks [1](#citation-1)',
+    includeRuntimeProfilesCitation
+      ? 'Expected claim row: Runtime profiles share the same evidence contract [2](#citation-2)'
+      : 'Expected claim row: Runtime profiles share the same evidence contract',
+    'Release readiness uses local checks, citation anchors, graph summaries, and source limitations [1](#citation-1).',
+    includeRuntimeProfilesCitation
+      ? 'Runtime profiles preserve the evidence contract for this local query [2](#citation-2).'
+      : 'Runtime profiles preserve the evidence contract for this local query.',
+  ].join('\n')
+}
+
+function globalMultiSourceAnswer() {
+  return [
+    'Expected claim row: Bridge Client Path uses source fan-out evidence bundling runtime synthesis and one normalized artifact [1](#citation-1)',
+    'Expected claim row: Generic Runtime Profile fits local OpenAI-compatible runtimes [3](#citation-3)',
+    'Expected claim row: Evidence-only Mode gathers citations graph context trace steps and source bundle metadata without calling a runtime [4](#citation-4)',
+    'Bridge Client Path includes source fan-out for release-risk analysis [1](#citation-1).',
+    'Direct Client Path remains a separate comparison point [2](#citation-2).',
+    'Generic Runtime Profile supports local OpenAI-compatible runtimes [3](#citation-3).',
+    'Evidence-only Mode works without calling a runtime [4](#citation-4).',
+  ].join('\n')
+}
+
+function insufficientEvidenceAnswer() {
+  return [
+    'Expected claim row: Insufficient evidence for production default approval [1](#citation-1)',
+    'Expected claim row: Private runtime endpoint is not provided [1](#citation-1)',
+    'Insufficient evidence means production default approval is not established [1](#citation-1).',
+    'The private runtime endpoint is not provided in this fixture [1](#citation-1).',
+  ].join('\n')
+}
+
+function graphDenseAnswer() {
+  return [
+    'TOON evaluation cites TOON and compact JSON comparison evidence [1](#citation-1).',
+    'Graph fixture matrix covers linear chains, dense cross-references, and nested graph records [2](#citation-2).',
+    'Runtime prompt docs describe codecs as ephemeral LLM input renderers [3](#citation-3).',
+    'Codec fallback policy guards citation gates before rollout [4](#citation-4).',
+  ].join('\n')
+}
+
+function productionApprovalAnswerForPrompt(userPrompt) {
+  if (userPrompt.includes('Release readiness depends on local checks')) return localSingleSourceAnswer()
+  if (userPrompt.includes('Bridge Client Path uses source fan-out')) return globalMultiSourceAnswer()
+  if (userPrompt.includes('Insufficient evidence for production default approval')) return insufficientEvidenceAnswer()
+  if (userPrompt.includes('Promotion Decision requires Citation Fidelity Gate')) return strictEvidenceFidelityRowAnswer()
+  return linearChainRowAnswer()
+}
+
+function linearChainRowAnswer({ includeValidation = true } = {}) {
+  return [
+    'Expected claim row: Runtime Prompt Decision requires Prompt Codec Implementation [2](#citation-2)',
+    'Expected claim row: Prompt Codec Implementation measured by Prompt renderer benchmark [3](#citation-3)',
+    includeValidation
+      ? 'Runtime Prompt Validation preserves the top-level Runtime Prompt Decision evidence [1](#citation-1)'
+      : 'Runtime Prompt Decision keeps the top-level decision evidence anchored [1](#citation-1)',
+    'Limitations: Synthetic linear CKG fixture validates graph row rendering only [1](#citation-1).',
+  ].join('\n')
+}
+
+function strictEvidenceFidelityRowAnswer() {
+  return [
+    'Expected claim row: Promotion Decision requires Citation Fidelity Gate measured by Live Prompt Evaluation [1](#citation-1) [2](#citation-2)',
+    'Expected claim row: Live Prompt Evaluation checks Exact Citation Anchor [3](#citation-3)',
+    'Expected claim row: Citation Fidelity Gate enforces Repeated Citation Gate [4](#citation-4)',
+    'Expected claim row: Privacy Redaction Gate blocks Source Path Leak [5](#citation-5)',
+    'Limitations: Synthetic strict evidence-fidelity fixture paths and claims are portable and private-data-safe [1](#citation-1).',
+  ].join('\n')
+}
 
 async function tempConfigPath(t) {
   const dir = await mkdtemp(join(tmpdir(), 'llmwiki-agent-bridge-'))
@@ -3756,6 +7834,10 @@ function npmPackCommand() {
   return process.platform === 'win32'
     ? { file: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', 'npm.cmd', ...args] }
     : { file: 'npm', args }
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function knowledgeSource(id, name, protocol, url) {
@@ -3786,6 +7868,17 @@ function citationEvidence(count) {
   }))
 }
 
+function expectedCitationMappingEvidenceBundle() {
+  return {
+    citationCount: 3,
+    citations: [
+      { id: 'fixture:alpha', title: 'Alpha Evidence' },
+      { id: 'fixture:beta', title: 'Beta Evidence' },
+      { id: 'fixture:gamma', title: 'Gamma Evidence' },
+    ],
+  }
+}
+
 function expectedFallbackAnswer(answer, citationCount) {
   const anchorCount = Math.min(citationCount, 5)
   const anchors = Array.from({ length: anchorCount }, (_, index) => {
@@ -3812,9 +7905,43 @@ function recordingLogger() {
     error(...args) {
       lines.push(args.map(String).join(' '))
     },
-    log() {},
+    log(...args) {
+      lines.push(args.map(String).join(' '))
+    },
     warn() {},
   }
+}
+
+function auditEvents(logger) {
+  return logger.lines
+    .map((line) => {
+      try {
+        return JSON.parse(line)
+      } catch {
+        return null
+      }
+    })
+    .filter((event) => event?.event === 'llmwiki.agent_bridge.request')
+}
+
+function ioEvents(logger) {
+  return logger.lines
+    .map((line) => {
+      try {
+        return JSON.parse(line)
+      } catch {
+        return null
+      }
+    })
+    .filter((event) => event?.event === 'llmwiki.agent_bridge.io')
+}
+
+async function readJsonLines(path) {
+  const text = await readFile(path, 'utf8')
+  return text.split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
 }
 
 function jsonFetchResponse(status, value) {
@@ -3828,11 +7955,15 @@ function parseJsonFetchBody(value) {
   return value ? JSON.parse(String(value)) : {}
 }
 
-function parseHermesEvidenceBundle(content) {
+function extractHermesEvidenceBundleForPrompt(content) {
   const marker = '# LLMWiki evidence bundle\n'
   const markerIndex = content.indexOf(marker)
   assert(markerIndex >= 0)
-  return JSON.parse(content.slice(markerIndex + marker.length))
+  return content.slice(markerIndex + marker.length)
+}
+
+function parseHermesEvidenceBundle(content) {
+  return JSON.parse(extractHermesEvidenceBundleForPrompt(content))
 }
 
 async function callBridgeMcp(bridge, id, method, params = undefined) {

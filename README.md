@@ -308,6 +308,48 @@ The returned artifact is normalized back to the selected source order for
 citations, graph data, source bundles, trace steps, diagnostics, and per-source
 failures.
 
+`/message:send` keeps the legacy `data.query` contract and also accepts
+additive conversation runtime context: `data.message` or top-level A2A
+`message`, `data.messages`, `data.threadId`, `data.sessionId`, `data.turnId`,
+`data.runtimeContext.conversation`, A2A-style `configuration.historyLength`,
+and A2A-style `metadata.threadId/sessionId/turnId`. The bridge uses the current
+query from `data.query` or A2A message text for source retrieval, then includes
+bounded user/assistant conversation history in the runtime chat-completions call
+after the evidence system prompt.
+
+### Safe request audit logging
+
+Set `LLMWIKI_AGENT_BRIDGE_AUDIT_LOG=1` or pass `auditLog: true` to emit one
+JSON line per audited bridge request through the existing logger (`stdout` by
+default). Audited routes are `/message:send`, `/mcp`, `/settings`,
+`/settings.json`, `/settings/config.json`, `/settings/sources.json`,
+`/.well-known/agent-card.json`, and `/health`.
+
+Audit events are intentionally allowlisted. They include route patterns, status,
+duration, request/trace IDs, orchestration mode, runtime-called state, source and
+artifact counts, conversation count/boolean fields, and redaction flags. They do
+not include raw prompts, runtime answers, request or response bodies, query
+strings, source URLs, runtime base URLs, model names, API keys, bearer tokens,
+local paths, thread/session IDs, or conversation message content.
+
+### Default I/O debug logging
+
+The bridge also emits a separate default-on JSONL I/O debug stream to
+`.runtime-logs/llmwiki-agent-bridge-io.jsonl` by default. These events use
+`llmwiki.agent_bridge.io` and are meant for local troubleshooting of
+`/message:send` request, source, runtime, and final artifact flow.
+
+I/O logs may include prompts, source request/response bodies, runtime messages,
+runtime answers, and bridge response artifacts after redaction. They always
+redact Authorization and credential-like headers, API keys, bearer tokens, raw
+source/runtime URLs, URL query secrets, and obvious local absolute paths. This
+stream is intentionally separate from safe audit logging.
+
+Set `LLMWIKI_AGENT_BRIDGE_IO_LOG=off` or persist `"ioLog": false` to disable
+I/O logs. Set `LLMWIKI_AGENT_BRIDGE_IO_LOG=logger` or `stdout` to route JSONL
+through the process logger instead. `LLMWIKI_AGENT_BRIDGE_IO_LOG_PATH` chooses a
+different file path.
+
 ```mermaid
 flowchart LR
   client["client or chat workbench"]
@@ -419,6 +461,8 @@ bridge bearer token:
 | `LLMWIKI_AGENT_BRIDGE_ALLOWED_ORIGINS` | unset | Extra browser CORS origins allowed to call the bridge. |
 | `LLMWIKI_AGENT_BRIDGE_SOURCE_POLICY` | `private-http` | Outbound Knowledge Source URL policy. |
 | `LLMWIKI_AGENT_BRIDGE_ALLOWED_SOURCE_ORIGINS` | unset | Exact Knowledge Source origins for allowlist or stricter policies. |
+| `LLMWIKI_AGENT_BRIDGE_IO_LOG` | `file` | Default-on I/O debug logging. Set `off` to disable, `logger`/`stdout` to route through process logs, or `file` to append JSONL to a file sink. |
+| `LLMWIKI_AGENT_BRIDGE_IO_LOG_PATH` | `.runtime-logs/llmwiki-agent-bridge-io.jsonl` | Optional file path for I/O JSONL logs. |
 | `LLMWIKI_AGENT_BRIDGE_ALLOW_PUBLIC_BIND` | unset | Set to `1` before binding to a non-loopback host. |
 | `LLMWIKI_AGENT_BRIDGE_CONFIG_PATH` | user config file in the CLI | Persistent settings file for `/settings/config.json` and `/settings/sources.json`; programmatic callers can pass `configPath`. |
 
