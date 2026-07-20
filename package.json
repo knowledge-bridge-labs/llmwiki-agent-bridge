@@ -28,7 +28,7 @@
   "main": "./src/index.mjs",
   "exports": "./src/index.mjs",
   "bin": {
-    "llmwiki-agent-bridge": "./bin/llmwiki-agent-bridge.mjs"
+    "llmwiki-agent-bridge": "bin/llmwiki-agent-bridge.mjs"
   },
   "files": [
     "bin/llmwiki-agent-bridge.mjs",
@@ -36,11 +36,6 @@
     "docs",
     "specs",
     "scripts/export-openapi.mjs",
-    "scripts/benchmark-runtime-prompt.mjs",
-    "scripts/validate-runtime-prompt-live-safe.mjs",
-    "scripts/e2e-runtime-prompt-production-approval.mjs",
-    "scripts/e2e-chat-api-query-matrix.mjs",
-    "scripts/e2e-default-io-logging-live.mjs",
     "examples",
     "integrations",
     "README.md",
