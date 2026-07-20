@@ -84,9 +84,8 @@ Before publishing:
 
 2. Confirm repository URLs point at the final GitHub organization.
 3. Confirm the cross-repo status matrix records the intended bridge release
-   version and current registry state. During `public-unpublished`, the bridge
-   package should still be marked as npm publication pending until upload and
-   install-smoke verification finish.
+   version and current registry state. After upload and install-smoke
+   verification finish, the bridge package should be marked as npm published.
 4. Confirm the `CHANGELOG.md` `0.1.0` public package preview entry matches the
    publication date and release contents.
 5. Confirm npm Trusted Publishing is configured for this package and workflow.
