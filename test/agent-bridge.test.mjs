@@ -1266,8 +1266,10 @@ describe('llmwiki-agent-bridge', () => {
   })
 
   it('does not send a default chat completions authorization header when no API key is configured', async (t) => {
-    const hermes = await startFixtureServer(async ({ headers, response }) => {
+    const legacyQuery = 'Can the bridge run without an upstream API key?'
+    const hermes = await startFixtureServer(async ({ headers, body, response }) => {
       assert.equal(headers.authorization, undefined)
+      hermes.lastBody = body
       writeJson(response, 200, {
         choices: [{ message: { role: 'assistant', content: 'No key required.' } }],
       })
@@ -1285,13 +1287,230 @@ describe('llmwiki-agent-bridge', () => {
     const response = await fetch(`${bridge.url}/message:send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data: { query: 'Can the bridge run without an upstream API key?' } }),
+      body: JSON.stringify({ data: { query: legacyQuery } }),
     })
     const a2a = await response.json()
 
     assert.equal(response.status, 200)
     assert.equal(hermes.requests.length, 1)
+    assert.deepEqual(hermes.lastBody.messages.map((message) => message.role), ['system', 'user'])
+    assert.match(hermes.lastBody.messages[1].content, new RegExp(escapeRegExp(legacyQuery)))
     assert.equal(a2a.artifacts[0].parts[0].data.answer, 'No key required.')
+  })
+
+  it('normalizes additive conversation payloads for runtime calls without leaking raw history to sources or audit logs', async (t) => {
+    const queryCanary = 'CONVERSATION_CURRENT_QUERY_CANARY'
+    const priorUserCanary = 'CONVERSATION_PRIOR_USER_CANARY'
+    const assistantCanary = 'CONVERSATION_PRIOR_ASSISTANT_CANARY'
+    const systemCanary = 'CONVERSATION_SYSTEM_CANARY'
+    const descriptorTitleCanary = 'Conversation Descriptor Canary'
+    const threadCanary = 'conversation-thread-canary'
+    const sessionCanary = 'conversation-session-canary'
+    const turnCanary = 'conversation-turn-canary'
+    const messageContextCanary = 'conversation-message-context-canary'
+    const messageIdCanary = 'conversation-a2a-message-canary'
+    const metadataThreadCanary = 'metadata-thread-canary'
+    const metadataSessionCanary = 'metadata-session-canary'
+    const metadataTurnCanary = 'metadata-turn-canary'
+    const runtimeAnswerCanary = 'CONVERSATION_RUNTIME_ANSWER_CANARY'
+
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      assert.equal(request.method, 'POST')
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      assert.equal(body.query, queryCanary)
+      const serializedSourceBody = JSON.stringify(body)
+      assert.doesNotMatch(serializedSourceBody, new RegExp(escapeRegExp(priorUserCanary)))
+      assert.doesNotMatch(serializedSourceBody, new RegExp(escapeRegExp(assistantCanary)))
+      writeJson(response, 200, {
+        wiki_title: 'Conversation Runtime Wiki',
+        evidence: [
+          {
+            page_id: 'conversation-runtime',
+            title: 'Conversation Runtime Context',
+            path: 'conversation-runtime.md',
+            snippet: `Current query evidence for ${body.query}.`,
+            source_refs: ['CONVERSATION-RUNTIME-1'],
+          },
+        ],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      runtime.lastBody = body
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: runtimeAnswerCanary } }],
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const logger = recordingLogger()
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      auditLog: true,
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: queryCanary,
+          messages: [
+            { role: 'system', content: systemCanary },
+            { role: 'user', content: priorUserCanary },
+            { role: 'assistant', content: assistantCanary },
+            { role: 'user', content: queryCanary },
+          ],
+          message: {
+            kind: 'message',
+            messageId: messageIdCanary,
+            contextId: messageContextCanary,
+            role: 'user',
+            parts: [{ kind: 'text', text: queryCanary }],
+            metadata: {
+              llmwiki: {
+                threadId: 'conversation-message-thread-canary',
+                sessionId: 'conversation-message-session-canary',
+                turnId: 'conversation-message-turn-canary',
+              },
+            },
+          },
+          threadId: threadCanary,
+          sessionId: sessionCanary,
+          turnId: turnCanary,
+          runtimeContext: {
+            conversation: {
+              title: descriptorTitleCanary,
+              messageCount: 4,
+            },
+          },
+          knowledgeSources: [
+            knowledgeSource('conversation-source', 'Conversation Source', 'llmwiki-http', source.url),
+          ],
+        },
+        configuration: { historyLength: 2 },
+        metadata: {
+          threadId: metadataThreadCanary,
+          sessionId: metadataSessionCanary,
+          turnId: metadataTurnCanary,
+        },
+      }),
+    })
+    const a2a = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(a2a.artifacts[0].parts[0].data.answer, expectedFallbackAnswer(runtimeAnswerCanary, 1))
+    assert.equal(source.requests.filter((item) => item.url.pathname === '/query').length, 1)
+    assert.equal(source.requests.filter((item) => item.url.pathname === '/search').length, 1)
+    assert.equal(runtime.requests.length, 1)
+
+    const runtimeMessages = runtime.lastBody.messages
+    assert.deepEqual(runtimeMessages.map((message) => message.role), ['system', 'user', 'assistant', 'user'])
+    assert.equal(runtimeMessages[1].content, priorUserCanary)
+    assert.equal(runtimeMessages[2].content, assistantCanary)
+    assert.match(runtimeMessages[3].content, new RegExp(escapeRegExp(queryCanary)))
+    assert.match(runtimeMessages[3].content, /# LLMWiki evidence bundle/)
+    assert.match(runtimeMessages[3].content, /conversationContext/)
+    assert.match(runtimeMessages[3].content, new RegExp(escapeRegExp(threadCanary)))
+    assert.match(runtimeMessages[3].content, new RegExp(escapeRegExp(sessionCanary)))
+    assert.match(runtimeMessages[3].content, new RegExp(escapeRegExp(turnCanary)))
+    assert.match(runtimeMessages[3].content, new RegExp(escapeRegExp(descriptorTitleCanary)))
+    assert.doesNotMatch(runtimeMessages[3].content, new RegExp(escapeRegExp(metadataThreadCanary)))
+    assert.doesNotMatch(runtimeMessages[3].content, new RegExp(escapeRegExp(messageContextCanary)))
+    assert.doesNotMatch(runtimeMessages[3].content, new RegExp(escapeRegExp(messageIdCanary)))
+    assert.doesNotMatch(runtimeMessages.map((message) => message.content).join('\n'), new RegExp(escapeRegExp(systemCanary)))
+
+    const serializedSourceRequests = JSON.stringify(source.requests)
+    assert.doesNotMatch(serializedSourceRequests, new RegExp(escapeRegExp(priorUserCanary)))
+    assert.doesNotMatch(serializedSourceRequests, new RegExp(escapeRegExp(assistantCanary)))
+    assert.doesNotMatch(serializedSourceRequests, new RegExp(escapeRegExp(systemCanary)))
+
+    const events = auditEvents(logger)
+    assert.equal(events.length, 1)
+    assert.equal(events[0].conversationMessageCount, 5)
+    assert.equal(events[0].conversationHistoryLength, 2)
+    assert.equal(events[0].conversationContextProvided, true)
+    const serializedAuditEvents = JSON.stringify(events)
+    for (const canary of [
+      queryCanary,
+      priorUserCanary,
+      assistantCanary,
+      systemCanary,
+      descriptorTitleCanary,
+      threadCanary,
+      sessionCanary,
+      turnCanary,
+      messageContextCanary,
+      messageIdCanary,
+      metadataThreadCanary,
+      metadataSessionCanary,
+      metadataTurnCanary,
+      runtimeAnswerCanary,
+    ]) {
+      assert.doesNotMatch(serializedAuditEvents, new RegExp(escapeRegExp(canary)))
+    }
+  })
+
+  it('accepts top-level A2A message text as the current query when data.query is absent', async (t) => {
+    const queryCanary = 'TOP_LEVEL_A2A_MESSAGE_QUERY_CANARY'
+    const contextCanary = 'top-level-a2a-context-canary'
+    const sessionCanary = 'top-level-a2a-session-canary'
+    const turnCanary = 'top-level-a2a-turn-canary'
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      runtime.lastBody = body
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'A2A message accepted.' } }],
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: {
+          kind: 'message',
+          messageId: turnCanary,
+          contextId: contextCanary,
+          role: 'user',
+          parts: [{ kind: 'text', text: queryCanary }],
+          metadata: {
+            llmwiki: {
+              sessionId: sessionCanary,
+              turnId: turnCanary,
+            },
+          },
+        },
+        configuration: { historyLength: 0 },
+      }),
+    })
+    const a2a = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(a2a.artifacts[0].parts[0].data.answer, 'A2A message accepted.')
+    assert.equal(runtime.requests.length, 1)
+    assert.deepEqual(runtime.lastBody.messages.map((message) => message.role), ['system', 'user'])
+    assert.match(runtime.lastBody.messages[1].content, new RegExp(escapeRegExp(queryCanary)))
+    assert.match(runtime.lastBody.messages[1].content, /conversationContext/)
+    assert.match(runtime.lastBody.messages[1].content, new RegExp(escapeRegExp(contextCanary)))
+    assert.match(runtime.lastBody.messages[1].content, new RegExp(escapeRegExp(sessionCanary)))
+    assert.match(runtime.lastBody.messages[1].content, new RegExp(escapeRegExp(turnCanary)))
   })
 
   it('exposes an MCP llmwiki_agent_run tool backed by the A2A run path', async (t) => {
@@ -1388,6 +1607,225 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(result.steps.find((step) => step.id === 'runtime-chat-completions').status, 'done')
     assert.equal(source.requests.filter((item) => item.url.pathname === '/query').length, 1)
     assert.equal(hermes.requests.length, 1)
+  })
+
+  it('emits safe request audit logs for evidence-only message sends', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, response }) => {
+      if (request.method === 'GET') {
+        writeJson(response, 404, { error: { code: 'not_found' } })
+        return
+      }
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        wiki_title: 'Audit Wiki',
+        evidence: [
+          {
+            page_id: 'audit-safe',
+            title: 'Audit Safe Evidence',
+            path: 'audit-safe.md',
+            snippet: 'Audit evidence is available.',
+            source_refs: ['AUDIT-SAFE-1'],
+          },
+        ],
+        graph: {
+          nodes: [{ id: 'audit-node', label: 'Audit Node' }],
+          edges: [],
+        },
+      })
+    })
+    t.after(() => closeServer(source.server))
+    const logger = recordingLogger()
+    const rawQueryCanary = 'AUDIT_RAW_QUERY_CANARY_evidence_only'
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      auditLog: true,
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-request-id': 'audit-evidence-request',
+        'x-trace-id': 'audit-evidence-trace',
+      },
+      body: JSON.stringify({
+        data: {
+          query: rawQueryCanary,
+          orchestrationMode: 'evidence-only',
+          knowledgeSources: [
+            knowledgeSource('audit-source', 'Audit Source', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+
+    assert.equal(response.status, 200)
+    const events = auditEvents(logger)
+    assert.equal(events.length, 1)
+    assert.equal(events[0].event, 'llmwiki.agent_bridge.request')
+    assert.equal(events[0].schemaVersion, 'llmwiki.agent-bridge.audit.v1')
+    assert.equal(events[0].requestId, 'audit-evidence-request')
+    assert.equal(events[0].traceId, 'audit-evidence-trace')
+    assert.equal(events[0].method, 'POST')
+    assert.equal(events[0].route, '/message:send')
+    assert.equal(events[0].statusCode, 200)
+    assert.equal(events[0].orchestrationMode, 'evidence-only')
+    assert.equal(events[0].runtimeCalled, false)
+    assert.equal(events[0].selectedSourceCount, 1)
+    assert.equal(events[0].selectedReadySourceCount, 1)
+    assert.equal(events[0].citationCount, 1)
+    assert.equal(events[0].graphNodeCount, 1)
+    assert.equal(events[0].artifactCount, 1)
+    assert.equal(events[0].redacted, true)
+    assert.equal(events[0].routePatternOnly, true)
+    assert.equal(events[0].queryStringLogged, false)
+    assert.equal(events[0].requestBodyLogged, false)
+    assert.equal(events[0].responseBodyLogged, false)
+    assert.equal(events[0].credentialsLogged, false)
+    assert.equal(events[0].sourceUrlsLogged, false)
+    assert.match(events[0].timestamp, /^\d{4}-\d{2}-\d{2}T/)
+    assert.equal(typeof events[0].durationMs, 'number')
+    assert(events[0].durationMs >= 0)
+
+    const serialized = JSON.stringify(events)
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(rawQueryCanary)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(source.url)))
+    assert.doesNotMatch(serialized, /audit-safe\.md/)
+    assert.doesNotMatch(serialized, /AUDIT-SAFE-1/)
+  })
+
+  it('emits safe request audit logs for delegated-runtime message sends', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, response }) => {
+      if (request.method === 'GET') {
+        writeJson(response, 404, { error: { code: 'not_found' } })
+        return
+      }
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        wiki_title: 'Delegated Audit Wiki',
+        evidence: [
+          {
+            page_id: 'delegated-audit-safe',
+            title: 'Delegated Audit Safe Evidence',
+            path: 'delegated-audit-safe.md',
+            snippet: 'Delegated audit evidence is available.',
+            source_refs: ['DELEGATED-AUDIT-SAFE-1'],
+          },
+        ],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const runtimeAnswerCanary = 'AUDIT_RUNTIME_ANSWER_CANARY'
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: runtimeAnswerCanary } }],
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const logger = recordingLogger()
+    const rawQueryCanary = 'AUDIT_RAW_QUERY_CANARY_delegated_runtime'
+    const modelCanary = 'AUDIT_SENSITIVE_MODEL_CANARY'
+    const keyCanary = 'sk-audit-secret-canary'
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      hermesModel: modelCanary,
+      hermesApiKey: keyCanary,
+      auditLog: true,
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: rawQueryCanary,
+          orchestrationMode: 'delegated-runtime',
+          knowledgeSources: [
+            knowledgeSource('delegated-audit-source', 'Delegated Audit Source', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+
+    assert.equal(response.status, 200)
+    assert.equal(runtime.requests.length, 1)
+    const events = auditEvents(logger)
+    assert.equal(events.length, 1)
+    assert.equal(events[0].route, '/message:send')
+    assert.equal(events[0].statusCode, 200)
+    assert.equal(events[0].orchestrationMode, 'delegated-runtime')
+    assert.equal(events[0].runtimeCalled, true)
+    assert.equal(events[0].selectedSourceCount, 1)
+    assert.equal(events[0].selectedReadySourceCount, 1)
+    assert.equal(events[0].citationCount, 1)
+    assert.equal(events[0].sourceBundleCount, 0)
+    assert.equal(events[0].artifactCount, 1)
+
+    const serialized = JSON.stringify(events)
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(rawQueryCanary)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(runtimeAnswerCanary)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(runtime.url)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(source.url)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(modelCanary)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(keyCanary)))
+    assert.doesNotMatch(serialized, /delegated-audit-safe\.md/)
+    assert.doesNotMatch(serialized, /DELEGATED-AUDIT-SAFE-1/)
+  })
+
+  it('audits settings and MCP routes with patterns instead of query strings or request bodies', async (t) => {
+    const logger = recordingLogger()
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      auditLog: true,
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const queryStringCanary = 'AUDIT_QUERY_STRING_CANARY'
+    const mcpBodyCanary = 'AUDIT_MCP_BODY_CANARY'
+    const settingsResponse = await fetch(`${bridge.url}/settings.json?api_key=${queryStringCanary}`)
+    const mcpResponse = await fetch(`${bridge.url}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: mcpBodyCanary,
+        method: 'tools/list',
+      }),
+    })
+
+    assert.equal(settingsResponse.status, 200)
+    assert.equal(mcpResponse.status, 200)
+    const events = auditEvents(logger)
+    assert.deepEqual(events.map((event) => event.route), ['/settings.json', '/mcp'])
+    assert.equal(events[0].method, 'GET')
+    assert.equal(events[1].method, 'POST')
+    assert.equal(events[1].mcpMethod, 'tools/list')
+    assert.equal(events[1].mcpError, false)
+
+    const serialized = JSON.stringify(events)
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(queryStringCanary)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(mcpBodyCanary)))
+    assert.doesNotMatch(serialized, /\?api_key=/)
   })
 
   it('exposes read-only MCP source tools for progressive source exploration without calling runtime', async (t) => {
@@ -7082,9 +7520,23 @@ function recordingLogger() {
     error(...args) {
       lines.push(args.map(String).join(' '))
     },
-    log() {},
+    log(...args) {
+      lines.push(args.map(String).join(' '))
+    },
     warn() {},
   }
+}
+
+function auditEvents(logger) {
+  return logger.lines
+    .map((line) => {
+      try {
+        return JSON.parse(line)
+      } catch {
+        return null
+      }
+    })
+    .filter((event) => event?.event === 'llmwiki.agent_bridge.request')
 }
 
 function jsonFetchResponse(status, value) {

@@ -48,11 +48,20 @@ const SETTINGS_JSON_ROUTE = '/settings.json'
 const SETTINGS_CONFIG_JSON_ROUTE = '/settings/config.json'
 const SETTINGS_SOURCES_JSON_ROUTE = '/settings/sources.json'
 const CONFIG_PATH_ENV = 'LLMWIKI_AGENT_BRIDGE_CONFIG_PATH'
+const AUDIT_LOG_ENV = 'LLMWIKI_AGENT_BRIDGE_AUDIT_LOG'
 const DEPRECATED_CONFIG_PATH_ENV = 'HERMES_A2A_BRIDGE_CONFIG_PATH'
 const PUBLIC_BIND_OPT_IN_ENV = 'LLMWIKI_AGENT_BRIDGE_ALLOW_PUBLIC_BIND'
 const INSECURE_PUBLIC_BIND_OPT_IN_ENV = 'LLMWIKI_AGENT_BRIDGE_ALLOW_INSECURE_PUBLIC_BIND'
 const DEPRECATED_PUBLIC_BIND_OPT_IN_ENV = 'HERMES_A2A_BRIDGE_ALLOW_PUBLIC_BIND'
 const DEPRECATED_INSECURE_PUBLIC_BIND_OPT_IN_ENV = 'HERMES_A2A_BRIDGE_ALLOW_INSECURE_PUBLIC_BIND'
+const AUDIT_LOG_SCHEMA_VERSION = 'llmwiki.agent-bridge.audit.v1'
+const REQUEST_AUDIT_EVENT = 'llmwiki.agent_bridge.request'
+const MAX_CONVERSATION_MESSAGES = 12
+const MAX_CONVERSATION_MESSAGE_CONTENT_CHARS = 6000
+const MAX_CONVERSATION_DESCRIPTOR_DEPTH = 3
+const MAX_CONVERSATION_DESCRIPTOR_KEYS = 40
+const MAX_CONVERSATION_DESCRIPTOR_ARRAY_ITEMS = 20
+const MAX_CONVERSATION_DESCRIPTOR_STRING_CHARS = 1000
 const relevanceStopWords = new Set([
   'a',
   'an',
@@ -176,6 +185,19 @@ const baseCorsHeaders = {
   'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
   Vary: 'Origin',
 }
+const auditedBridgeRoutes = new Set([
+  MESSAGE_SEND_ROUTE,
+  MCP_ROUTE,
+  SETTINGS_ROUTE,
+  SETTINGS_JSON_ROUTE,
+  SETTINGS_CONFIG_JSON_ROUTE,
+  SETTINGS_SOURCES_JSON_ROUTE,
+  AGENT_CARD_ROUTE,
+  '/health',
+])
+const auditedMcpMethods = new Set(['tools/list', 'tools/call'])
+const conversationMessageRoles = new Set(['user', 'assistant', 'system'])
+const conversationRuntimeRoles = new Set(['user', 'assistant'])
 
 let mcpRequestId = 0
 
@@ -419,9 +441,24 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
         }, ['id', 'name', 'description', 'protocol', 'runtime', 'agentRuntime', 'provider', 'url', 'capabilities', 'metadata']),
         MessageSendEnvelope: objectSchema({
           data: { $ref: '#/components/schemas/MessageSendData' },
+          message: { $ref: '#/components/schemas/A2aTextMessage' },
+          configuration: { $ref: '#/components/schemas/MessageSendConfiguration' },
+          metadata: { $ref: '#/components/schemas/MessageSendMetadata' },
         }, ['data']),
         MessageSendData: objectSchema({
           query: { type: 'string', minLength: 1 },
+          message: { $ref: '#/components/schemas/A2aTextMessage' },
+          messages: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/ConversationMessage' },
+            description: 'Optional bounded OpenAI/LangChain-compatible conversation messages. data.query remains the source retrieval query.',
+          },
+          threadId: { type: 'string' },
+          sessionId: { type: 'string' },
+          turnId: { type: 'string' },
+          runtimeContext: { $ref: '#/components/schemas/MessageSendRuntimeContext' },
+          configuration: { $ref: '#/components/schemas/MessageSendConfiguration' },
+          metadata: { $ref: '#/components/schemas/MessageSendMetadata' },
           orchestrationMode: {
             $ref: '#/components/schemas/OrchestrationMode',
             default: DEFAULT_ORCHESTRATION_MODE,
@@ -440,7 +477,53 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
             items: { $ref: '#/components/schemas/KnowledgeSourceDescriptor' },
             default: [],
           },
-        }, ['query']),
+        }),
+        A2aTextMessage: objectSchema({
+          kind: { const: 'message' },
+          messageId: { type: 'string' },
+          contextId: { type: 'string' },
+          role: { enum: ['user', 'agent'] },
+          parts: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/A2aTextPart' },
+          },
+          metadata: { $ref: '#/components/schemas/MessageSendMetadata' },
+        }, ['kind', 'messageId', 'role', 'parts']),
+        A2aTextPart: objectSchema({
+          kind: { const: 'text' },
+          text: { type: 'string' },
+        }, ['kind', 'text']),
+        ConversationMessage: objectSchema({
+          role: { enum: ['user', 'assistant', 'system'] },
+          content: { type: 'string' },
+        }, ['role', 'content']),
+        MessageSendRuntimeContext: objectSchema({
+          conversation: {
+            type: 'object',
+            additionalProperties: true,
+            description: 'Optional client-provided safe conversation descriptor. It is passed to the runtime when present but never emitted in audit logs.',
+          },
+        }),
+        MessageSendConfiguration: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            historyLength: {
+              type: 'integer',
+              minimum: 0,
+              maximum: MAX_CONVERSATION_MESSAGES,
+            },
+          },
+        },
+        MessageSendMetadata: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            threadId: { type: 'string' },
+            sessionId: { type: 'string' },
+            turnId: { type: 'string' },
+          },
+        },
         KnowledgeSourceDescriptor: objectSchema({
           id: { type: 'string' },
           name: { type: 'string' },
@@ -600,6 +683,7 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
           bearerToken: { type: 'string' },
           allowPublicBind: { type: 'boolean' },
           allowInsecurePublicBind: { type: 'boolean' },
+          auditLog: { type: 'boolean' },
         }),
         SettingsConfigResponse: objectSchema({
           status: { const: 'saved' },
@@ -970,12 +1054,166 @@ function errorResponseBody(httpError, fallbackContext = null) {
   })
 }
 
+function bridgeRoutePattern(pathname) {
+  return auditedBridgeRoutes.has(pathname) ? pathname : undefined
+}
+
+function emitRequestAuditLog(config, input) {
+  if (!config.auditLog || !input.route) return
+
+  try {
+    const event = requestAuditEvent(input)
+    const line = JSON.stringify(event)
+    const logger = config.logger && typeof config.logger.log === 'function' ? config.logger : console
+    logger.log(line)
+  } catch {
+    // Audit logging must never affect request handling.
+  }
+}
+
+function requestAuditEvent(input) {
+  return removeUndefinedProperties({
+    schemaVersion: AUDIT_LOG_SCHEMA_VERSION,
+    event: REQUEST_AUDIT_EVENT,
+    timestamp: new Date().toISOString(),
+    requestId: safeRunIdentifier(input.requestId) || undefined,
+    traceId: safeRunIdentifier(input.traceId) || undefined,
+    method: auditedHttpMethod(input.method),
+    route: auditedRoute(input.route),
+    statusCode: auditedStatusCode(input.statusCode),
+    durationMs: auditedNonNegativeInteger(input.durationMs),
+    sourcePolicy: auditedSourcePolicy(input.sourcePolicy),
+    orchestrationMode: auditedOrchestrationMode(input.orchestrationMode),
+    runtimeCalled: auditedBoolean(input.runtimeCalled),
+    selectedSourceCount: auditedNonNegativeInteger(input.selectedSourceCount),
+    selectedReadySourceCount: auditedNonNegativeInteger(input.selectedReadySourceCount),
+    citationCount: auditedNonNegativeInteger(input.citationCount),
+    sourceBundleCount: auditedNonNegativeInteger(input.sourceBundleCount),
+    graphNodeCount: auditedNonNegativeInteger(input.graphNodeCount),
+    artifactCount: auditedNonNegativeInteger(input.artifactCount),
+    diagnosticCount: auditedNonNegativeInteger(input.diagnosticCount),
+    conversationMessageCount: auditedNonNegativeInteger(input.conversationMessageCount),
+    conversationHistoryLength: auditedNonNegativeInteger(input.conversationHistoryLength),
+    conversationContextProvided: auditedBoolean(input.conversationContextProvided),
+    mcpMethod: auditedMcpMethod(input.mcpMethod),
+    mcpToolName: auditedMcpToolName(input.mcpToolName),
+    mcpError: auditedBoolean(input.mcpError),
+    mcpErrorCode: auditedJsonRpcErrorCode(input.mcpErrorCode),
+    errorCode: auditedErrorCode(input.errorCode),
+    authorized: auditedBoolean(input.authorized),
+    originAllowed: auditedBoolean(input.originAllowed),
+    redacted: true,
+    routePatternOnly: true,
+    queryStringLogged: false,
+    requestBodyLogged: false,
+    responseBodyLogged: false,
+    credentialsLogged: false,
+    sourceUrlsLogged: false,
+  })
+}
+
+function recordA2aAuditDetails(target, details) {
+  if (!target) return
+  Object.assign(target, removeUndefinedProperties({
+    orchestrationMode: auditedOrchestrationMode(details.orchestrationMode),
+    runtimeCalled: auditedBoolean(details.runtimeCalled),
+    selectedSourceCount: auditedNonNegativeInteger(details.selectedSourceCount),
+    selectedReadySourceCount: auditedNonNegativeInteger(details.selectedReadySourceCount),
+    citationCount: auditedNonNegativeInteger(details.citationCount),
+    sourceBundleCount: auditedNonNegativeInteger(details.sourceBundleCount),
+    graphNodeCount: auditedNonNegativeInteger(details.graphNodeCount),
+    artifactCount: auditedNonNegativeInteger(details.artifactCount),
+    diagnosticCount: auditedNonNegativeInteger(details.diagnosticCount),
+    conversationMessageCount: auditedNonNegativeInteger(details.conversationMessageCount),
+    conversationHistoryLength: auditedNonNegativeInteger(details.conversationHistoryLength),
+    conversationContextProvided: auditedBoolean(details.conversationContextProvided),
+  }))
+}
+
+function recordMcpAuditDetails(target, details) {
+  if (!target) return
+  Object.assign(target, removeUndefinedProperties({
+    mcpMethod: auditedMcpMethod(details.mcpMethod),
+    mcpToolName: auditedMcpToolName(details.mcpToolName),
+  }))
+}
+
+function mcpResultAudit(result) {
+  const error = asRecord(result?.error)
+  return removeUndefinedProperties({
+    mcpError: error ? true : false,
+    mcpErrorCode: auditedJsonRpcErrorCode(readNumber(error || {}, 'code')),
+  })
+}
+
+function auditedHttpMethod(value) {
+  const method = readStringValue(value).toUpperCase()
+  return /^[A-Z]{1,16}$/.test(method) ? method : undefined
+}
+
+function auditedRoute(value) {
+  return auditedBridgeRoutes.has(value) ? value : undefined
+}
+
+function auditedStatusCode(value) {
+  const status = Number(value)
+  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined
+}
+
+function auditedNonNegativeInteger(value) {
+  const number = Number(value)
+  return Number.isInteger(number) && number >= 0 ? number : undefined
+}
+
+function auditedBoolean(value) {
+  return typeof value === 'boolean' ? value : undefined
+}
+
+function auditedOrchestrationMode(value) {
+  return orchestrationModes.has(value) ? value : undefined
+}
+
+function auditedSourcePolicy(value) {
+  try {
+    return sourcePolicyOption(value)
+  } catch {
+    return undefined
+  }
+}
+
+function auditedMcpMethod(value) {
+  if (auditedMcpMethods.has(value)) return value
+  return value ? '[unknown]' : undefined
+}
+
+function auditedMcpToolName(value) {
+  if (!value) return undefined
+  if (value === 'llmwiki_agent_run') return value
+  if (mcpSourceToolNames().includes(value)) return value
+  return '[unknown]'
+}
+
+function auditedJsonRpcErrorCode(value) {
+  const code = Number(value)
+  return Number.isInteger(code) ? code : undefined
+}
+
+function auditedErrorCode(value) {
+  const code = readStringValue(value)
+  return /^[a-z0-9_.-]{1,80}$/.test(code) ? code : undefined
+}
+
 async function handleBridgeRequest(request, response, config) {
+  const started = performance.now()
   const url = new URL(request.url || '/', `http://${request.headers.host || `${config.host}:${config.port}`}`)
+  const route = bridgeRoutePattern(url.pathname)
+  const auditContext = requestRunContext(request)
+  const auditDetails = {}
   let messageRunContext = null
 
   try {
     if (!isAllowedBridgeOrigin(request.headers.origin, config, request)) {
+      auditDetails.originAllowed = false
       writeJson(response, 403, {
         error: {
           code: 'origin_not_allowed',
@@ -984,6 +1222,7 @@ async function handleBridgeRequest(request, response, config) {
       }, config, request)
       return
     }
+    auditDetails.originAllowed = request.headers.origin ? true : undefined
 
     if (request.method === 'OPTIONS') {
       writeJson(response, 204, null, config, request)
@@ -996,6 +1235,7 @@ async function handleBridgeRequest(request, response, config) {
     }
 
     if (!isAuthorizedBridgeRequest(request, config)) {
+      auditDetails.authorized = false
       writeJson(response, 401, {
         error: {
           code: 'bridge_unauthorized',
@@ -1004,6 +1244,7 @@ async function handleBridgeRequest(request, response, config) {
       }, config, request)
       return
     }
+    auditDetails.authorized = config.bridgeBearerToken ? true : undefined
 
     if (request.method === 'GET' && url.pathname === AGENT_CARD_ROUTE) {
       writeJson(response, 200, agentCard(config), config, request)
@@ -1051,16 +1292,17 @@ async function handleBridgeRequest(request, response, config) {
     }
 
     if (request.method === 'POST' && url.pathname === MESSAGE_SEND_ROUTE) {
-      messageRunContext = requestRunContext(request)
+      messageRunContext = auditContext
       const body = await readJsonBody(request)
-      const result = await runA2aMessage(body, config, messageRunContext)
+      const result = await runA2aMessage(body, config, messageRunContext, auditDetails)
       writeJson(response, 200, result, config, request)
       return
     }
 
     if (request.method === 'POST' && url.pathname === MCP_ROUTE) {
       const body = await readJsonBody(request)
-      const result = await handleMcpJsonRpc(body, config)
+      const result = await handleMcpJsonRpc(body, config, auditContext, auditDetails)
+      Object.assign(auditDetails, mcpResultAudit(result))
       writeJson(response, 200, result, config, request)
       return
     }
@@ -1068,16 +1310,37 @@ async function handleBridgeRequest(request, response, config) {
     writeJson(response, 404, { error: { code: 'not_found', message: 'Not found.' } }, config, request)
   } catch (error) {
     const httpError = error instanceof HttpError ? error : new HttpError(500, 'Bridge request failed.', 'bridge_error')
+    auditDetails.errorCode = httpError.code
     config.logger.error(redactedLogLine('bridge request failed', error))
     writeJson(response, httpError.status, errorResponseBody(httpError, messageRunContext), config, request)
+  } finally {
+    emitRequestAuditLog(config, {
+      ...auditDetails,
+      requestId: messageRunContext?.requestId || auditContext.requestId,
+      traceId: messageRunContext?.traceId || auditContext.traceId,
+      method: request.method,
+      route,
+      statusCode: response.statusCode,
+      durationMs: Math.round(performance.now() - started),
+      sourcePolicy: config.sourcePolicy,
+    })
   }
 }
 
-async function runA2aMessage(body, config, runContextInput = {}) {
+async function runA2aMessage(body, config, runContextInput = {}, auditDetails = null) {
   const runContext = normalizedRunContext(runContextInput)
   const diagnostics = []
-  const { query, sources, orchestrationMode } = parseA2aRunRequest(body, config)
+  const { query, sources, orchestrationMode, conversation } = parseA2aRunRequest(body, config)
   const readySources = sources.filter(isSelectedReadySource)
+  recordA2aAuditDetails(auditDetails, {
+    orchestrationMode,
+    runtimeCalled: orchestrationMode !== 'evidence-only',
+    selectedSourceCount: sources.filter(isSelectedSource).length,
+    selectedReadySourceCount: readySources.length,
+    conversationMessageCount: conversation.messageCount,
+    conversationHistoryLength: conversation.historyLength,
+    conversationContextProvided: conversation.contextProvided,
+  })
   const steps = [
     step({
       id: 'bridge-plan',
@@ -1110,6 +1373,12 @@ async function runA2aMessage(body, config, runContextInput = {}) {
 
   const citations = dedupeCitations(sourceResults.flatMap((item) => item.result.citations))
   const graph = mergeGraphs(sourceResults.map((item) => item.result.graph).filter(Boolean))
+  recordA2aAuditDetails(auditDetails, {
+    citationCount: citations.length,
+    sourceBundleCount: sourceBundles.length,
+    graphNodeCount: graph.nodes.length,
+    diagnosticCount: diagnostics.length,
+  })
   steps.push(step({
     id: 'bridge-evidence',
     label: 'Prepare evidence',
@@ -1147,6 +1416,7 @@ async function runA2aMessage(body, config, runContextInput = {}) {
     try {
       answer = await callHermesChatCompletions({
         query,
+        conversation,
         sourceResults,
         sourceFailures,
         citations,
@@ -1167,6 +1437,10 @@ async function runA2aMessage(body, config, runContextInput = {}) {
       config.logger.error(redactedLogLine('chat completions failed', error))
       const diagnostic = runtimeChatCompletionsDiagnostic(error, config)
       diagnostics.push(diagnostic)
+      recordA2aAuditDetails(auditDetails, {
+        runtimeCalled: true,
+        diagnosticCount: diagnostics.length,
+      })
       replaceStep(steps, {
         ...completionsStep,
         status: 'error',
@@ -1203,7 +1477,7 @@ async function runA2aMessage(body, config, runContextInput = {}) {
     diagnostics,
   }
 
-  return {
+  const result = {
     id: randomUUID(),
     requestId: runContext.requestId,
     traceId: runContext.traceId,
@@ -1229,6 +1503,11 @@ async function runA2aMessage(body, config, runContextInput = {}) {
       },
     ],
   }
+  recordA2aAuditDetails(auditDetails, {
+    artifactCount: result.artifacts.length,
+    diagnosticCount: diagnostics.length,
+  })
+  return result
 }
 
 async function gatherSourceEvidence(source, query, config) {
@@ -1305,9 +1584,12 @@ async function mapWithConcurrency(items, concurrency, mapper) {
   return results
 }
 
-async function handleMcpJsonRpc(body, config) {
+async function handleMcpJsonRpc(body, config, runContextInput = {}, auditDetails = null) {
   const request = asRecord(body)
   const id = jsonRpcId(request?.id)
+  recordMcpAuditDetails(auditDetails, {
+    mcpMethod: auditedMcpMethod(request?.method),
+  })
   if (!request || request.jsonrpc !== '2.0' || typeof request.method !== 'string') {
     return mcpJsonRpcError(id, -32600, 'Invalid JSON-RPC request.')
   }
@@ -1323,21 +1605,24 @@ async function handleMcpJsonRpc(body, config) {
   }
 
   if (request.method === 'tools/call') {
-    return handleMcpToolsCall(request, id, config)
+    return handleMcpToolsCall(request, id, config, runContextInput, auditDetails)
   }
 
   return mcpJsonRpcError(id, -32601, `Method not found: ${request.method}`)
 }
 
-async function handleMcpToolsCall(request, id, config) {
+async function handleMcpToolsCall(request, id, config, runContextInput = {}, auditDetails = null) {
   const params = asRecord(request.params)
   const name = readString(params || {}, 'name')
+  recordMcpAuditDetails(auditDetails, {
+    mcpToolName: auditedMcpToolName(name),
+  })
   if (!params || !name) {
     return mcpJsonRpcError(id, -32602, 'MCP tools/call params.name is required.')
   }
 
   if (name === 'llmwiki_agent_run') {
-    return handleMcpAgentRunToolCall(params, id, config)
+    return handleMcpAgentRunToolCall(params, id, config, runContextInput, auditDetails)
   }
 
   if (mcpSourceToolNames().includes(name)) {
@@ -1347,11 +1632,11 @@ async function handleMcpToolsCall(request, id, config) {
   return mcpJsonRpcError(id, -32602, `Unknown MCP tool: ${name}.`)
 }
 
-async function handleMcpAgentRunToolCall(params, id, config) {
+async function handleMcpAgentRunToolCall(params, id, config, runContextInput = {}, auditDetails = null) {
   const args = asRecord(params.arguments) || {}
   const a2aBody = asRecord(args.data) ? args : { data: args }
   try {
-    const a2a = await runA2aMessage(a2aBody, config)
+    const a2a = await runA2aMessage(a2aBody, config, runContextInput, auditDetails)
     const agentResult = extractLlmwikiAgentResult(a2a)
     return mcpJsonRpcSuccess(id, {
       content: [
@@ -2494,10 +2779,10 @@ function hasValidCitationAnchor(answer, citations) {
   return false
 }
 
-async function callHermesChatCompletions({ query, sourceResults, sourceFailures, citations, graph, config }) {
+async function callHermesChatCompletions({ query, conversation, sourceResults, sourceFailures, citations, graph, config }) {
   const body = {
     ...(config.hermesModel ? { model: config.hermesModel } : {}),
-    messages: hermesMessages({ query, sourceResults, sourceFailures, citations, graph }),
+    messages: hermesMessages({ query, conversation, sourceResults, sourceFailures, citations, graph }),
     temperature: 0.2,
     stream: false,
   }
@@ -2516,16 +2801,19 @@ function renderEvidenceBundleForPrompt(evidenceBundle) {
   return JSON.stringify(evidenceBundle)
 }
 
-function hermesMessages({ query, sourceResults, sourceFailures, citations, graph }) {
+function hermesMessages({ query, conversation = emptyConversationContext(), sourceResults, sourceFailures, citations, graph }) {
   const sourceCorpusSummaries = sourceResults.map(({ source, result }) => sourceCorpusSummary(source, result))
   const mergedCorpusSummary = mergeCorpusSummaries(sourceCorpusSummaries)
   const citationIndexById = new Map(citations.map((citation, index) => [citation.id, index + 1]))
+  const runtimeConversationMessages = conversation.runtimeMessages || []
+  const runtimeConversationContext = conversationRuntimeContextForPrompt(conversation)
   const evidenceBundle = {
     schema: 'llmwiki-agent-bridge.answer-evidence.v1',
     runtimeContract: {
       citations: 'Use the top-level citations array as the only citation anchor source.',
       graph: 'Graph and source bundle details are returned in the bridge artifact and source tools, not in this answer prompt.',
     },
+    ...(runtimeConversationContext ? { conversationContext: runtimeConversationContext } : {}),
     citationDigest: rankedCitationDigest(query, citations),
     citations,
     sources: sourceResults.map(({ result }, index) => ({
@@ -2559,7 +2847,7 @@ function hermesMessages({ query, sourceResults, sourceFailures, citations, graph
     citationCount: citations.length,
   }
 
-  return [
+  const messages = [
     {
       role: 'system',
       content: [
@@ -2572,17 +2860,21 @@ function hermesMessages({ query, sourceResults, sourceFailures, citations, graph
         'Do not expose API keys, request headers, or bridge internals.',
       ].join(' '),
     },
-    {
-      role: 'user',
-      content: [
-        '# User question',
-        query,
-        '',
-        '# LLMWiki evidence bundle',
-        renderEvidenceBundleForPrompt(evidenceBundle),
-      ].join('\n'),
-    },
   ]
+
+  messages.push(...runtimeConversationMessages)
+  messages.push({
+    role: 'user',
+    content: [
+      '# User question',
+      query,
+      '',
+      '# LLMWiki evidence bundle',
+      renderEvidenceBundleForPrompt(evidenceBundle),
+    ].join('\n'),
+  })
+
+  return messages
 }
 
 function sourceCorpusSummary(source, result) {
@@ -3325,16 +3617,221 @@ function parseA2aRunRequest(body, config) {
   const data = asRecord(envelope?.data) || envelope
   if (!data) throw new HttpError(400, 'A2A request body must be a JSON object.', 'bad_request')
 
-  const query = readString(data, 'query').trim()
-  if (!query) throw new HttpError(400, 'A2A request data.query is required.', 'bad_request')
+  const a2aMessage = normalizeA2aMessage(data.message ?? envelope?.message)
+  const query = readString(data, 'query').trim() || readString(a2aMessage, 'text').trim()
+  if (!query) throw new HttpError(400, 'A2A request data.query or message text is required.', 'bad_request')
   const orchestrationMode = requestOrchestrationMode(data, envelope)
+  const conversation = normalizeConversationPayload(data, envelope, query, a2aMessage)
 
   const sourceValue = data.knowledgeSources ?? data.knowledge_sources
   const requestSuppliesSources = sourceValue !== undefined
   const rawSources = requestSuppliesSources ? sourceValue : config.registeredSources
   const sources = normalizeKnowledgeSourceDescriptors(rawSources)
 
-  return { query, sources, orchestrationMode }
+  return { query, sources, orchestrationMode, conversation }
+}
+
+function normalizeConversationPayload(data, envelope, query, a2aMessage = null) {
+  const dataMetadata = asRecord(data.metadata)
+  const envelopeMetadata = asRecord(envelope?.metadata)
+  const messageMetadata = asRecord(a2aMessage?.metadata)
+  const messageLlmwikiMetadata = asRecord(messageMetadata?.llmwiki)
+  const dataConfiguration = asRecord(data.configuration)
+  const envelopeConfiguration = asRecord(envelope?.configuration)
+  const runtimeContext = asRecord(data.runtimeContext) || asRecord(envelope?.runtimeContext)
+  const messages = normalizeConversationMessages(data.messages)
+  if (a2aMessage?.text) messages.push({ role: a2aMessage.role === 'agent' ? 'assistant' : 'user', content: a2aMessage.text })
+  const historyLimit = normalizedConversationHistoryLimit(dataConfiguration, envelopeConfiguration)
+  const runtimeMessages = conversationRuntimeMessages(messages, query, historyLimit)
+  const runtimeConversation = normalizeConversationDescriptor(runtimeContext?.conversation)
+  const threadId = conversationIdentifier(
+    readString(data, 'threadId')
+      || readString(dataMetadata, 'threadId')
+      || readString(a2aMessage, 'contextId')
+      || readString(messageLlmwikiMetadata, 'threadId')
+      || readString(envelopeMetadata, 'threadId'),
+  )
+  const sessionId = conversationIdentifier(
+    readString(data, 'sessionId')
+      || readString(dataMetadata, 'sessionId')
+      || readString(messageLlmwikiMetadata, 'sessionId')
+      || readString(envelopeMetadata, 'sessionId'),
+  )
+  const turnId = conversationIdentifier(
+    readString(data, 'turnId')
+      || readString(dataMetadata, 'turnId')
+      || readString(messageLlmwikiMetadata, 'turnId')
+      || readString(a2aMessage, 'messageId')
+      || readString(envelopeMetadata, 'turnId'),
+  )
+  const contextProvided = Boolean(
+    messages.length
+      || threadId
+      || sessionId
+      || turnId
+      || a2aMessage
+      || runtimeConversation,
+  )
+
+  return {
+    messages,
+    runtimeMessages,
+    messageCount: messages.length,
+    historyLength: runtimeMessages.length,
+    historyLimit,
+    threadId,
+    sessionId,
+    turnId,
+    runtimeContextConversation: runtimeConversation,
+    contextProvided,
+  }
+}
+
+function normalizeA2aMessage(value) {
+  const message = asRecord(value)
+  if (!message) return null
+  const role = readString(message, 'role').trim().toLowerCase()
+  if (role !== 'user' && role !== 'agent') return null
+  const text = a2aMessageText(message)
+  const messageId = conversationIdentifier(readString(message, 'messageId'))
+  const contextId = conversationIdentifier(readString(message, 'contextId'))
+  return removeUndefinedProperties({
+    role,
+    text: boundedConversationString(text.trim(), MAX_CONVERSATION_MESSAGE_CONTENT_CHARS),
+    messageId,
+    contextId,
+    metadata: asRecord(message.metadata) || undefined,
+  })
+}
+
+function a2aMessageText(message) {
+  const parts = readRecordArray(message?.parts)
+  return parts
+    .filter((part) => readString(part, 'kind') === 'text' && typeof part.text === 'string')
+    .map((part) => part.text)
+    .join('\n')
+}
+
+function emptyConversationContext() {
+  return {
+    messages: [],
+    runtimeMessages: [],
+    messageCount: 0,
+    historyLength: 0,
+    historyLimit: MAX_CONVERSATION_MESSAGES,
+    threadId: '',
+    sessionId: '',
+    turnId: '',
+    runtimeContextConversation: undefined,
+    contextProvided: false,
+  }
+}
+
+function normalizeConversationMessages(value) {
+  return readRecordArray(value)
+    .map(normalizeConversationMessage)
+    .filter(Boolean)
+}
+
+function normalizeConversationMessage(message) {
+  const role = readString(message, 'role').trim().toLowerCase()
+  if (!conversationMessageRoles.has(role)) return null
+  if (typeof message.content !== 'string') return null
+  const content = boundedConversationString(message.content.trim(), MAX_CONVERSATION_MESSAGE_CONTENT_CHARS)
+  if (!content) return null
+  return { role, content }
+}
+
+function normalizedConversationHistoryLimit(...configurations) {
+  for (const configuration of configurations) {
+    if (!configuration || configuration.historyLength === undefined) continue
+    const value = readNumber(configuration, 'historyLength')
+    if (Number.isInteger(value) && value >= 0) return Math.min(value, MAX_CONVERSATION_MESSAGES)
+  }
+  return MAX_CONVERSATION_MESSAGES
+}
+
+function conversationRuntimeMessages(messages, query, historyLimit) {
+  if (historyLimit <= 0) return []
+  const runtimeMessages = messages
+    .filter((message) => conversationRuntimeRoles.has(message.role))
+    .map(({ role, content }) => ({ role, content }))
+  const historyMessages = [...runtimeMessages]
+  while (
+    historyMessages.at(-1)?.role === 'user'
+    && sameConversationContent(historyMessages.at(-1)?.content, query)
+  ) {
+    historyMessages.pop()
+  }
+  const alternating = []
+  for (const message of historyMessages) {
+    const last = alternating.at(-1)
+    if (!last) {
+      if (message.role === 'user') alternating.push(message)
+    } else if (last.role === message.role) {
+      alternating[alternating.length - 1] = message
+    } else {
+      alternating.push(message)
+    }
+  }
+  if (alternating.at(-1)?.role === 'user') alternating.pop()
+  let bounded = alternating.slice(-historyLimit)
+  while (bounded[0]?.role === 'assistant') bounded = bounded.slice(1)
+  if (bounded.at(-1)?.role === 'user') bounded = bounded.slice(0, -1)
+  return bounded
+}
+
+function sameConversationContent(left, right) {
+  return readStringValue(left).trim() === readStringValue(right).trim()
+}
+
+function conversationIdentifier(value) {
+  return safeRunIdentifier(value)
+}
+
+function normalizeConversationDescriptor(value) {
+  const descriptor = boundedConversationJsonValue(value, 0)
+  return asRecord(descriptor) && Object.keys(descriptor).length ? descriptor : undefined
+}
+
+function boundedConversationJsonValue(value, depth) {
+  if (value === null || typeof value === 'boolean') return value
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined
+  if (typeof value === 'string') return boundedConversationString(value.trim(), MAX_CONVERSATION_DESCRIPTOR_STRING_CHARS)
+  if (depth >= MAX_CONVERSATION_DESCRIPTOR_DEPTH) return undefined
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, MAX_CONVERSATION_DESCRIPTOR_ARRAY_ITEMS)
+      .map((item) => boundedConversationJsonValue(item, depth + 1))
+      .filter((item) => item !== undefined)
+  }
+  const record = asRecord(value)
+  if (!record) return undefined
+  return Object.fromEntries(
+    Object.entries(record)
+      .slice(0, MAX_CONVERSATION_DESCRIPTOR_KEYS)
+      .map(([key, item]) => [boundedConversationString(String(key), 80), boundedConversationJsonValue(item, depth + 1)])
+      .filter(([key, item]) => key && item !== undefined),
+  )
+}
+
+function boundedConversationString(value, maxLength) {
+  const text = readStringValue(value)
+  return text.length > maxLength ? text.slice(0, maxLength) : text
+}
+
+function conversationRuntimeContextForPrompt(conversation) {
+  const context = removeUndefinedProperties({
+    schema: 'llmwiki-agent-bridge.conversation-context.v1',
+    threadId: conversation.threadId || undefined,
+    sessionId: conversation.sessionId || undefined,
+    turnId: conversation.turnId || undefined,
+    messageCount: conversation.messageCount,
+    historyLength: conversation.historyLength,
+    historyLimit: conversation.historyLimit,
+    descriptor: conversation.runtimeContextConversation,
+  })
+  return context.threadId || context.sessionId || context.turnId || context.descriptor ? context : null
 }
 
 function normalizeKnowledgeSourceDescriptors(rawSources) {
@@ -3372,6 +3869,10 @@ function isSelectedReadySource(source) {
     && source.status === 'ready'
     && source.selected !== false
     && ['llmwiki-http', 'mcp', 'a2a'].includes(source.protocol)
+}
+
+function isSelectedSource(source) {
+  return source.selected !== false
 }
 
 function agentCard(config) {
@@ -3632,6 +4133,14 @@ function normalizeBridgeConfigSettingsInput(input, currentConfig) {
     persisted.sourcePolicy = sourcePolicy
     live.sourcePolicy = sourcePolicy
     markApplied(applied, 'sourcePolicy')
+  }
+
+  const auditLogUpdate = settingValue(input, 'auditLog')
+  if (auditLogUpdate.present) {
+    const auditLog = booleanSetting(auditLogUpdate.value, 'auditLog')
+    persisted.auditLog = auditLog
+    live.auditLog = auditLog
+    markApplied(applied, 'auditLog')
   }
 
   const bridgeBearerTokenUpdate = firstSettingValue(input, ['bridgeBearerToken', 'bearerToken'])
@@ -5719,6 +6228,12 @@ function bridgeConfig(env, options = {}) {
     ?? sourcePolicyOption(env.HERMES_A2A_BRIDGE_SOURCE_POLICY)
     ?? sourcePolicyOption(persistentConfig.sourcePolicy)
     ?? DEFAULT_SOURCE_POLICY
+  const auditLog = booleanOption(options.auditLog)
+    ?? booleanOption(options.auditLogEnabled)
+    ?? envFlagOption(env[AUDIT_LOG_ENV])
+    ?? booleanOption(persistentConfig.auditLog)
+    ?? booleanOption(persistentConfig.auditLogEnabled)
+    ?? false
   const runtimeProfile = runtimeProfileOption(options.runtimeProfile)
     ?? runtimeProfileOption(env.LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE)
     ?? runtimeProfileOption(env.HERMES_A2A_BRIDGE_RUNTIME_PROFILE)
@@ -5782,6 +6297,7 @@ function bridgeConfig(env, options = {}) {
     allowedOrigins,
     allowedSourceOrigins,
     sourcePolicy,
+    auditLog,
     runtimeProfile,
     runtimeId,
     runtimeName,

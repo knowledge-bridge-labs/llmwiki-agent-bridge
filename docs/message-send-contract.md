@@ -33,8 +33,82 @@ Send JSON with either an A2A-style `data` object or the same fields at the root:
 }
 ```
 
-`data.query` is required and must be a non-empty string. The bridge also accepts
-`knowledge_sources` for clients that use snake_case field names.
+`data.query` is the legacy current-turn query and must be a non-empty string
+when no A2A `message` text is supplied. Source retrieval uses this current-turn
+query only; conversation history is not sent to Knowledge Sources. A2A-style
+clients may instead supply a top-level `message` or `data.message` with text
+parts; the bridge uses that text as the current-turn query. The bridge also
+accepts `knowledge_sources` for clients that use snake_case field names.
+
+## Additive Conversation Runtime Context
+
+Clients may include bounded conversation context without changing the legacy
+`data.query` contract:
+
+```json
+{
+  "data": {
+    "query": "What should I do next?",
+    "message": {
+      "kind": "message",
+      "messageId": "message-789",
+      "contextId": "thread-123",
+      "role": "user",
+      "parts": [{ "kind": "text", "text": "What should I do next?" }],
+      "metadata": {
+        "llmwiki": {
+          "schemaVersion": "llmwiki-chat.conversation.v1",
+          "threadId": "thread-123",
+          "sessionId": "session-456",
+          "turnId": "turn-789"
+        }
+      }
+    },
+    "messages": [
+      { "role": "user", "content": "Earlier question" },
+      { "role": "assistant", "content": "Earlier answer" },
+      { "role": "user", "content": "What should I do next?" }
+    ],
+    "threadId": "thread-123",
+    "sessionId": "session-456",
+    "turnId": "turn-789",
+    "runtimeContext": {
+      "conversation": {
+        "title": "Release readiness chat",
+        "messageCount": 3
+      }
+    }
+  },
+  "configuration": {
+    "historyLength": 2
+  },
+  "metadata": {
+    "threadId": "thread-123"
+  }
+}
+```
+
+`data.messages` accepts OpenAI/LangChain-compatible messages with `user`,
+`assistant`, or `system` roles and string `content`. The bridge normalizes the
+array leniently, bounds message content, and passes only bounded `user` and
+`assistant` history to the runtime after the bridge's evidence system prompt.
+The forwarded history is trimmed to valid role alternation before the current
+runtime user prompt. If the latest `user` message exactly matches the current
+query, that current turn is not duplicated as history; it is represented by the
+final runtime user prompt that contains the current query and evidence bundle.
+Client `system` messages are accepted for counting but are not forwarded as
+runtime system prompts.
+
+`data.message` and top-level `message` accept the A2A `Message` shape with
+`kind: "message"`, `role: "user"`, `messageId`, optional `contextId`, text
+parts, and optional metadata. `data.threadId`, `data.sessionId`, and
+`data.turnId` take precedence over the same fields in `data.metadata`,
+`message.contextId`, `message.metadata.llmwiki`, and top-level `metadata`.
+`data.runtimeContext.conversation` is treated as a caller-provided safe
+descriptor, bounded, and included inside the final runtime evidence bundle when
+present. A2A-style
+`configuration.historyLength` limits how many normalized user/assistant history
+messages are forwarded; the bridge also caps the value internally.
 
 `data.orchestrationMode` or `data.mode` is optional and defaults to
 `delegated-runtime`, preserving the original behavior of gathering evidence and
@@ -276,6 +350,28 @@ booleans/counts, bounded `sourceRefs` with only `id`, `label`, `type`, and
 safe `uri`, plus `sourceRefCount`. Unknown nested metadata, local path/root
 fields, locators, linked page paths, credential-like fields, URL credentials,
 and query strings are not returned.
+
+## Safe Request Audit Logging
+
+Request audit logging is opt-in. Set `LLMWIKI_AGENT_BRIDGE_AUDIT_LOG=1`, pass
+`auditLog: true`, or set `"auditLog": true` in the persistent bridge config to
+emit one JSON line per audited request through the existing logger.
+
+The audit event schema is `llmwiki.agent-bridge.audit.v1` with event name
+`llmwiki.agent_bridge.request`. Events are route-level facts only: timestamp,
+request/trace IDs, HTTP method, route pattern, status, duration, source policy,
+orchestration mode, whether a runtime call was attempted, selected/ready source
+counts, citation/source-bundle/graph/artifact/diagnostic counts, MCP method/tool
+labels when allowlisted, and explicit redaction flags.
+
+Audit events never include raw request bodies, user messages, runtime answers,
+upstream response bodies, full query strings, source URLs, runtime base URLs,
+model names, API keys, bearer tokens, or local paths.
+
+For conversation-aware requests, audit events may include only allowlisted
+conversation facts: `conversationMessageCount`, `conversationHistoryLength`,
+and `conversationContextProvided`. They never include thread/session/turn IDs,
+message content, or `runtimeContext.conversation` descriptor values.
 
 ## Failure Behavior
 

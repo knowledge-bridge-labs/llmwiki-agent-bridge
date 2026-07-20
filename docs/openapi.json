@@ -799,6 +799,15 @@
         "properties": {
           "data": {
             "$ref": "#/components/schemas/MessageSendData"
+          },
+          "message": {
+            "$ref": "#/components/schemas/A2aTextMessage"
+          },
+          "configuration": {
+            "$ref": "#/components/schemas/MessageSendConfiguration"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/MessageSendMetadata"
           }
         },
         "required": [
@@ -812,6 +821,34 @@
           "query": {
             "type": "string",
             "minLength": 1
+          },
+          "message": {
+            "$ref": "#/components/schemas/A2aTextMessage"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationMessage"
+            },
+            "description": "Optional bounded OpenAI/LangChain-compatible conversation messages. data.query remains the source retrieval query."
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string"
+          },
+          "runtimeContext": {
+            "$ref": "#/components/schemas/MessageSendRuntimeContext"
+          },
+          "configuration": {
+            "$ref": "#/components/schemas/MessageSendConfiguration"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/MessageSendMetadata"
           },
           "orchestrationMode": {
             "$ref": "#/components/schemas/OrchestrationMode",
@@ -835,10 +872,116 @@
             },
             "default": []
           }
+        }
+      },
+      "A2aTextMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "message"
+          },
+          "messageId": {
+            "type": "string"
+          },
+          "contextId": {
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "agent"
+            ]
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/A2aTextPart"
+            }
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/MessageSendMetadata"
+          }
         },
         "required": [
-          "query"
+          "kind",
+          "messageId",
+          "role",
+          "parts"
         ]
+      },
+      "A2aTextPart": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "text"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "text"
+        ]
+      },
+      "ConversationMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "role": {
+            "enum": [
+              "user",
+              "assistant",
+              "system"
+            ]
+          },
+          "content": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ]
+      },
+      "MessageSendRuntimeContext": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "conversation": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Optional client-provided safe conversation descriptor. It is passed to the runtime when present but never emitted in audit logs."
+          }
+        }
+      },
+      "MessageSendConfiguration": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "historyLength": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 12
+          }
+        }
+      },
+      "MessageSendMetadata": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "threadId": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string"
+          }
+        }
       },
       "KnowledgeSourceDescriptor": {
         "type": "object",
@@ -1396,6 +1539,9 @@
             "type": "boolean"
           },
           "allowInsecurePublicBind": {
+            "type": "boolean"
+          },
+          "auditLog": {
             "type": "boolean"
           }
         }

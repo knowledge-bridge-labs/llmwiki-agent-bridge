@@ -12,6 +12,15 @@ configured runtime after evidence collection. `evidence-only` gathers and
 returns citations, graph context, trace steps, and safe source bundle manifest
 metadata without calling the runtime.
 
+Profiles also share the same conversation-runtime-context behavior. Additive
+`/message:send` conversation fields, including `data.message`, top-level A2A
+`message`, and OpenAI/LangChain-style `data.messages`, are normalized before
+runtime delegation: bounded user/assistant history is inserted after the bridge
+evidence system prompt and before the final current-query evidence prompt.
+Knowledge Source retrieval continues to use only the current query from
+`data.query` or A2A message text, so prior assistant answers are not sent to
+source query or search endpoints.
+
 ## Hermes
 
 Use this profile for Hermes local runtimes.
@@ -85,6 +94,7 @@ runtime is Hermes or DeepAgents.
 | `LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE` | `hermes` | Runtime profile: `hermes`, `deepagents`, or `generic`. |
 | `LLMWIKI_AGENT_BRIDGE_BEARER_TOKEN` | unset | Optional bearer token required by clients that call the bridge. Required for non-loopback binds unless the insecure development escape hatch is explicit. |
 | `LLMWIKI_AGENT_BRIDGE_TIMEOUT_MS` | `120000` | Outbound runtime/source request timeout in milliseconds. |
+| `LLMWIKI_AGENT_BRIDGE_AUDIT_LOG` | unset | Set to `1`, `true`, `yes`, or `on` to emit safe request audit JSON lines through the bridge logger. Events include route patterns and counts only; raw prompts, answers, URLs, credentials, model names, query strings, and local paths are omitted. |
 | `LLMWIKI_AGENT_BRIDGE_ALLOWED_ORIGINS` | unset | Comma-separated browser CORS origins allowed to call the bridge in addition to loopback origins. |
 | `LLMWIKI_AGENT_BRIDGE_SOURCE_POLICY` | `private-http` | Outbound Knowledge Source URL policy. See [Client Paths](./client-paths.md#source-url-policy). |
 | `LLMWIKI_AGENT_BRIDGE_ALLOWED_SOURCE_ORIGINS` | unset | Comma-separated exact source origins allowed by the `allowlist` policy or as exceptions under stricter policies. |

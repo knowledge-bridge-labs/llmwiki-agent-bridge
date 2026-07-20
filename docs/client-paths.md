@@ -86,7 +86,10 @@ LLMWIKI_AGENT_BRIDGE_ALLOWED_SOURCE_ORIGINS=http://127.0.0.1:8765,https://wiki.e
 
 For public or shared bridge deployments, combine a restrictive source policy
 with `LLMWIKI_AGENT_BRIDGE_BEARER_TOKEN`, HTTPS at the network edge, and
-operator-owned logging rules.
+operator-owned logging rules. When request-level verification is needed, enable
+`LLMWIKI_AGENT_BRIDGE_AUDIT_LOG=1`; the bridge emits safe JSON-line audit events
+with route patterns and counts, not prompts, answers, source URLs, runtime URLs,
+credentials, model names, query strings, or local paths.
 
 ## Bind, Auth, and CORS
 

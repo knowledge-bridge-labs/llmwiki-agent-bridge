@@ -308,6 +308,30 @@ The returned artifact is normalized back to the selected source order for
 citations, graph data, source bundles, trace steps, diagnostics, and per-source
 failures.
 
+`/message:send` keeps the legacy `data.query` contract and also accepts
+additive conversation runtime context: `data.message` or top-level A2A
+`message`, `data.messages`, `data.threadId`, `data.sessionId`, `data.turnId`,
+`data.runtimeContext.conversation`, A2A-style `configuration.historyLength`,
+and A2A-style `metadata.threadId/sessionId/turnId`. The bridge uses the current
+query from `data.query` or A2A message text for source retrieval, then includes
+bounded user/assistant conversation history in the runtime chat-completions call
+after the evidence system prompt.
+
+### Safe request audit logging
+
+Set `LLMWIKI_AGENT_BRIDGE_AUDIT_LOG=1` or pass `auditLog: true` to emit one
+JSON line per audited bridge request through the existing logger (`stdout` by
+default). Audited routes are `/message:send`, `/mcp`, `/settings`,
+`/settings.json`, `/settings/config.json`, `/settings/sources.json`,
+`/.well-known/agent-card.json`, and `/health`.
+
+Audit events are intentionally allowlisted. They include route patterns, status,
+duration, request/trace IDs, orchestration mode, runtime-called state, source and
+artifact counts, conversation count/boolean fields, and redaction flags. They do
+not include raw prompts, runtime answers, request or response bodies, query
+strings, source URLs, runtime base URLs, model names, API keys, bearer tokens,
+local paths, thread/session IDs, or conversation message content.
+
 ```mermaid
 flowchart LR
   client["client or chat workbench"]
