@@ -883,3 +883,41 @@ These metrics can evolve as fixtures improve:
   e2e run per required safe `runtimeAlias`/`modelClass` cell. Live results
   copied into docs must come only from sanitized e2e/wrapper summaries and must
   use safe runtime aliases and safe model-class labels.
+
+### Loop 21: Compact JSON candidate approval stabilization
+
+- Research/analysis: the first live production-approval smoke isolated a
+  brittle `single-source` expected-citation mapping. Private-safe diagnostics
+  showed the runtime preserved the required local-query terms, citation
+  anchors, graph summaries, and source limitations, but did not reproduce one
+  long merged claim as a contiguous citation-mapping sentence.
+- TDD target: keep the local-query default-approval gate strict while mapping
+  the first `single-source` expected citation to the stable atomic claim
+  "Release readiness depends on local checks." The broader answer oracle still
+  checks citation anchors, graph summaries, explicit source limitations, and
+  required local/global/insufficient/graph relations.
+- Quality result: `prod-approval-smoke` passed for `compact-json` on the
+  configured safe runtime/model class with 5/5 runs, 100% pass rate, empty
+  failure-code counts, no truncation, 100% citation-anchor coverage, 100%
+  required oracle item coverage, 100% expected-citation mapping coverage, no
+  blocking reasons, and a clean final sensitive scan.
+- Repeated candidate result: `prod-approval-candidate` passed for the
+  `compact-json` default renderer with three runs per required fixture
+  class/query class: 15/15 `compact-json` runs passed, 0 failed, pass rate
+  100%, empty failure-code counts, no truncation, 0 invalid citation anchors,
+  100% required citation-anchor coverage, 0 strict answer-oracle failures,
+  0 strict unsupported/contradictory/distortion hits, 100% required oracle item
+  coverage, 100% expected-citation mapping and occurrence coverage, 0 blocking
+  reasons, and a clean final sensitive scan.
+- Renderer-selection nuance: the candidate profile also evaluates `toon` as a
+  renderer candidate. A live recommendation may rank `toon` first when it
+  passes and is smaller, but this loop's production-default approval claim is
+  specifically the fail-closed e2e approval for `compact-json`. Promoting
+  `toon` would still require a separate lossiness/contract decision because
+  LLMWiki prioritizes omission/distortion safety over size savings.
+- Retrospective: no new ADR is needed. The change calibrates benchmark
+  expected-citation mapping granularity and records sanitized live approval
+  evidence; it does not change the bridge runtime contract, public API, source
+  policy, security defaults, renderer implementation, or production default
+  setting. Broader multi-model approval still requires one sanitized e2e run
+  per additional safe `runtimeAlias`/`modelClass` cell.

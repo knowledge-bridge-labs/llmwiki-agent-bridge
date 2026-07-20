@@ -270,6 +270,24 @@
 - Production approval e2e summaries sanitize unsafe runtime aliases, expose
   only safe model-class labels, and scan their final JSON output before
   approval can pass.
+- Loop 21 calibrated the `single-source` expected-citation mapping to the
+  stable atomic claim "Release readiness depends on local checks" while keeping
+  broader answer-oracle checks for citation anchors, graph summaries, source
+  limitations, and required relations.
+- Loop 21 sanitized live approval evidence for the configured safe
+  runtime/model class:
+  - `prod-approval-smoke` approved `compact-json` with 5/5 runs, 100% pass
+    rate, empty failure-code counts, no truncation, 0 invalid citation anchors,
+    100% citation-anchor coverage, 100% required oracle item coverage,
+    100% expected-citation mapping coverage, zero blocking reasons, and clean
+    final sensitive scan.
+  - `prod-approval-candidate` approved `compact-json` with three runs per
+    required fixture/query class: 15/15 default-renderer runs passed, 0 failed,
+    pass rate 100%, empty failure-code counts, no truncation, 0 invalid
+    citation anchors, 100% citation-anchor coverage, 0 strict answer-oracle
+    failures, 100% required oracle item coverage, 100% expected-citation
+    mapping/occurrence coverage, zero blocking reasons, and clean final
+    sensitive scan.
 
 ## Commands
 
@@ -290,6 +308,7 @@ npm run eval:runtime-prompt:live:safe -- --profile loop17-full --overall-timeout
 npm run e2e:runtime-prompt:production-approval -- --profile prod-approval-smoke --runtime-alias configured-runtime --model-class configured-model-class --overall-timeout-ms 300000
 # Candidate/full profiles for default-change or lossy-renderer approval work:
 npm run e2e:runtime-prompt:production-approval -- --profile prod-approval-candidate --runtime-alias configured-runtime --model-class configured-model-class --min-runs 3 --overall-timeout-ms 600000
+npm run e2e:runtime-prompt:production-approval -- --profile prod-approval-candidate --runtime-alias configured-runtime --model-class configured-model-class --required-model-class configured-model-class --min-runs 3 --overall-timeout-ms 1500000 -- --timeout-ms 120000 --max-tokens 768 --temperature 0.2
 npm run e2e:runtime-prompt:production-approval -- --profile prod-approval-full --runtime-alias configured-runtime --model-class configured-model-class --min-runs 3 --overall-timeout-ms 900000
 npm test -- --test-name-pattern "production approval|local query|global query|insufficient evidence|invalid anchor"
 npm test -- --test-name-pattern "offline.*size-only|runtime prompt rendering offline|quality-first|recommendation"

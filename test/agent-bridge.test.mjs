@@ -6930,7 +6930,7 @@ function strictEvidenceFidelityAnswer({
 
 function localSingleSourceAnswer({ includeRuntimeProfilesCitation = true } = {}) {
   return [
-    'Expected claim row: Release readiness depends on local checks citation anchors graph summaries and explicit source limitations [1](#citation-1)',
+    'Expected claim row: Release readiness depends on local checks [1](#citation-1)',
     includeRuntimeProfilesCitation
       ? 'Expected claim row: Runtime profiles share the same evidence contract [2](#citation-2)'
       : 'Expected claim row: Runtime profiles share the same evidence contract',

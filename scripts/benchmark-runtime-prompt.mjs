@@ -3577,9 +3577,9 @@ function buildEvidenceBundleFixtures() {
         ],
         expectedCitationMappings: [
           {
-            claim: 'Release readiness depends on local checks citation anchors graph summaries and explicit source limitations',
+            claim: 'Release readiness depends on local checks',
             expectedCitationIds: ['release-wiki:release-readiness'],
-            windowChars: 140,
+            windowChars: 100,
           },
           {
             claim: 'Runtime profiles share the same evidence contract',

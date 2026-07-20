@@ -235,3 +235,15 @@
     - document LLMWiki ingest candidates and exclude raw live artifacts,
       endpoint/model/key values, temp paths, raw answers, and private local
       paths.
+27. Loop 21 compact JSON candidate approval stabilization:
+    - use private-safe live diagnostics to distinguish brittle long exact-claim
+      matching from true local-query omission or citation mismatch;
+    - narrow the `single-source` expected citation mapping to the stable atomic
+      local-readiness claim while preserving strict answer-oracle coverage for
+      citation anchors, graph summaries, source limitations, and required
+      relations;
+    - rerun the production approval smoke profile and the repeated candidate
+      profile using only safe runtime aliases and model-class labels;
+    - record only sanitized aggregate approval evidence in docs/specs and keep
+      raw live outputs, endpoint/model/key values, temp paths, raw answers, and
+      private local paths out of tracked files.

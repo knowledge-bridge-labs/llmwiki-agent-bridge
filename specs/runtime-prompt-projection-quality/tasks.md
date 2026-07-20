@@ -211,3 +211,17 @@
 - [x] Document Loop 20 LLMWiki ingest candidates and explicitly exclude raw
       live artifacts, endpoint/model/key values, temp paths, raw answers, and
       private local path exports.
+- [x] Calibrate Loop 21 `single-source` expected-citation mapping from one
+      brittle long merged claim to the stable atomic local-readiness claim
+      without weakening the broader answer oracle.
+- [x] Rerun Loop 21 `prod-approval-smoke` for `compact-json` on the configured
+      safe runtime/model class: 5/5 runs passed, 100% pass rate, empty
+      failure-code counts, no truncation, 100% citation-anchor coverage,
+      100% required oracle item coverage, 100% expected-citation mapping
+      coverage, zero blocking reasons, and clean final sensitive scan.
+- [x] Rerun Loop 21 `prod-approval-candidate` for the `compact-json` default
+      renderer: 15/15 `compact-json` runs passed across the required local,
+      global, insufficient-evidence, graph, and strict evidence-fidelity
+      fixture/query classes, with zero failures, zero truncation, zero invalid
+      citation anchors, 100% citation/oracle/mapping coverage, zero blocking
+      reasons, and clean final sensitive scan.
