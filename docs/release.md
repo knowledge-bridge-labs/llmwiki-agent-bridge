@@ -1,13 +1,18 @@
 # Release Checklist
 
-Use this checklist before publishing `llmwiki-agent-bridge` or tagging a public
-preview.
+Use this checklist before publishing the next `llmwiki-agent-bridge` release or
+tagging a public preview.
 
 ## Status
 
-`0.1.0` is reserved for the first public preview package. Until the npm package
-is published, keep installation guidance focused on source checkout usage and
-do not add npm badges that imply a live registry package.
+`0.1.0` is the published first public-preview npm package. Current installation
+guidance may point at `llmwiki-agent-bridge@0.1.0` plus source checkout as the
+supported development path.
+
+For the next release, verify the current registry state, choose a new package
+version, and update package metadata, changelog entries, docs, and release
+status together. Do not imply a newer npm release exists until registry upload
+and install-smoke verification have completed.
 
 ## Local Gates
 
@@ -74,28 +79,33 @@ the npm package.
 
 ## Publication Gate
 
-Before publishing:
+Before publishing a new npm version:
 
-1. Confirm the package name is still available or owned by the project:
+1. Confirm the current package is owned by the project and note the latest
+   published version:
 
    ```sh
    npm view llmwiki-agent-bridge version --json
    ```
 
-2. Confirm repository URLs point at the final GitHub organization.
-3. Confirm the cross-repo status matrix records the intended bridge release
-   version and current registry state. After upload and install-smoke
-   verification finish, the bridge package should be marked as npm published.
-4. Confirm the `CHANGELOG.md` `0.1.0` public package preview entry matches the
+2. Confirm the target version is not already published:
+
+   ```sh
+   npm view llmwiki-agent-bridge@<target-version> version --json
+   ```
+
+3. Confirm repository URLs point at the final GitHub organization.
+4. Confirm the cross-repo status matrix records `0.1.0` as published and the
+   intended next bridge release state. After upload and install-smoke
+   verification finish, update the matrix to the new npm-published version.
+5. Confirm the `CHANGELOG.md` entry for the target version matches the
    publication date and release contents.
-5. Confirm npm Trusted Publishing is configured for this package and workflow.
+6. Confirm npm Trusted Publishing is configured for this package and workflow.
 
 Before publishing to npm, run the central package-publication gate documented
-in the sibling `llmwiki-docs` repository and confirm the toolchain release
-status is at least `public-unpublished`.
-If packages are being published sequentially, use the central staging preflight
-or a package-specific registry expectation until the matrix has a mode for the
-current partial state.
+in the sibling `llmwiki-docs` repository. If packages are being published
+sequentially, use the central staging preflight or a package-specific registry
+expectation until the matrix records the current partial state.
 
 ### npm Trusted Publisher
 
@@ -119,7 +129,7 @@ Do not add `NPM_TOKEN` or token-based publishing secrets to this workflow.
 Trusted Publishing uses GitHub Actions OIDC, and npm automatically emits
 provenance for eligible public GitHub publishes.
 
-If npm requires the package to already exist before adding the trusted publisher
-relationship, a maintainer may need to create the initial public package or
-package settings manually with npm 2FA. Do not invent credentials or commit
-tokens as a workaround.
+Because the public package already exists, next releases should use Trusted
+Publishing unless the maintainers explicitly document a registry-side blocker.
+If package settings need manual repair, use npm 2FA in the registry UI. Do not
+invent credentials or commit tokens as a workaround.

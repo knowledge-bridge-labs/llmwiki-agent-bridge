@@ -69,9 +69,10 @@ Requirements:
 - Optional: an OpenAI-compatible `/v1/chat/completions` runtime for synthesis
 - `uv` and Python 3.11 or newer when starting the sample source from a checkout
 
-This quickstart uses two checkouts. Keep Terminal 1 in the source-server
-checkout and Terminal 2 in the bridge checkout so relative paths resolve in the
-right repository.
+This quickstart starts a source-server checkout in Terminal 1. In Terminal 2,
+use the published bridge package for normal local runs, or use a bridge source
+checkout when you want to run repository checks, inspect packaged examples, or
+develop the bridge.
 
 ### Terminal 1: source server
 
@@ -87,27 +88,27 @@ uv run llmwiki-serve serve ./examples/sample-wiki --host 127.0.0.1 --port 8765
 
 ### Terminal 2: bridge
 
-Open Terminal 2 in the same parent workspace that contains the
-`llmwiki-serve` checkout. Clone the bridge, install dependencies, and run the
-local checks:
+From any terminal, verify that Terminal 1 is serving the sample source:
+
+```sh
+curl -s http://127.0.0.1:8765/manifest
+```
+
+Start the published public-preview package:
+
+```sh
+npx llmwiki-agent-bridge@0.1.0
+```
+
+For source-checkout development instead, open Terminal 2 in the same parent
+workspace that contains the `llmwiki-serve` checkout, clone the bridge, install
+dependencies, run the local checks, and start the checkout CLI:
 
 ```sh
 git clone https://github.com/knowledge-bridge-labs/llmwiki-agent-bridge.git
 cd llmwiki-agent-bridge
 npm ci
 npm run check
-```
-
-From the bridge checkout, verify that Terminal 1 is serving the sample source:
-
-```sh
-curl -s http://127.0.0.1:8765/manifest
-```
-
-Start the bridge. The bundled sample request uses evidence-only mode, so the
-first smoke test does not need provider credentials or a running model runtime:
-
-```sh
 node ./bin/llmwiki-agent-bridge.mjs
 ```
 
@@ -131,7 +132,7 @@ macOS/Linux:
 LLMWIKI_AGENT_BRIDGE_BASE_URL=http://127.0.0.1:8642/v1 \
 LLMWIKI_AGENT_BRIDGE_MODEL=local-model \
 LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE=generic \
-node ./bin/llmwiki-agent-bridge.mjs
+npx llmwiki-agent-bridge@0.1.0
 ```
 
 Windows PowerShell:
@@ -140,8 +141,11 @@ Windows PowerShell:
 $env:LLMWIKI_AGENT_BRIDGE_BASE_URL = 'http://127.0.0.1:8642/v1'
 $env:LLMWIKI_AGENT_BRIDGE_MODEL = 'local-model'
 $env:LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE = 'generic'
-node .\bin\llmwiki-agent-bridge.mjs
+npx llmwiki-agent-bridge@0.1.0
 ```
+
+From a source checkout, use `node ./bin/llmwiki-agent-bridge.mjs` or
+`node .\bin\llmwiki-agent-bridge.mjs` in place of the final `npx` command.
 
 For Hermes or DeepAgents, keep the same command shape and change
 `LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE` plus the model name:
@@ -174,14 +178,27 @@ setup:
    `GET/PUT /settings/sources.json`.
 3. Verify Bridge. Run the settings-page verification, which sends
    `POST /message:send` using the registered source and shows the returned
-   answer artifact, citations, graph, and trace steps.
+   answer artifact, citations, graph, and trace steps. `/message:send`
+   defaults to `delegated-runtime`, so this settings-page check expects the
+   configured runtime to be reachable. Use the evidence-only sample request
+   below for a no-runtime smoke test.
 
 Runtime credentials, network, auth, CORS, timeout, and source-policy controls live under
 diagnostics/advanced. Most local OSS users only need the three setup steps
 above.
 
-Send the sample request from the `llmwiki-agent-bridge` checkout so the
-`--data @examples/message-send.local.json` path resolves to this repository:
+For a no-runtime smoke test from a package-only launch, send an inline
+evidence-only request:
+
+```sh
+curl -s http://127.0.0.1:8788/message:send \
+  -H 'content-type: application/json' \
+  -d '{"data":{"query":"release readiness","mode":"evidence-only","knowledgeSources":[{"id":"sample-wiki","name":"Sample Wiki","protocol":"llmwiki-http","status":"ready","url":"http://127.0.0.1:8765","selected":true}]}}'
+```
+
+From a `llmwiki-agent-bridge` source checkout, you can send the bundled
+equivalent request so the `--data @examples/message-send.local.json` path
+resolves to this repository:
 
 ```sh
 curl -s http://127.0.0.1:8788/message:send \
@@ -190,9 +207,10 @@ curl -s http://127.0.0.1:8788/message:send \
 ```
 
 The bundled `examples/message-send.local.json` points at
-`http://127.0.0.1:8765`. If your `llmwiki-serve` or bridge process uses a
-different port, copy that file to a temporary path, update the source URL, and
-post it to the bridge URL you started.
+`http://127.0.0.1:8765` and sets `mode` to `evidence-only`. If your
+`llmwiki-serve` or bridge process uses a different port, copy that file to a
+temporary path, update the source URL, and post it to the bridge URL you
+started.
 
 MCP-style clients can list bridge tools at `/mcp`. Use
 `llmwiki_agent_run` when you want the bridge to produce a full grounded answer,
@@ -407,19 +425,33 @@ More detail: [docs/runtime-profiles.md](./docs/runtime-profiles.md).
 
 | Surface | Purpose |
 | --- | --- |
-| `llmwiki-agent-bridge` CLI | Starts the local bridge from a checkout or published package. |
+| `llmwiki-agent-bridge` CLI | Starts the local bridge from `npx`, a package install, or a source checkout. |
 | `startAgentBridge` | Programmatic API for tests, local tooling, or embedded bridge processes. |
 | `docs/openapi.json` | Generated local HTTP and artifact contract. |
 | `examples/message-send.local.json` | Minimal local request for smoke testing. |
 | `integrations/` | Direct-client templates and routing guidance for Codex, Claude Code, and Copilot. |
 
-After npm publication, the intended package entrypoint is:
+The current public-preview package is published as
+`llmwiki-agent-bridge@0.1.0`. Run it without installing globally:
 
 ```sh
-npx llmwiki-agent-bridge
+npx llmwiki-agent-bridge@0.1.0
 ```
 
-Until then, source-checkout usage is the supported path.
+Or install the package and run the CLI:
+
+```sh
+npm install --global llmwiki-agent-bridge@0.1.0
+llmwiki-agent-bridge
+```
+
+Source checkout remains a supported development path:
+
+```sh
+npm ci
+npm run check
+node ./bin/llmwiki-agent-bridge.mjs
+```
 
 ## Integration Paths
 
@@ -524,17 +556,18 @@ during migration.
 
 ## Release Status
 
-`llmwiki-agent-bridge` is in public source-checkout preview. Source-checkout
-usage is the supported path today. npm package-install links should be treated
-as release gates until the first package is published.
+`llmwiki-agent-bridge` is in public preview. The npm package
+`llmwiki-agent-bridge@0.1.0` is published, and package-based `npx` or
+`npm install --global` runs are supported for local use. Source checkout remains
+supported for development, repository validation, and release checks.
 
 Repository, issue, CI badge, package, and hosted docs URLs intentionally target
 the Knowledge Bridge Labs organization. The hosted Release Status &
 Compatibility matrix records which package and runtime paths are currently
 available.
 
-See [docs/release.md](./docs/release.md) before publishing or tagging a public
-preview.
+See [docs/release.md](./docs/release.md) before preparing, publishing, or
+tagging the next public-preview release.
 
 ## Development
 

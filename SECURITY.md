@@ -2,10 +2,16 @@
 
 ## Supported Versions
 
-Security fixes target the `main` branch until the package publishes versioned
-releases. After releases begin, supported versions will be listed here. While
-the project is pre-1.0, maintainers may ship security fixes without preserving
-every experimental API.
+Security fixes target `main` and the latest published 0.x public-preview
+release unless otherwise noted in an advisory or release note. While the
+project is pre-1.0, maintainers may ship security fixes in the next 0.x release
+without preserving every experimental API.
+
+| Version | Support status |
+| --- | --- |
+| `main` | Supported development branch for security fixes. |
+| Latest published `0.x` public-preview release | Supported. |
+| Older `0.x` public-preview releases | Best effort unless an advisory says otherwise. |
 
 ## Reporting a Vulnerability
 
