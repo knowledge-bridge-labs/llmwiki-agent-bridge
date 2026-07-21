@@ -225,3 +225,12 @@
       fixture/query classes, with zero failures, zero truncation, zero invalid
       citation anchors, 100% citation/oracle/mapping coverage, zero blocking
       reasons, and clean final sensitive scan.
+- [x] Document Loop 22 compact JSON runtime-default approval boundary:
+      production delegated-runtime and hybrid prompts already encode evidence
+      as compact JSON, while broad production-default approval remains a
+      separate evidence claim requiring one sanitized approval report per
+      maintainer-selected runtime/model-class cell.
+- [ ] Before making a broad public production-default approval claim, run the
+      `prod-approval-candidate` profile across the required runtime/model-class
+      matrix, compare sanitized aggregate outputs, and update public docs only
+      with safe summary metrics.
