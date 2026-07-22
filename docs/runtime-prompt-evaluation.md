@@ -180,6 +180,19 @@ with compact JSON once; `loop17-full` runs the same fixtures across compact
 JSON, markdown summary, and TOON three times; `none` forces `--live` without
 other defaults.
 
+## Runtime Default And Approval Boundary
+
+The production delegated-runtime and hybrid prompt path currently renders the
+LLMWiki evidence bundle as compact JSON. This is a runtime encoding fact, not a
+broad approval claim across all models or runtime classes. `pretty-json` remains
+an offline debug/size baseline in benchmark reports, while `compact-json` is the
+named renderer used for production-default approval checks.
+
+Do not interpret a passing single-runtime run, offline token saving, or
+`live.recommendation.recommendedRendererId` as enough to claim broad production
+default approval. Broad approval requires one sanitized passing e2e approval
+report for each maintainer-selected safe runtime/model-class cell.
+
 For production-default approval, use the tracked e2e wrapper rather than
 reading `live.recommendation` alone:
 
@@ -226,6 +239,9 @@ cell and comparing sanitized outputs; a single invocation is only approval for
 that safe model class. The e2e script scans its own final JSON output and must
 not record configured endpoint values, configured model names, keys, raw
 answers, raw prompts, temp paths, or local absolute paths.
+
+The default approval path is documented in
+`docs/decisions/2026-07-22-compact-json-runtime-default-approval.md`.
 
 LLMWiki ingest guidance: ingest this document plus the
 `specs/runtime-prompt-projection-quality/` files after review. Do not ingest

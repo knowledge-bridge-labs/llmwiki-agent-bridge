@@ -302,8 +302,9 @@ For each `POST /message:send` request, the bridge:
 1. Selects ready Knowledge Source descriptors from the request.
 2. Fetches context over `llmwiki-http`, MCP-style JSON-RPC, or A2A-style HTTP.
 3. Packages citations, graph context, source bundle metadata, and trace steps.
-4. In `delegated-runtime` or `hybrid`, compacts the evidence bundle and calls
-   the configured OpenAI-compatible `/v1/chat/completions` endpoint.
+4. In `delegated-runtime` or `hybrid`, renders the evidence bundle as compact
+   JSON and calls the configured OpenAI-compatible `/v1/chat/completions`
+   endpoint.
 5. In `evidence-only`, skips the runtime call and returns a bridge-generated
    evidence summary.
 6. Returns answer text plus the `llmwiki_agent_result` artifact.
@@ -406,6 +407,9 @@ checks while keeping the existing `/message:send` route stable.
 Profiles are conservative configuration presets over the same bridge contract.
 They change runtime identity metadata, default model naming, and
 operator-facing configuration; they do not change the LLMWiki evidence format.
+Compact JSON is the current runtime prompt evidence encoding. Broad
+production-default approval is an evidence claim gated by the tracked runtime
+prompt approval e2e, not a profile switch.
 
 | Profile | Use when | Typical model variable |
 | --- | --- | --- |
