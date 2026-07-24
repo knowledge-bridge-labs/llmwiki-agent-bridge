@@ -15,6 +15,7 @@ const DEFAULT_SOURCE_FAN_OUT_CONCURRENCY = 4
 const DEFAULT_SOURCE_POLICY = 'private-http'
 const DEFAULT_ORCHESTRATION_MODE = 'delegated-runtime'
 const DEFAULT_RUNTIME_PROFILE = 'hermes'
+const DEFAULT_RUNTIME_ADAPTER = 'chat-completions'
 const DEFAULT_RUNTIME_ID = 'llmwiki-agent-bridge-hermes'
 const DEFAULT_RUNTIME_NAME = 'LLMWiki Agent Bridge for Hermes'
 const DEFAULT_RUNTIME_KIND = 'hermes'
@@ -172,6 +173,13 @@ const runtimeProfileAliases = new Map([
   ['deepagents', 'deepagents'],
   ['generic', 'generic'],
   ['openaicompatible', 'generic'],
+])
+const runtimeAdapterAliases = new Map([
+  ['chatcompletions', 'chat-completions'],
+  ['openai', 'chat-completions'],
+  ['openaicompatible', 'chat-completions'],
+  ['deepagentsacp', 'deepagents-acp'],
+  ['acp', 'deepagents-acp'],
 ])
 const orchestrationModes = new Set(['evidence-only', 'delegated-runtime', 'hybrid'])
 
@@ -409,6 +417,7 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
           status: { const: 'ok' },
           runtime: { const: 'llmwiki-agent-bridge' },
           runtimeProfile: { enum: ['hermes', 'deepagents', 'generic'] },
+          runtimeAdapter: { enum: ['chat-completions', 'deepagents-acp'] },
           runtimeId: { type: 'string' },
           agentRuntime: { type: 'string' },
           modelConfigured: { type: 'boolean' },
@@ -416,7 +425,7 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
           configuredAllowedOrigins: { type: 'integer', minimum: 0 },
           sourcePolicy: { enum: ['private-http', 'allowlist', 'public-https'] },
           sourceRegistry: sourceRegistrySummarySchema(),
-        }, ['status', 'runtime', 'runtimeProfile', 'runtimeId', 'agentRuntime', 'modelConfigured', 'hermesModelConfigured', 'configuredAllowedOrigins', 'sourcePolicy', 'sourceRegistry']),
+        }, ['status', 'runtime', 'runtimeProfile', 'runtimeAdapter', 'runtimeId', 'agentRuntime', 'modelConfigured', 'hermesModelConfigured', 'configuredAllowedOrigins', 'sourcePolicy', 'sourceRegistry']),
         AgentCardResponse: objectSchema({
           id: { type: 'string' },
           name: { type: 'string' },
@@ -440,6 +449,7 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
           metadata: objectSchema({
             bridge: { const: 'llmwiki-agent-bridge' },
             runtimeProfile: { enum: ['hermes', 'deepagents', 'generic'] },
+            runtimeAdapter: { enum: ['chat-completions', 'deepagents-acp'] },
             modelConfigured: { type: 'boolean' },
             hermesModelConfigured: { type: 'boolean' },
             sourcePolicy: { enum: ['private-http', 'allowlist', 'public-https'] },
@@ -449,7 +459,7 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
               mcp: { const: 'compatible' },
             }, ['a2a', 'mcp']),
             sourceRegistry: sourceRegistrySummarySchema(),
-          }, ['bridge', 'runtimeProfile', 'modelConfigured', 'hermesModelConfigured', 'sourcePolicy', 'settingsUrl', 'protocolSurface', 'sourceRegistry']),
+          }, ['bridge', 'runtimeProfile', 'runtimeAdapter', 'modelConfigured', 'hermesModelConfigured', 'sourcePolicy', 'settingsUrl', 'protocolSurface', 'sourceRegistry']),
         }, ['id', 'name', 'description', 'protocol', 'runtime', 'agentRuntime', 'provider', 'url', 'capabilities', 'metadata']),
         MessageSendEnvelope: objectSchema({
           data: { $ref: '#/components/schemas/MessageSendData' },
@@ -634,12 +644,13 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
           }, ['health', 'agentCard', 'messageSend', 'mcp', 'settings', 'settingsJson', 'settingsConfigJson', 'settingsSourcesJson']),
           runtime: objectSchema({
             profile: { enum: ['hermes', 'deepagents', 'generic'] },
+            adapter: { enum: ['chat-completions', 'deepagents-acp'] },
             id: { type: 'string' },
             name: { type: 'string' },
             runtime: { type: 'string' },
             agentRuntime: { type: 'string' },
             providerOrganization: { type: 'string' },
-          }, ['profile', 'id', 'name', 'runtime', 'agentRuntime', 'providerOrganization']),
+          }, ['profile', 'adapter', 'id', 'name', 'runtime', 'agentRuntime', 'providerOrganization']),
           runtimeConnection: objectSchema({
             baseUrl: { type: 'string' },
             modelConfigured: { type: 'boolean' },
@@ -679,6 +690,7 @@ export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
         }, ['bridge', 'endpoints', 'runtime', 'runtimeConnection', 'bridgeAuth', 'network', 'sourcePolicy', 'observability', 'persistence']),
         SettingsConfigRequest: objectSchema({
           runtimeProfile: { enum: ['hermes', 'deepagents', 'generic'] },
+          runtimeAdapter: { enum: ['chat-completions', 'deepagents-acp'] },
           runtimeId: { type: 'string' },
           runtimeName: { type: 'string' },
           runtime: { type: 'string' },
@@ -1495,6 +1507,7 @@ async function handleBridgeRequest(request, response, config) {
         status: 'ok',
         runtime: 'llmwiki-agent-bridge',
         runtimeProfile: config.runtimeProfile,
+        runtimeAdapter: config.runtimeAdapter,
         runtimeId: config.runtimeId,
         agentRuntime: config.agentRuntime,
         modelConfigured: Boolean(config.model),
@@ -1664,56 +1677,54 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
       detail: 'Built an evidence-only result without calling the configured runtime.',
     }))
   } else {
-    const completionsStep = step({
-      id: 'runtime-chat-completions',
-      label: 'Call chat completions',
+    const runtimeStep = step({
+      ...runtimeCallStepTemplate(config),
       status: 'running',
-      detail: 'Sending grounded evidence to the configured OpenAI-compatible chat completions endpoint.',
     })
-    steps.push(completionsStep)
-    const completionsStarted = performance.now()
+    steps.push(runtimeStep)
+    const runtimeStarted = performance.now()
     recordA2aAuditDetails(auditDetails, {
       runtimeCalled: true,
     })
 
     try {
-      answer = await callHermesChatCompletions({
+      answer = await callConfiguredRuntime({
         query,
         conversation,
         sourceResults,
         sourceFailures,
         citations,
         graph,
+        sourceBundles,
         config,
         runContext,
       })
       const citationFallback = answerWithFallbackCitationAnchors(answer, citations)
       answer = citationFallback.answer
       replaceStep(steps, {
-        ...completionsStep,
+        ...runtimeStep,
         status: 'done',
-        detail: citationFallback.applied
-          ? 'The chat completions endpoint returned a grounded markdown answer. The bridge appended bounded fallback citation anchors because the runtime returned none.'
-          : 'The chat completions endpoint returned a grounded markdown answer.',
-        latencyMs: Math.round(performance.now() - completionsStarted),
+        detail: runtimeSuccessStepDetail(config, citationFallback.applied),
+        latencyMs: Math.round(performance.now() - runtimeStarted),
       })
     } catch (error) {
-      config.logger.error(redactedLogLine('chat completions failed', error))
-      const diagnostic = runtimeChatCompletionsDiagnostic(error, config)
+      const failure = runtimeFailureContract(config)
+      config.logger.error(redactedLogLine(failure.logPrefix, error))
+      const diagnostic = runtimeFailureDiagnostic(error, config)
       diagnostics.push(diagnostic)
       recordA2aAuditDetails(auditDetails, {
         runtimeCalled: true,
         diagnosticCount: diagnostics.length,
       })
       replaceStep(steps, {
-        ...completionsStep,
+        ...runtimeStep,
         status: 'error',
-        detail: 'Chat completions request failed.',
-        error: 'Chat completions request failed.',
+        detail: failure.message,
+        error: failure.message,
         diagnostic,
-        latencyMs: Math.round(performance.now() - completionsStarted),
+        latencyMs: Math.round(performance.now() - runtimeStarted),
       })
-      throw new HttpError(502, 'Chat completions request failed.', 'chat_completions_failed', {
+      throw new HttpError(502, failure.message, failure.code, {
         requestId: runContext.requestId,
         traceId: runContext.traceId,
         steps,
@@ -3117,6 +3128,164 @@ async function callHermesChatCompletions({ query, conversation, sourceResults, s
   return extractHermesAnswer(payload) || 'The chat completions endpoint returned no answer text.'
 }
 
+async function callConfiguredRuntime(input) {
+  if (input.config.runtimeAdapter === 'chat-completions') {
+    return callHermesChatCompletions(input)
+  }
+
+  const adapter = runtimeAdapterImplementation(input.config)
+  if (adapter) {
+    const output = await adapter(runtimeAdapterRequest(input))
+    return normalizeRuntimeAdapterAnswer(output)
+  }
+
+  throw new Error(`Runtime adapter ${input.config.runtimeAdapter} is not available. Configure an adapter implementation before selecting it.`)
+}
+
+function runtimeAdapterImplementation(config) {
+  const adapters = asRecord(config.runtimeAdapters) || {}
+  const adapter = adapters[config.runtimeAdapter]
+  return typeof adapter === 'function' ? adapter : null
+}
+
+function runtimeAdapterRequest({ query, conversation, sourceResults, sourceFailures, citations, graph, sourceBundles = [], config, runContext = {} }) {
+  const messages = hermesMessages({ query, conversation, sourceResults, sourceFailures, citations, graph })
+  return {
+    adapter: config.runtimeAdapter,
+    profile: config.runtimeProfile,
+    runtimeId: config.runtimeId,
+    runtimeName: config.runtimeName,
+    protocol: runtimeAdapterProtocol(config),
+    query,
+    conversation,
+    sourceResults,
+    sourceFailures,
+    citations,
+    graph,
+    sourceBundles,
+    messages,
+    prompt: runtimePromptFromMessages(messages),
+    requestId: runContext?.requestId,
+    traceId: runContext?.traceId,
+    timeoutMs: config.requestTimeoutMs,
+  }
+}
+
+function normalizeRuntimeAdapterAnswer(output) {
+  const direct = typeof output === 'string' ? output : ''
+  const record = asRecord(output)
+  const answer = direct
+    || readString(record, 'answer')
+    || readString(record, 'content')
+    || readString(record, 'text')
+  return answer || 'The runtime adapter returned no answer text.'
+}
+
+function runtimePromptFromMessages(messages) {
+  return messages
+    .map((message) => {
+      const role = readString(message, 'role') || 'message'
+      const content = readString(message, 'content')
+      return [`# ${role}`, content].filter(Boolean).join('\n')
+    })
+    .join('\n\n')
+}
+
+function runtimeCallStepTemplate(config) {
+  if (config.runtimeAdapter === 'chat-completions') {
+    return {
+      id: 'runtime-chat-completions',
+      label: 'Call chat completions',
+      detail: 'Sending grounded evidence to the configured OpenAI-compatible chat completions endpoint.',
+    }
+  }
+
+  if (config.runtimeAdapter === 'deepagents-acp') {
+    return {
+      id: 'runtime-deepagents-acp',
+      label: 'Call DeepAgents ACP runtime',
+      detail: 'Sending grounded evidence to the configured DeepAgents ACP runtime adapter.',
+    }
+  }
+
+  return {
+    id: `runtime-${safeId(config.runtimeAdapter)}`,
+    label: 'Call runtime adapter',
+    detail: 'Sending grounded evidence to the configured runtime adapter.',
+  }
+}
+
+function runtimeSuccessStepDetail(config, fallbackCitationAnchorsApplied) {
+  if (config.runtimeAdapter === 'chat-completions') {
+    return fallbackCitationAnchorsApplied
+      ? 'The chat completions endpoint returned a grounded markdown answer. The bridge appended bounded fallback citation anchors because the runtime returned none.'
+      : 'The chat completions endpoint returned a grounded markdown answer.'
+  }
+
+  const adapterLabel = config.runtimeAdapter === 'deepagents-acp'
+    ? 'DeepAgents ACP runtime adapter'
+    : 'runtime adapter'
+  return fallbackCitationAnchorsApplied
+    ? `The ${adapterLabel} returned a grounded markdown answer. The bridge appended bounded fallback citation anchors because the runtime returned none.`
+    : `The ${adapterLabel} returned a grounded markdown answer.`
+}
+
+function runtimeFailureContract(config) {
+  if (config.runtimeAdapter === 'chat-completions') {
+    return {
+      code: 'chat_completions_failed',
+      message: 'Chat completions request failed.',
+      logPrefix: 'chat completions failed',
+    }
+  }
+
+  return {
+    code: 'runtime_adapter_failed',
+    message: 'Runtime adapter request failed.',
+    logPrefix: 'runtime adapter failed',
+  }
+}
+
+function runtimeFailureDiagnostic(error, config) {
+  if (config.runtimeAdapter === 'chat-completions') return runtimeChatCompletionsDiagnostic(error, config)
+  return runtimeAdapterDiagnostic(error, config)
+}
+
+function runtimeAdapterDiagnostic(error, config) {
+  return diagnostic({
+    severity: 'error',
+    scope: 'runtime',
+    phase: config.runtimeAdapter,
+    protocol: runtimeAdapterProtocol(config),
+    subject: config.runtimeId,
+    retryable: retryableFailure(error),
+    redacted: true,
+    observations: [
+      ['httpStatus', httpStatusFromError(error)],
+      ['timeout', isTimeoutError(error) ? 'true' : undefined],
+      ['invalidJson', isInvalidJsonError(error) ? 'true' : undefined],
+      ['runtimeProfile', config.runtimeProfile],
+      ['runtimeAdapter', config.runtimeAdapter],
+      ['timeoutMs', config.requestTimeoutMs],
+      ['redaction', 'runtime adapter command, session, credentials, prompt, headers, and upstream body omitted'],
+    ],
+    remediation: runtimeAdapterRemediation(config),
+    message: 'Runtime adapter request failed.',
+  })
+}
+
+function runtimeAdapterProtocol(config) {
+  if (config.runtimeAdapter === 'deepagents-acp') return 'acp'
+  return 'openai-compatible'
+}
+
+function runtimeAdapterRemediation(config) {
+  if (config.runtimeAdapter === 'deepagents-acp') {
+    return 'Check that DeepAgents ACP is installed, the adapter command can start, model credentials are configured inside the runtime, and the bridge runtime adapter setting is intentional.'
+  }
+  return 'Check the configured runtime adapter and retry the request.'
+}
+
 function renderEvidenceBundleForPrompt(evidenceBundle) {
   return JSON.stringify(evidenceBundle)
 }
@@ -4225,6 +4394,7 @@ function agentCard(config) {
     metadata: {
       bridge: 'llmwiki-agent-bridge',
       runtimeProfile: config.runtimeProfile,
+      runtimeAdapter: config.runtimeAdapter,
       modelConfigured: Boolean(config.model),
       hermesModelConfigured: Boolean(config.hermesModel),
       sourcePolicy: config.sourcePolicy,
@@ -4266,6 +4436,7 @@ function redactedBridgeSettings(config, request) {
     },
     runtime: {
       profile: config.runtimeProfile,
+      adapter: config.runtimeAdapter,
       id: config.runtimeId,
       name: config.runtimeName,
       runtime: config.runtime,
@@ -4394,6 +4565,14 @@ function normalizeBridgeConfigSettingsInput(input, currentConfig) {
     })
     markApplied(applied, 'runtimeProfile', 'runtimeId', 'runtimeName', 'runtime', 'agentRuntime', 'providerOrganization')
     runtimeProfileChanged = runtimeProfile !== currentConfig.runtimeProfile
+  }
+
+  const runtimeAdapterUpdate = settingValue(input, 'runtimeAdapter')
+  if (runtimeAdapterUpdate.present) {
+    const runtimeAdapter = settingRuntimeAdapter(runtimeAdapterUpdate.value)
+    persisted.runtimeAdapter = runtimeAdapter
+    live.runtimeAdapter = runtimeAdapter
+    markApplied(applied, 'runtimeAdapter')
   }
 
   for (const field of ['runtimeId', 'runtimeName', 'runtime', 'agentRuntime', 'providerOrganization']) {
@@ -4704,6 +4883,16 @@ function settingRuntimeProfile(value) {
     throw new HttpError(400, error instanceof Error ? error.message : String(error), 'invalid_bridge_settings')
   }
   throw new HttpError(400, 'runtimeProfile must be a supported runtime profile.', 'invalid_bridge_settings')
+}
+
+function settingRuntimeAdapter(value) {
+  try {
+    const runtimeAdapter = runtimeAdapterOption(value)
+    if (runtimeAdapter) return runtimeAdapter
+  } catch (error) {
+    throw new HttpError(400, error instanceof Error ? error.message : String(error), 'invalid_bridge_settings')
+  }
+  throw new HttpError(400, 'runtimeAdapter must be a supported runtime adapter.', 'invalid_bridge_settings')
 }
 
 function settingSourcePolicy(value) {
@@ -6637,6 +6826,11 @@ function bridgeConfig(env, options = {}) {
     ?? runtimeProfileOption(env.HERMES_A2A_BRIDGE_RUNTIME_PROFILE)
     ?? runtimeProfileOption(persistentConfig.runtimeProfile)
     ?? DEFAULT_RUNTIME_PROFILE
+  const runtimeAdapter = runtimeAdapterOption(options.runtimeAdapter)
+    ?? runtimeAdapterOption(env.LLMWIKI_AGENT_BRIDGE_RUNTIME_ADAPTER)
+    ?? runtimeAdapterOption(env.HERMES_A2A_BRIDGE_RUNTIME_ADAPTER)
+    ?? runtimeAdapterOption(persistentConfig.runtimeAdapter)
+    ?? DEFAULT_RUNTIME_ADAPTER
   const runtimeProfileDefaults = runtimeProfiles[runtimeProfile]
   const runtimeId = stringOption(options.runtimeId)
     || stringOption(env.LLMWIKI_AGENT_BRIDGE_RUNTIME_ID)
@@ -6700,6 +6894,7 @@ function bridgeConfig(env, options = {}) {
     ioLogMode,
     ioLogPath,
     runtimeProfile,
+    runtimeAdapter,
     runtimeId,
     runtimeName,
     runtime,
@@ -6707,6 +6902,7 @@ function bridgeConfig(env, options = {}) {
     providerOrganization,
     configPath,
     registeredSources,
+    runtimeAdapters: asRecord(options.runtimeAdapters) || {},
     logger,
   }
 }
@@ -6785,6 +6981,15 @@ function runtimeProfileOption(value) {
   const profile = runtimeProfileAliases.get(normalized)
   if (profile) return profile
   throw new Error(`Unsupported LLMWiki Agent Bridge runtime profile: ${value}.`)
+}
+
+function runtimeAdapterOption(value) {
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, '')
+  if (!normalized) return undefined
+  const adapter = runtimeAdapterAliases.get(normalized)
+  if (adapter) return adapter
+  throw new Error(`Unsupported LLMWiki Agent Bridge runtime adapter: ${value}.`)
 }
 
 function ioLogModeOption(value) {

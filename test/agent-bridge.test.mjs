@@ -52,6 +52,7 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(card.capabilities.structuredArtifacts, true)
     assert.deepEqual(card.capabilities.knowledgeSourceProtocols, ['llmwiki-http', 'mcp', 'a2a'])
     assert.equal(card.metadata.runtimeProfile, 'hermes')
+    assert.equal(card.metadata.runtimeAdapter, 'chat-completions')
     assert.equal(card.metadata.modelConfigured, true)
     assert.equal(card.metadata.hermesModelConfigured, true)
     assert.equal(card.metadata.sourcePolicy, 'private-http')
@@ -70,6 +71,7 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(health.status, 'ok')
     assert.equal(health.runtime, 'llmwiki-agent-bridge')
     assert.equal(health.runtimeProfile, 'hermes')
+    assert.equal(health.runtimeAdapter, 'chat-completions')
     assert.equal(health.runtimeId, 'llmwiki-agent-bridge-hermes')
     assert.equal(health.agentRuntime, 'hermes')
     assert.equal(health.modelConfigured, true)
@@ -185,6 +187,7 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(settings.endpoints.settingsJson, '/settings.json')
     assert.equal(settings.endpoints.mcp, '/mcp')
     assert.equal(settings.runtime.profile, 'hermes')
+    assert.equal(settings.runtime.adapter, 'chat-completions')
     assert.equal(settings.runtimeConnection.baseUrl, 'http://runtime.example.test/v1')
     assert.equal(settings.runtimeConnection.apiKeyConfigured, true)
     assert.equal(settings.bridgeAuth.bearerTokenConfigured, true)
@@ -211,6 +214,7 @@ describe('llmwiki-agent-bridge', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         runtimeProfile: 'generic',
+        runtimeAdapter: 'deepagents-acp',
         baseUrl: 'http://runtime-live.example.test/v1?api_key=runtime-api-secret',
         apiKey: 'runtime-api-secret',
         model: 'live-model',
@@ -230,11 +234,13 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(saveResponse.status, 200)
     assert.equal(saved.status, 'saved')
     assert(saved.applied.includes('runtimeProfile'))
+    assert(saved.applied.includes('runtimeAdapter'))
     assert(saved.applied.includes('baseUrl'))
     assert(saved.applied.includes('bridgeBearerToken'))
     assert(saved.restartRequired.includes('host'))
     assert(saved.restartRequired.includes('port'))
     assert.equal(saved.settings.runtime.profile, 'generic')
+    assert.equal(saved.settings.runtime.adapter, 'deepagents-acp')
     assert.equal(saved.settings.runtime.id, 'llmwiki-agent-bridge-generic-openai-compatible')
     assert.equal(saved.settings.runtimeConnection.baseUrl, 'http://runtime-live.example.test/v1')
     assert.equal(saved.settings.runtimeConnection.apiKeyConfigured, true)
@@ -257,6 +263,7 @@ describe('llmwiki-agent-bridge', () => {
 
     assert.equal(settingsResponse.status, 200)
     assert.equal(settings.runtime.profile, 'generic')
+    assert.equal(settings.runtime.adapter, 'deepagents-acp')
     assert.equal(settings.runtimeConnection.baseUrl, 'http://runtime-live.example.test/v1')
     assert.equal(settings.sourcePolicy.configuredAllowedSourceOrigins, 1)
     assert.equal(settings.network.configuredAllowedOrigins, 1)
@@ -264,6 +271,7 @@ describe('llmwiki-agent-bridge', () => {
 
     const persisted = JSON.parse(await readFile(configPath, 'utf8'))
     assert.equal(persisted.config.runtimeProfile, 'generic')
+    assert.equal(persisted.config.runtimeAdapter, 'deepagents-acp')
     assert.equal(persisted.config.apiKey, 'runtime-api-secret')
     assert.equal(persisted.config.bridgeBearerToken, 'bridge-live-token')
     assert.equal(persisted.config.host, '0.0.0.0')
@@ -682,6 +690,7 @@ describe('llmwiki-agent-bridge', () => {
     assert.match(card.agentRuntime, /deepagents/)
     assert.match(card.provider.organization.toLowerCase(), /deepagents|deep agents/)
     assert.equal(card.metadata.runtimeProfile, 'deepagents')
+    assert.equal(card.metadata.runtimeAdapter, 'chat-completions')
   })
 
   it('serves a generic OpenAI-compatible runtime profile card identity', async (t) => {
@@ -704,6 +713,189 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(card.agentRuntime, 'openai-compatible')
     assert.equal(card.provider.organization, 'Generic OpenAI-Compatible')
     assert.equal(card.metadata.runtimeProfile, 'generic')
+    assert.equal(card.metadata.runtimeAdapter, 'chat-completions')
+  })
+
+  it('keeps legacy runtime profiles on chat completions unless runtimeAdapter is explicit', async (t) => {
+    const profiles = ['hermes', 'deepagents', 'generic']
+
+    for (const profile of profiles) {
+      await t.test(profile, async (t) => {
+        const unexpectedAdapterCalls = []
+        const runtime = await startFixtureServer(async ({ url, body, response }) => {
+          assert.equal(url.pathname, '/v1/chat/completions')
+          runtime.lastBody = body
+          writeJson(response, 200, {
+            choices: [{ message: { role: 'assistant', content: `Legacy ${profile} chat answer.` } }],
+          })
+        })
+        t.after(() => closeServer(runtime.server))
+
+        const bridge = await startAgentBridge({
+          runtimeProfile: profile,
+          runtimeAdapters: {
+            'deepagents-acp': async (request) => {
+              unexpectedAdapterCalls.push(request)
+              return 'Unexpected adapter answer.'
+            },
+          },
+          port: 0,
+          hermesBaseUrl: `${runtime.url}/v1`,
+          logger: silentLogger,
+        })
+        t.after(() => closeServer(bridge.server))
+
+        const response = await fetch(`${bridge.url}/message:send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            data: {
+              query: `Use the legacy ${profile} runtime profile path.`,
+              knowledgeSources: [],
+            },
+          }),
+        })
+        const a2a = await response.json()
+        const artifact = a2a.artifacts[0].parts[0].data
+        const runtimeStep = artifact.steps.find((step) => step.id === 'runtime-chat-completions')
+
+        assert.equal(response.status, 200)
+        assert.equal(bridge.config.runtimeProfile, profile)
+        assert.equal(bridge.config.runtimeAdapter, 'chat-completions')
+        assert.equal(runtime.requests.length, 1)
+        assert.equal(unexpectedAdapterCalls.length, 0)
+        assert.deepEqual(runtime.lastBody.messages.map((message) => message.role), ['system', 'user'])
+        assert.equal(artifact.answer, `Legacy ${profile} chat answer.`)
+        assert.equal(runtimeStep.status, 'done')
+      })
+    }
+  })
+
+  it('dispatches explicit deepagents-acp runtimeAdapter through an injected adapter without chat completions HTTP', async (t) => {
+    const chatCompletions = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 500, { error: 'chat completions should not be called' })
+    })
+    t.after(() => closeServer(chatCompletions.server))
+
+    const adapterCalls = []
+    const bridge = await startAgentBridge({
+      runtimeProfile: 'deepagents',
+      runtimeAdapter: 'deepagents-acp',
+      runtimeAdapters: {
+        'deepagents-acp': async (request) => {
+          adapterCalls.push(request)
+          return { answer: 'Injected DeepAgents ACP answer.' }
+        },
+      },
+      requestTimeoutMs: 43210,
+      port: 0,
+      hermesBaseUrl: `${chatCompletions.url}/v1`,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-request-id': 'test-deepagents-acp-adapter',
+      },
+      body: JSON.stringify({
+        data: {
+          query: 'Dispatch this through the direct DeepAgents runtime adapter.',
+          knowledgeSources: [],
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts[0].parts[0].data
+    const runtimeStep = artifact.steps.find((step) => step.id === 'runtime-deepagents-acp')
+    const adapterRequest = adapterCalls[0]
+
+    assert.equal(response.status, 200)
+    assert.equal(chatCompletions.requests.length, 0)
+    assert.equal(adapterCalls.length, 1)
+    assert.equal(adapterRequest.adapter, 'deepagents-acp')
+    assert.equal(adapterRequest.profile, 'deepagents')
+    assert.equal(adapterRequest.protocol, 'acp')
+    assert.equal(adapterRequest.query, 'Dispatch this through the direct DeepAgents runtime adapter.')
+    assert.equal(adapterRequest.requestId, 'test-deepagents-acp-adapter')
+    assert.equal(adapterRequest.timeoutMs, 43210)
+    assert.deepEqual(adapterRequest.messages.map((message) => message.role), ['system', 'user'])
+    assert.match(adapterRequest.prompt, /# system/)
+    assert.match(adapterRequest.prompt, /# user/)
+    assert.match(adapterRequest.prompt, /# LLMWiki evidence bundle/)
+    assert(Array.isArray(adapterRequest.sourceBundles))
+    assert.equal(artifact.answer, 'Injected DeepAgents ACP answer.')
+    assert.equal(runtimeStep.status, 'done')
+    assert.match(runtimeStep.detail, /DeepAgents ACP runtime adapter returned/)
+  })
+
+  it('returns a redacted contract-safe failure when an injected runtime adapter fails', async (t) => {
+    const logger = recordingLogger()
+    const chatCompletions = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 500, { error: 'chat completions should not be called' })
+    })
+    t.after(() => closeServer(chatCompletions.server))
+
+    const bridge = await startAgentBridge({
+      runtimeProfile: 'deepagents',
+      runtimeAdapter: 'deepagents-acp',
+      runtimeAdapters: {
+        'deepagents-acp': async () => {
+          throw new Error('adapter failed for https://adapter-secret.example.test/session using sk-secret-runtime')
+        },
+      },
+      port: 0,
+      hermesBaseUrl: `${chatCompletions.url}/v1`,
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-request-id': 'test-deepagents-acp-failure',
+      },
+      body: JSON.stringify({
+        data: {
+          query: 'Return the direct runtime adapter failure contract.',
+          knowledgeSources: [],
+        },
+      }),
+    })
+    const body = await response.json()
+    const runtimeStep = body.steps.find((step) => step.id === 'runtime-deepagents-acp')
+    const serialized = JSON.stringify(body)
+    const logs = logger.lines.join('\n')
+
+    assert.equal(response.status, 502)
+    assert.equal(chatCompletions.requests.length, 0)
+    assert.equal(body.error.code, 'runtime_adapter_failed')
+    assert.equal(body.error.message, 'Runtime adapter request failed.')
+    assert.equal(body.requestId, 'test-deepagents-acp-failure')
+    assert.equal(typeof body.traceId, 'string')
+    assert(body.traceId.length > 0)
+    assert.equal(runtimeStep.status, 'error')
+    assert.equal(runtimeStep.error, 'Runtime adapter request failed.')
+    assert.equal(runtimeStep.diagnostic.schemaVersion, 'llmwiki.agent-bridge.diagnostic.v1')
+    assert.equal(runtimeStep.diagnostic.scope, 'runtime')
+    assert.equal(runtimeStep.diagnostic.phase, 'deepagents-acp')
+    assert.equal(runtimeStep.diagnostic.protocol, 'acp')
+    assert.equal(runtimeStep.diagnostic.redacted, true)
+    assert.equal(observationValue(runtimeStep.diagnostic, 'runtimeProfile'), 'deepagents')
+    assert.equal(observationValue(runtimeStep.diagnostic, 'runtimeAdapter'), 'deepagents-acp')
+    assert.equal(observationValue(runtimeStep.diagnostic, 'timeoutMs'), '120000')
+    assert.match(observationValue(runtimeStep.diagnostic, 'redaction'), /prompt, headers, and upstream body omitted/)
+    assert.deepEqual(body.diagnostics, [runtimeStep.diagnostic])
+    assert.doesNotMatch(serialized, /sk-secret-runtime/)
+    assert.doesNotMatch(serialized, /adapter-secret/)
+    assert.doesNotMatch(logs, /sk-secret-runtime/)
+    assert.doesNotMatch(logs, /adapter-secret/)
+    assert.match(logs, /runtime adapter failed/)
+    assert.match(logs, /\[redacted-key\]/)
+    assert.match(logs, /\[url\]/)
   })
 
   it('publishes an OpenAPI contract for the bridge HTTP surface', () => {
@@ -776,6 +968,34 @@ describe('llmwiki-agent-bridge', () => {
     assert(
       Object.hasOwn(schema.components.schemas, 'SettingsResponse'),
       'SettingsResponse schema missing',
+    )
+    assert.deepEqual(
+      schema.components.schemas.HealthResponse.properties.runtimeAdapter.enum,
+      ['chat-completions', 'deepagents-acp'],
+    )
+    assert(
+      schema.components.schemas.HealthResponse.required.includes('runtimeAdapter'),
+      'HealthResponse must require runtimeAdapter',
+    )
+    assert.deepEqual(
+      schema.components.schemas.AgentCardResponse.properties.metadata.properties.runtimeAdapter.enum,
+      ['chat-completions', 'deepagents-acp'],
+    )
+    assert(
+      schema.components.schemas.AgentCardResponse.properties.metadata.required.includes('runtimeAdapter'),
+      'AgentCard metadata must require runtimeAdapter',
+    )
+    assert.deepEqual(
+      schema.components.schemas.SettingsResponse.properties.runtime.properties.adapter.enum,
+      ['chat-completions', 'deepagents-acp'],
+    )
+    assert(
+      schema.components.schemas.SettingsResponse.properties.runtime.required.includes('adapter'),
+      'Settings runtime metadata must require adapter',
+    )
+    assert.deepEqual(
+      schema.components.schemas.SettingsConfigRequest.properties.runtimeAdapter.enum,
+      ['chat-completions', 'deepagents-acp'],
     )
     assert(
       Object.hasOwn(schema.components.schemas, 'SettingsConfigResponse'),

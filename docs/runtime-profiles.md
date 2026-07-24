@@ -1,6 +1,13 @@
 # Runtime Profiles
 
-`llmwiki-agent-bridge` supports three initial runtime profiles: `hermes`, `deepagents`, and `generic`. Profiles are configuration presets over the same bridge contract. They select the OpenAI-compatible chat completions endpoint, model name, and runtime identity metadata returned by `/health`, `/settings.json`, and `/.well-known/agent-card.json`.
+`llmwiki-agent-bridge` supports three initial runtime profiles: `hermes`, `deepagents`, and `generic`. Profiles are identity presets over the same bridge contract. They select runtime identity metadata returned by `/health`, `/settings.json`, and `/.well-known/agent-card.json`.
+
+Runtime invocation is controlled separately by `runtimeAdapter`. The default
+adapter is `chat-completions`, which calls an OpenAI-compatible
+`/v1/chat/completions` runtime. The `deepagents-acp` adapter name is reserved
+for the opt-in DeepAgents direct-provider path; this repository currently ships
+the tested adapter boundary and redacted failure contract, with the live ACP
+subprocess implementation tracked as follow-up work.
 
 Profiles do not change the Knowledge Source evidence contract. All profiles can use selected `llmwiki-http`, `mcp`, and `a2a` Knowledge Sources and return the same `llmwiki_agent_result` artifact shape.
 
@@ -35,7 +42,8 @@ Hermes compatibility aliases such as `HERMES_BASE_URL`, `HERMES_MODEL`, and `HER
 
 ## DeepAgents
 
-Use this profile for DeepAgents local runtimes that expose an OpenAI-compatible chat completions endpoint.
+Use this profile when the bridge should identify itself as a DeepAgents-backed
+runtime.
 
 ```sh
 LLMWIKI_AGENT_BRIDGE_BASE_URL=http://127.0.0.1:8642/v1
@@ -43,7 +51,16 @@ LLMWIKI_AGENT_BRIDGE_MODEL=deepagents-local
 LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE=deepagents
 ```
 
-DeepAgents is first-class in this package. It is not treated as future-only work and does not require a separate bridge implementation when the runtime is OpenAI-compatible.
+For compatibility, `runtimeProfile=deepagents` still uses
+`runtimeAdapter=chat-completions` unless the adapter is explicitly changed.
+That mode is appropriate only when DeepAgents is behind an
+OpenAI-compatible endpoint or wrapper.
+
+The direct-provider direction is ACP-first. Current DeepAgents documentation
+describes `deepagents-acp` as a CLI and programmatic API for exposing Deep
+Agents over ACP stdio. `llmwiki-agent-bridge` now has the runtime adapter
+selection boundary needed for that path, but packaged live ACP subprocess
+execution is not yet claimed as production-ready.
 
 ## Generic
 
@@ -66,6 +83,20 @@ await startAgentBridge({
   baseUrl: 'http://127.0.0.1:8642/v1',
   model: 'deepagents-local',
   runtimeProfile: 'deepagents',
+})
+```
+
+Embedded callers can test or provide an explicit adapter implementation:
+
+```js
+await startAgentBridge({
+  runtimeProfile: 'deepagents',
+  runtimeAdapter: 'deepagents-acp',
+  runtimeAdapters: {
+    'deepagents-acp': async (request) => {
+      return { answer: await callYourAcpRuntime(request.prompt) }
+    },
+  },
 })
 ```
 
@@ -92,6 +123,7 @@ runtime is Hermes or DeepAgents.
 | `LLMWIKI_AGENT_BRIDGE_MODEL` | `hermes-agent` | Model name sent to the runtime. |
 | `LLMWIKI_AGENT_BRIDGE_API_KEY` | unset | Optional runtime API key. When set, the bridge sends it to the runtime as bearer auth. |
 | `LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE` | `hermes` | Runtime profile: `hermes`, `deepagents`, or `generic`. |
+| `LLMWIKI_AGENT_BRIDGE_RUNTIME_ADAPTER` | `chat-completions` | Runtime invocation adapter. Keep the default for packaged runs until the live `deepagents-acp` subprocess adapter is completed. |
 | `LLMWIKI_AGENT_BRIDGE_BEARER_TOKEN` | unset | Optional bearer token required by clients that call the bridge. Required for non-loopback binds unless the insecure development escape hatch is explicit. |
 | `LLMWIKI_AGENT_BRIDGE_TIMEOUT_MS` | `120000` | Outbound runtime/source request timeout in milliseconds. |
 | `LLMWIKI_AGENT_BRIDGE_AUDIT_LOG` | unset | Set to `1`, `true`, `yes`, or `on` to emit safe request audit JSON lines through the bridge logger. Events include route patterns and counts only; raw prompts, answers, URLs, credentials, model names, query strings, and local paths are omitted. |
