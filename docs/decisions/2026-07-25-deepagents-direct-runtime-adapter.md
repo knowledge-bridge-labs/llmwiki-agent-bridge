@@ -35,18 +35,20 @@ Separate runtime identity from runtime invocation:
 
 The default adapter remains `chat-completions`. `runtimeProfile=deepagents`
 without explicit adapter override keeps the existing OpenAI-compatible
-compatibility path. DeepAgents ACP is opt-in until lifecycle, security, and live
-provider tests pass. This slice adds the adapter boundary and injected-adapter
-tests; it does not claim packaged live ACP subprocess execution is
-production-ready.
+compatibility path. DeepAgents ACP is opt-in until broader live provider tests
+pass. The adapter boundary, injected-adapter tests, fake ACP subprocess
+lifecycle tests, timeout cleanup, permission fail-closed behavior, and redacted
+process diagnostics are implemented. The default adapter remains
+`chat-completions`.
 
 The adapter boundary is intentionally one-way: selecting a runtime profile only
 changes identity metadata and defaults, while selecting `runtimeAdapter` changes
 how the bridge invokes the runtime. A non-chat adapter may be provided by
-programmatic injection for tests before a live subprocess provider exists.
-Adapter failures use a redacted runtime failure contract and must not expose the
-adapter command, session, credentials, prompt, headers, upstream body, or local
-runtime endpoint details in HTTP responses.
+programmatic injection for tests, or the built-in DeepAgents ACP subprocess
+adapter may be selected explicitly. Adapter failures use a redacted runtime
+failure contract and must not expose the adapter command, session, credentials,
+prompt, headers, upstream body, or local runtime endpoint details in HTTP
+responses.
 
 ## Consequences
 
@@ -54,13 +56,12 @@ runtime endpoint details in HTTP responses.
 - DeepAgents direct-provider work has a clear place to land without overloading
   OpenAI-compatible endpoint semantics.
 - Settings, health, OpenAPI, and docs need to expose adapter metadata.
-- ACP process/session lifecycle must be tested before claiming production
-  default readiness.
+- Provider-backed ACP smoke tests and QuickStart wiring must pass before
+  recommending `deepagents-acp` as a production onboarding default.
 
 ## Follow-ups
 
-- Implement `deepagents-acp` with the official ACP TypeScript SDK if it exposes
-  stable stdio client primitives.
-- Add a live-safe DeepAgents ACP smoke script.
+- Add a live-safe provider-backed DeepAgents ACP smoke script.
+- Wire `llmwiki-bridge-start` QuickStart to the opt-in DeepAgents ACP adapter.
 - If an official DeepAgents A2A server surface is verified, add it as a sibling
   adapter rather than replacing the ACP path.

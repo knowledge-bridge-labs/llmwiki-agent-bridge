@@ -161,9 +161,11 @@ and change `LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE` plus the model name:
 
 DeepAgents direct-provider integration should be ACP-first. Official DeepAgents
 documentation describes `deepagents-acp` as an ACP stdio CLI/programmatic API.
-This package now exposes the tested `runtimeAdapter` boundary and redacted
-failure contract; live DeepAgents ACP subprocess execution is tracked as
-follow-up work before production-default claims.
+This package ships an opt-in live ACP subprocess adapter behind
+`runtimeAdapter=deepagents-acp`. The default remains chat completions; the ACP
+adapter starts one `deepagents-acp` stdio process per bridge runtime request,
+fails permission prompts closed with ACP `cancelled`, and applies the bridge
+request timeout to child cleanup.
 
 Leave the bridge running. The following commands are also bridge-checkout
 commands; if Terminal 2 is occupied by the bridge process, open another prompt
@@ -408,7 +410,7 @@ The generated OpenAPI contract is committed at
 surface and the `llmwiki_agent_result` artifact shape as a public-preview
 compatibility contract, not as certified A2A conformance.
 
-The package includes `@a2a-js/sdk@0.3.13` for A2A discovery compatibility
+The package includes `@a2a-js/sdk@0.3.14` for A2A discovery compatibility
 checks while keeping the existing `/message:send` route stable.
 
 ## Runtime Profiles
@@ -501,7 +503,10 @@ testing an explicit adapter integration:
 | `LLMWIKI_AGENT_BRIDGE_BASE_URL` | `http://127.0.0.1:8642/v1` | OpenAI-compatible chat completions base URL. |
 | `LLMWIKI_AGENT_BRIDGE_MODEL` | `hermes-agent` | Chat completions model name. |
 | `LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE` | `hermes` | Runtime profile preset: `hermes`, `deepagents`, or `generic`. |
-| `LLMWIKI_AGENT_BRIDGE_RUNTIME_ADAPTER` | `chat-completions` | Runtime invocation adapter. The `deepagents-acp` name is opt-in and currently requires an adapter implementation/live subprocess follow-up. |
+| `LLMWIKI_AGENT_BRIDGE_RUNTIME_ADAPTER` | `chat-completions` | Runtime invocation adapter. Set `deepagents-acp` to use the opt-in DeepAgents ACP subprocess adapter. |
+| `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_COMMAND` | `npx` / `npx.cmd` | Command spawned for `runtimeAdapter=deepagents-acp`; executed without a shell. |
+| `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_ARGS` | `--yes deepagents-acp` | Arguments for the ACP command. Use a JSON string array when arguments contain spaces. |
+| `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_CWD` | current working directory | Working directory for the ACP subprocess and per-request ACP session. |
 | `LLMWIKI_AGENT_BRIDGE_HOST` | `127.0.0.1` | Bridge bind host; non-loopback values require explicit opt-in. Host changes saved from `/settings` require restart. |
 | `LLMWIKI_AGENT_BRIDGE_PORT` | `8788` | Bridge HTTP port. Port changes saved from `/settings` require restart. |
 | `LLMWIKI_AGENT_BRIDGE_API_KEY` | unset | Optional runtime API key sent only to the configured runtime. |

@@ -898,6 +898,205 @@ describe('llmwiki-agent-bridge', () => {
     assert.match(logs, /\[url\]/)
   })
 
+  it('runs explicit deepagents-acp through a live ACP subprocess without chat completions HTTP', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, response }) => {
+      assert.equal(request.method, 'POST')
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        wiki_title: 'DeepAgents ACP Source',
+        evidence: [
+          {
+            page_id: 'deepagents-acp-page',
+            title: 'DeepAgents ACP Evidence',
+            path: 'deepagents-acp.md',
+            snippet: 'LLMWiki evidence for the live DeepAgents ACP subprocess adapter.',
+          },
+        ],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const chatCompletions = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 500, { error: 'chat completions should not be called' })
+    })
+    t.after(() => closeServer(chatCompletions.server))
+
+    const capturePath = await fakeAcpCapturePath(t)
+    const bridge = await startAgentBridge({
+      runtimeProfile: 'deepagents',
+      runtimeAdapter: 'deepagents-acp',
+      deepagentsAcpCommand: process.execPath,
+      deepagentsAcpArgs: fakeAcpArgs('happy', capturePath),
+      port: 0,
+      hermesBaseUrl: `${chatCompletions.url}/v1`,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Use the live DeepAgents ACP subprocess adapter.',
+          knowledgeSources: [
+            knowledgeSource('deepagents-acp-source', 'DeepAgents ACP Source', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts[0].parts[0].data
+    const runtimeStep = artifact.steps.find((step) => step.id === 'runtime-deepagents-acp')
+    const capture = await readJsonLines(capturePath)
+    const promptEvent = capture.find((event) => event.event === 'prompt')
+    const evidenceBundle = JSON.parse(extractHermesEvidenceBundleForPrompt(promptEvent.prompt))
+
+    assert.equal(response.status, 200)
+    assert.equal(chatCompletions.requests.length, 0)
+    assert.equal(artifact.answer, expectedFallbackAnswer('Fake DeepAgents ACP answer. sawEvidence=true', 1))
+    assert.equal(runtimeStep.status, 'done')
+    assert.deepEqual(capture.map((event) => event.event).slice(0, 3), ['initialize', 'session-new', 'prompt'])
+    assert.match(promptEvent.prompt, /# LLMWiki evidence bundle/)
+    assert.equal(evidenceBundle.schema, 'llmwiki-agent-bridge.answer-evidence.v1')
+    assert.equal(evidenceBundle.sources[0].name, 'DeepAgents ACP Source')
+    assert.equal(evidenceBundle.citations[0].title, 'DeepAgents ACP Evidence')
+  })
+
+  it('responds to ACP permission requests with cancelled by default', async (t) => {
+    const chatCompletions = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 500, { error: 'chat completions should not be called' })
+    })
+    t.after(() => closeServer(chatCompletions.server))
+
+    const capturePath = await fakeAcpCapturePath(t)
+    const bridge = await startAgentBridge({
+      runtimeProfile: 'deepagents',
+      runtimeAdapter: 'deepagents-acp',
+      deepagentsAcpCommand: process.execPath,
+      deepagentsAcpArgs: fakeAcpArgs('permission', capturePath),
+      port: 0,
+      hermesBaseUrl: `${chatCompletions.url}/v1`,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Ask the fake ACP process to request permission.',
+          knowledgeSources: [],
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts[0].parts[0].data
+    const capture = await readJsonLines(capturePath)
+    const permission = capture.find((event) => event.event === 'permission')
+
+    assert.equal(response.status, 200)
+    assert.equal(chatCompletions.requests.length, 0)
+    assert.equal(artifact.answer, 'Permission outcome: cancelled.')
+    assert.deepEqual(permission.outcome, { outcome: 'cancelled' })
+  })
+
+  it('uses requestTimeoutMs as a hard timeout and cleans up the ACP subprocess', async (t) => {
+    const logger = recordingLogger()
+    const capturePath = await fakeAcpCapturePath(t)
+    const bridge = await startAgentBridge({
+      runtimeProfile: 'deepagents',
+      runtimeAdapter: 'deepagents-acp',
+      deepagentsAcpCommand: process.execPath,
+      deepagentsAcpArgs: fakeAcpArgs('timeout', capturePath),
+      requestTimeoutMs: 1000,
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'This fake ACP request should time out.',
+          knowledgeSources: [],
+        },
+      }),
+    })
+    const body = await response.json()
+    const runtimeStep = body.steps.find((step) => step.id === 'runtime-deepagents-acp')
+    const capture = await readJsonLines(capturePath)
+    const timeoutStart = capture.find((event) => event.event === 'timeout-start')
+
+    assert.equal(response.status, 502)
+    assert.equal(body.error.code, 'runtime_adapter_failed')
+    assert.equal(runtimeStep.status, 'error')
+    assert.equal(observationValue(runtimeStep.diagnostic, 'timeout'), 'true')
+    assert.equal(observationValue(runtimeStep.diagnostic, 'timeoutMs'), '1000')
+    assert.equal(await waitForProcessExit(timeoutStart.pid), true)
+    assert.doesNotMatch(JSON.stringify(body), /This fake ACP request should time out/)
+    assert.doesNotMatch(logger.lines.join('\n'), /This fake ACP request should time out/)
+  })
+
+  it('returns redacted ACP process diagnostics for nonzero and malformed subprocess failures', async (t) => {
+    for (const mode of ['nonzero', 'malformed']) {
+      await t.test(mode, async (t) => {
+        const logger = recordingLogger()
+        const capturePath = await fakeAcpCapturePath(t)
+        const bridge = await startAgentBridge({
+          runtimeProfile: 'deepagents',
+          runtimeAdapter: 'deepagents-acp',
+          deepagentsAcpCommand: process.execPath,
+          deepagentsAcpArgs: fakeAcpArgs(mode, capturePath),
+          requestTimeoutMs: 1000,
+          port: 0,
+          hermesBaseUrl: 'http://127.0.0.1:1/v1',
+          logger,
+        })
+        t.after(() => closeServer(bridge.server))
+
+        const response = await fetch(`${bridge.url}/message:send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            data: {
+              query: `Trigger ${mode} ACP failure redaction.`,
+              knowledgeSources: [],
+            },
+          }),
+        })
+        const body = await response.json()
+        const runtimeStep = body.steps.find((step) => step.id === 'runtime-deepagents-acp')
+        const serialized = JSON.stringify(body)
+        const logs = logger.lines.join('\n')
+        const stderr = observationValue(runtimeStep.diagnostic, 'stderr')
+
+        assert.equal(response.status, 502)
+        assert.equal(body.error.code, 'runtime_adapter_failed')
+        assert.equal(runtimeStep.diagnostic.redacted, true)
+        assert.match(stderr, /\[redacted-key\]/)
+        assert.match(stderr, /\[redacted-url\]/)
+        assert.match(stderr, /\[redacted-path\]/)
+        assert.doesNotMatch(serialized, /sk-proj-[a-z-]*secret/i)
+        assert.doesNotMatch(serialized, /runtime-secret|malformed-secret|stdout-secret/)
+        assert.doesNotMatch(serialized, /Users\\agent/)
+        assert.doesNotMatch(logs, /sk-proj-[a-z-]*secret/i)
+        assert.doesNotMatch(logs, /runtime-secret|malformed-secret|stdout-secret/)
+
+        if (mode === 'nonzero') {
+          assert.equal(observationValue(runtimeStep.diagnostic, 'processExitCode'), '42')
+        } else {
+          assert.equal(observationValue(runtimeStep.diagnostic, 'invalidJson'), 'true')
+        }
+      })
+    }
+  })
+
   it('publishes an OpenAPI contract for the bridge HTTP surface', () => {
     const schema = agentBridgeOpenApi({ version: '0.1.0-test' })
 
@@ -8050,6 +8249,20 @@ async function tempConfigPath(t) {
   return join(dir, 'settings.json')
 }
 
+async function fakeAcpCapturePath(t) {
+  const dir = await mkdtemp(join(tmpdir(), 'llmwiki-agent-bridge-fake-acp-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  return join(dir, 'capture.jsonl')
+}
+
+function fakeAcpArgs(mode, capturePath) {
+  return [
+    join(packageRoot, 'test', 'fixtures', 'fake-deepagents-acp.mjs'),
+    mode,
+    capturePath,
+  ]
+}
+
 function npmPackCommand() {
   const args = ['pack', '--dry-run', '--json', '--ignore-scripts']
   return process.platform === 'win32'
@@ -8113,6 +8326,24 @@ function expectedFallbackAnswer(answer, citationCount) {
 
 async function delay(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForProcessExit(pid) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (!isProcessAlive(pid)) return true
+    await delay(25)
+  }
+  return !isProcessAlive(pid)
+}
+
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function testSafeId(value) {

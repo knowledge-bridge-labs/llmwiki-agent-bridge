@@ -17,12 +17,15 @@
 - Add an ACP client implementation using the official
   `@agentclientprotocol/sdk` package or a small isolated adapter if the SDK API
   does not expose the needed stdio client primitives.
-- Spawn `dcode --acp` only when `runtimeAdapter=deepagents-acp` is selected.
+- Spawn `npx --yes deepagents-acp` (`npx.cmd` on Windows) only when
+  `runtimeAdapter=deepagents-acp` is selected and no injected adapter is
+  provided.
 - Create one isolated ACP session per bridge runtime request at first; consider
   pooling only after correctness and cleanup tests pass.
 - Send the LLMWiki evidence prompt as a text prompt block.
 - Convert the ACP final assistant output into bridge answer text.
-- Enforce timeout, cancellation, stderr capture, child cleanup, and redaction.
+- Enforce fail-closed permission responses, timeout, cancellation, stderr
+  capture, child cleanup, and redaction.
 
 ## Slice 3: QuickStart integration
 

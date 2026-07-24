@@ -4,10 +4,10 @@
 
 Runtime invocation is controlled separately by `runtimeAdapter`. The default
 adapter is `chat-completions`, which calls an OpenAI-compatible
-`/v1/chat/completions` runtime. The `deepagents-acp` adapter name is reserved
-for the opt-in DeepAgents direct-provider path; this repository currently ships
-the tested adapter boundary and redacted failure contract, with the live ACP
-subprocess implementation tracked as follow-up work.
+`/v1/chat/completions` runtime. The `deepagents-acp` adapter is the opt-in
+DeepAgents direct-provider path. It launches a DeepAgents ACP stdio subprocess
+for each bridge runtime request and returns the final streamed ACP assistant
+text through the normal bridge artifact.
 
 Profiles do not change the Knowledge Source evidence contract. All profiles can use selected `llmwiki-http`, `mcp`, and `a2a` Knowledge Sources and return the same `llmwiki_agent_result` artifact shape.
 
@@ -58,9 +58,17 @@ OpenAI-compatible endpoint or wrapper.
 
 The direct-provider direction is ACP-first. Current DeepAgents documentation
 describes `deepagents-acp` as a CLI and programmatic API for exposing Deep
-Agents over ACP stdio. `llmwiki-agent-bridge` now has the runtime adapter
-selection boundary needed for that path, but packaged live ACP subprocess
-execution is not yet claimed as production-ready.
+Agents over ACP stdio. `llmwiki-agent-bridge` starts
+`npx --yes deepagents-acp` by default when `runtimeAdapter=deepagents-acp` is
+selected (`npx.cmd` on Windows), without using a shell. Each bridge request gets
+one ACP process and one ACP session. Permission requests are answered with ACP
+`cancelled`; the bridge does not grant file, terminal, or tool permissions on
+the caller's behalf. `requestTimeoutMs` is a hard timeout for the ACP turn and
+child cleanup. Process stderr in diagnostics is capped and redacted.
+
+The default remains `runtimeAdapter=chat-completions`; select
+`deepagents-acp` only when the local DeepAgents ACP command and its provider
+credentials are intentionally configured.
 
 ## Generic
 
@@ -86,7 +94,21 @@ await startAgentBridge({
 })
 ```
 
-Embedded callers can test or provide an explicit adapter implementation:
+Embedded callers can select the built-in ACP subprocess adapter and optionally
+override the command:
+
+```js
+await startAgentBridge({
+  runtimeProfile: 'deepagents',
+  runtimeAdapter: 'deepagents-acp',
+  deepagentsAcpCommand: process.execPath,
+  deepagentsAcpArgs: ['./path/to/fake-or-wrapper.mjs'],
+  deepagentsAcpCwd: process.cwd(),
+})
+```
+
+Embedded callers can still inject an explicit adapter implementation for tests
+or custom ACP routing:
 
 ```js
 await startAgentBridge({
@@ -123,7 +145,10 @@ runtime is Hermes or DeepAgents.
 | `LLMWIKI_AGENT_BRIDGE_MODEL` | `hermes-agent` | Model name sent to the runtime. |
 | `LLMWIKI_AGENT_BRIDGE_API_KEY` | unset | Optional runtime API key. When set, the bridge sends it to the runtime as bearer auth. |
 | `LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE` | `hermes` | Runtime profile: `hermes`, `deepagents`, or `generic`. |
-| `LLMWIKI_AGENT_BRIDGE_RUNTIME_ADAPTER` | `chat-completions` | Runtime invocation adapter. Keep the default for packaged runs until the live `deepagents-acp` subprocess adapter is completed. |
+| `LLMWIKI_AGENT_BRIDGE_RUNTIME_ADAPTER` | `chat-completions` | Runtime invocation adapter. Set `deepagents-acp` to use the opt-in DeepAgents ACP subprocess adapter. |
+| `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_COMMAND` | `npx` / `npx.cmd` | Command spawned for `deepagents-acp`; executed without a shell. |
+| `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_ARGS` | `--yes deepagents-acp` | Arguments for the ACP command. May be a JSON string array or whitespace-separated list. |
+| `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_CWD` | current working directory | Working directory for the ACP subprocess and ACP session. |
 | `LLMWIKI_AGENT_BRIDGE_BEARER_TOKEN` | unset | Optional bearer token required by clients that call the bridge. Required for non-loopback binds unless the insecure development escape hatch is explicit. |
 | `LLMWIKI_AGENT_BRIDGE_TIMEOUT_MS` | `120000` | Outbound runtime/source request timeout in milliseconds. |
 | `LLMWIKI_AGENT_BRIDGE_AUDIT_LOG` | unset | Set to `1`, `true`, `yes`, or `on` to emit safe request audit JSON lines through the bridge logger. Events include route patterns and counts only; raw prompts, answers, URLs, credentials, model names, query strings, and local paths are omitted. |
@@ -187,4 +212,4 @@ non-default JSONL file path.
 
 The bridge exposes MCP-style and A2A-style compatibility surfaces for local integration. `POST /mcp` supports `tools/list` and `tools/call` for the `llmwiki_agent_run` tool, which returns `structuredContent.llmwiki_agent_result` from the same internal run path as `/message:send`.
 
-The package includes `@a2a-js/sdk@0.3.13` and tests agent-card discovery with the official SDK resolver. Do not describe the compatibility surfaces as certified conformance unless a separate certification process has been completed and documented.
+The package includes `@a2a-js/sdk@0.3.14` and tests agent-card discovery with the official SDK resolver. Do not describe the compatibility surfaces as certified conformance unless a separate certification process has been completed and documented.

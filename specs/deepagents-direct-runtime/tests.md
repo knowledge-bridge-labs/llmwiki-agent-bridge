@@ -16,6 +16,16 @@
   diagnostics as the current chat-completions path, with a non-chat
   `runtime_adapter_failed` code and no adapter command, session, credentials,
   prompt, headers, or upstream body in the HTTP response.
+- The built-in `deepagents-acp` adapter uses the official stable v1
+  `@agentclientprotocol/sdk` client path against an ACP stdio subprocess when
+  no injected adapter is supplied.
+- A local fake ACP process proves initialize/session/prompt ordering, confirms
+  the prompt contains the LLMWiki evidence bundle, and verifies chat
+  completions HTTP is not called.
+- ACP `session/request_permission` requests receive outcome `cancelled`.
+- `requestTimeoutMs` is a hard timeout that cleans up the child process.
+- Nonzero exits and malformed stdout return redacted diagnostics with capped
+  stderr and no raw secrets, URLs, local paths, prompts, commands, or sessions.
 - `/health`, `/.well-known/agent-card.json`, and `/settings.json` expose
   `runtimeAdapter` without leaking sensitive runtime details.
 - `agentBridgeOpenApi()` and `docs/openapi.json` stay in sync.
@@ -25,11 +35,13 @@
 - `keeps legacy runtime profiles on chat completions unless runtimeAdapter is explicit`
 - `dispatches explicit deepagents-acp runtimeAdapter through an injected adapter without chat completions HTTP`
 - `returns a redacted contract-safe failure when an injected runtime adapter fails`
+- `runs explicit deepagents-acp through a live ACP subprocess without chat completions HTTP`
+- `responds to ACP permission requests with cancelled by default`
+- `uses requestTimeoutMs as a hard timeout and cleans up the ACP subprocess`
+- `returns redacted ACP process diagnostics for nonzero and malformed subprocess failures`
 
-## Required before live DeepAgents ACP approval
+## Required before provider-backed DeepAgents ACP approval
 
-- A local fake ACP server/process fixture proves initialize/session/prompt
-  ordering, timeout, stderr capture, and cleanup.
 - DGX/Linux live-safe test runs DeepAgents ACP in an isolated HOME/XDG
   directory with no provider secrets and verifies the process can initialize
   and create a session.

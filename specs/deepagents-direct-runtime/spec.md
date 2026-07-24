@@ -6,7 +6,7 @@
 over one OpenAI-compatible `/v1/chat/completions` call path. That is useful for
 Hermes-compatible gateways, but it is too narrow for DeepAgents. DeepAgents Code
 is primarily an agent harness and can expose its prebuilt coding agent over ACP
-stdio with `dcode --acp`.
+stdio with `deepagents-acp`.
 
 The product direction is that coding-agent clients should connect to one
 `llmwiki-agent-bridge` endpoint. The bridge should gather LLMWiki evidence and
@@ -52,8 +52,8 @@ manually configure DeepAgents as another client of the same sources.
    imply ACP or any other direct runtime invocation mechanism by itself.
 3. `runtimeAdapter=deepagents-acp` is opt-in and may be selected with
    `LLMWIKI_AGENT_BRIDGE_RUNTIME_ADAPTER=deepagents-acp` or programmatic
-   `runtimeAdapter`; packaged live subprocess execution remains follow-up until
-   the ACP lifecycle tests land.
+   `runtimeAdapter`. Without an injected adapter, the bridge launches the live
+   DeepAgents ACP subprocess adapter.
 4. The bridge runtime call accepts the same normalized evidence bundle and
    returns answer text for the same `llmwiki_agent_result` artifact.
 5. Runtime errors remain redacted and contract-safe. Chat-completions failures
@@ -61,10 +61,13 @@ manually configure DeepAgents as another client of the same sources.
    return the runtime failure status class with `runtime_adapter_failed`,
    diagnostic schema v1, `scope=runtime`, adapter-specific `phase` and
    `protocol`, and no adapter command, session, credentials, prompt, headers, or
-   upstream body in the HTTP response.
+   upstream body in the HTTP response. ACP stderr included in diagnostics must
+   be capped and redacted.
 6. Settings, health, and agent-card metadata expose the selected adapter without
    leaking runtime URLs, API keys, local absolute paths, or prompt bodies.
-7. Tests cover adapter dispatch before live DeepAgents ACP execution.
+7. Tests cover adapter dispatch, live fake ACP subprocess execution,
+   fail-closed permission handling, hard timeout cleanup, and redacted
+   nonzero/malformed process failures.
 
 ## Compatibility
 
@@ -76,8 +79,10 @@ fields. Existing `baseUrl`, `model`, `apiKey`, `hermesBaseUrl`,
 
 - Unit/integration tests pass for existing chat-completions behavior.
 - A test-injected `deepagents-acp` adapter is called when explicitly selected.
+- Without an injected adapter, `deepagents-acp` starts one ACP stdio subprocess
+  and one ACP session per bridge request.
 - `deepagents` profile without adapter override still uses chat completions.
 - `hermes`, `deepagents`, and `generic` profiles without adapter override all
   use chat completions and do not call injected direct adapters.
 - Docs state that DeepAgents direct-provider support is ACP-first, opt-in, and
-  not yet a production-default live subprocess path.
+  not the production default.

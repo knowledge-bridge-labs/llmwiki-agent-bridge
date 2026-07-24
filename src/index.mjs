@@ -1,10 +1,18 @@
+import { spawn } from 'node:child_process'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { Readable, Writable } from 'node:stream'
 
 import { AGENT_CARD_PATH } from '@a2a-js/sdk'
+import {
+  PROTOCOL_VERSION as ACP_PROTOCOL_VERSION,
+  client as createAcpClient,
+  methods as acpMethods,
+  ndJsonStream,
+} from '@agentclientprotocol/sdk'
 
 const DEFAULT_HOST = '127.0.0.1'
 const DEFAULT_PORT = 8788
@@ -16,6 +24,8 @@ const DEFAULT_SOURCE_POLICY = 'private-http'
 const DEFAULT_ORCHESTRATION_MODE = 'delegated-runtime'
 const DEFAULT_RUNTIME_PROFILE = 'hermes'
 const DEFAULT_RUNTIME_ADAPTER = 'chat-completions'
+const DEFAULT_DEEPAGENTS_ACP_COMMAND = process.platform === 'win32' ? 'npx.cmd' : 'npx'
+const DEFAULT_DEEPAGENTS_ACP_ARGS = ['--yes', 'deepagents-acp']
 const DEFAULT_RUNTIME_ID = 'llmwiki-agent-bridge-hermes'
 const DEFAULT_RUNTIME_NAME = 'LLMWiki Agent Bridge for Hermes'
 const DEFAULT_RUNTIME_KIND = 'hermes'
@@ -52,6 +62,9 @@ const CONFIG_PATH_ENV = 'LLMWIKI_AGENT_BRIDGE_CONFIG_PATH'
 const AUDIT_LOG_ENV = 'LLMWIKI_AGENT_BRIDGE_AUDIT_LOG'
 const IO_LOG_ENV = 'LLMWIKI_AGENT_BRIDGE_IO_LOG'
 const IO_LOG_PATH_ENV = 'LLMWIKI_AGENT_BRIDGE_IO_LOG_PATH'
+const DEEPAGENTS_ACP_COMMAND_ENV = 'LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_COMMAND'
+const DEEPAGENTS_ACP_ARGS_ENV = 'LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_ARGS'
+const DEEPAGENTS_ACP_CWD_ENV = 'LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_CWD'
 const DEPRECATED_CONFIG_PATH_ENV = 'HERMES_A2A_BRIDGE_CONFIG_PATH'
 const PUBLIC_BIND_OPT_IN_ENV = 'LLMWIKI_AGENT_BRIDGE_ALLOW_PUBLIC_BIND'
 const INSECURE_PUBLIC_BIND_OPT_IN_ENV = 'LLMWIKI_AGENT_BRIDGE_ALLOW_INSECURE_PUBLIC_BIND'
@@ -69,6 +82,9 @@ const DEFAULT_IO_LOG_FILE_PATH = join('.runtime-logs', 'llmwiki-agent-bridge-io.
 const MAX_IO_LOG_DEPTH = 8
 const MAX_IO_LOG_ARRAY_ITEMS = 50
 const MAX_IO_LOG_STRING_CHARS = 20_000
+const MAX_ACP_STDERR_BYTES = 4096
+const ACP_CHILD_GRACEFUL_SHUTDOWN_MS = 750
+const ACP_CHILD_FORCE_SHUTDOWN_MS = 750
 const MAX_CONVERSATION_MESSAGES = 12
 const MAX_CONVERSATION_MESSAGE_CONTENT_CHARS = 6000
 const MAX_CONVERSATION_DESCRIPTOR_DEPTH = 3
@@ -3139,6 +3155,11 @@ async function callConfiguredRuntime(input) {
     return normalizeRuntimeAdapterAnswer(output)
   }
 
+  if (input.config.runtimeAdapter === 'deepagents-acp') {
+    const output = await callDeepAgentsAcpRuntime(runtimeAdapterRequest(input), input.config)
+    return normalizeRuntimeAdapterAnswer(output)
+  }
+
   throw new Error(`Runtime adapter ${input.config.runtimeAdapter} is not available. Configure an adapter implementation before selecting it.`)
 }
 
@@ -3179,6 +3200,314 @@ function normalizeRuntimeAdapterAnswer(output) {
     || readString(record, 'content')
     || readString(record, 'text')
   return answer || 'The runtime adapter returned no answer text.'
+}
+
+async function callDeepAgentsAcpRuntime(request, config) {
+  const stderr = byteCapture(MAX_ACP_STDERR_BYTES)
+  const stdoutMonitor = ndjsonMonitor()
+  const abortController = new AbortController()
+  let operationSettled = false
+  let timeoutFired = false
+  let child
+
+  try {
+    child = spawn(config.deepagentsAcpCommand, config.deepagentsAcpArgs, {
+      cwd: config.deepagentsAcpCwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: false,
+      windowsHide: true,
+    })
+  } catch (error) {
+    throw deepAgentsAcpRuntimeError('DeepAgents ACP process could not start.', {
+      cause: error,
+      stderr,
+      stdoutMonitor,
+    })
+  }
+
+  child.stderr?.on('data', (chunk) => stderr.append(chunk))
+
+  const exitPromise = new Promise((_, reject) => {
+    child.once('exit', (exitCode, signal) => {
+      if (!operationSettled) {
+        reject(deepAgentsAcpRuntimeError('DeepAgents ACP process exited before completing.', {
+          exitCode,
+          signal,
+          stderr,
+          stdoutMonitor,
+        }))
+      }
+    })
+  })
+
+  const spawnErrorPromise = new Promise((_, reject) => {
+    child.once('error', (error) => {
+      if (!operationSettled) {
+        reject(deepAgentsAcpRuntimeError('DeepAgents ACP process could not start.', {
+          cause: error,
+          stderr,
+          stdoutMonitor,
+        }))
+      }
+    })
+  })
+
+  let operation
+  try {
+    operation = runDeepAgentsAcpClient({
+      request,
+      config,
+      stream: deepAgentsAcpChildStream(child, stdoutMonitor),
+      cancellationSignal: abortController.signal,
+    })
+
+    return await withDeepAgentsAcpTimeout(Promise.race([
+      operation,
+      exitPromise,
+      spawnErrorPromise,
+    ]), request.timeoutMs, () => {
+      timeoutFired = true
+      abortController.abort(new Error('DeepAgents ACP request timed out.'))
+      terminateChild(child)
+    })
+  } catch (error) {
+    if (timeoutFired) {
+      throw deepAgentsAcpRuntimeError('DeepAgents ACP request timed out.', {
+        cause: error,
+        timeout: true,
+        stderr,
+        stdoutMonitor,
+      })
+    }
+    if (isDeepAgentsAcpRuntimeError(error)) throw error
+    await waitForChildExit(child, 100)
+    throw deepAgentsAcpRuntimeError(
+      stdoutMonitor.invalidJson
+        ? 'DeepAgents ACP process produced invalid JSON.'
+        : 'DeepAgents ACP process failed.',
+      {
+        cause: error,
+        timeout: isTimeoutError(error),
+        exitCode: child?.exitCode,
+        signal: child?.signalCode,
+        stderr,
+        stdoutMonitor,
+      },
+    )
+  } finally {
+    operationSettled = true
+    operation?.catch(() => {})
+    exitPromise.catch(() => {})
+    spawnErrorPromise.catch(() => {})
+    await cleanupDeepAgentsAcpChild(child)
+  }
+}
+
+async function runDeepAgentsAcpClient({ request, config, stream, cancellationSignal }) {
+  const client = createAcpClient({ name: 'llmwiki-agent-bridge' })
+    .onRequest(acpMethods.client.session.requestPermission, () => ({
+      outcome: { outcome: 'cancelled' },
+    }))
+
+  const requestOptions = { cancellationSignal }
+
+  return client.connectWith(stream, async (ctx) => {
+    const initialized = await ctx.request(acpMethods.agent.initialize, {
+      protocolVersion: ACP_PROTOCOL_VERSION,
+      clientCapabilities: {
+        fs: {
+          readTextFile: false,
+          writeTextFile: false,
+        },
+        terminal: false,
+      },
+      clientInfo: {
+        name: 'llmwiki-agent-bridge',
+      },
+    }, requestOptions)
+
+    if (initialized.protocolVersion !== ACP_PROTOCOL_VERSION) {
+      throw new Error('DeepAgents ACP process negotiated an unsupported protocol version.')
+    }
+
+    const session = await ctx.buildSession({
+      cwd: config.deepagentsAcpCwd,
+      mcpServers: [],
+    }).start(requestOptions)
+
+    try {
+      const promptResponse = session.prompt([{ type: 'text', text: request.prompt }], requestOptions)
+      const answer = await session.readText()
+      const response = await promptResponse
+      return {
+        answer,
+        stopReason: response.stopReason,
+      }
+    } finally {
+      session.dispose()
+    }
+  })
+}
+
+function deepAgentsAcpChildStream(child, stdoutMonitor) {
+  if (!child.stdin || !child.stdout) {
+    throw deepAgentsAcpRuntimeError('DeepAgents ACP process did not expose stdio.', { stdoutMonitor })
+  }
+  const input = Readable.toWeb(child.stdout)
+  return ndJsonStream(Writable.toWeb(child.stdin), safeAcpNdjsonInputStream(input, stdoutMonitor))
+}
+
+function safeAcpNdjsonInputStream(input, monitor) {
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  let buffered = ''
+  const enqueueLine = (line, controller) => {
+    const message = monitor.parseLine(line)
+    if (message) controller.enqueue(encoder.encode(`${JSON.stringify(message)}\n`))
+  }
+
+  return input.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      buffered += decoder.decode(chunk, { stream: true })
+      const lines = buffered.split(/\r?\n/)
+      buffered = lines.pop() || ''
+      for (const line of lines) enqueueLine(line, controller)
+    },
+    flush(controller) {
+      buffered += decoder.decode()
+      enqueueLine(buffered, controller)
+      buffered = ''
+    },
+  }))
+}
+
+function withDeepAgentsAcpTimeout(promise, timeoutMs, onTimeout) {
+  const ms = Number.isFinite(timeoutMs) && timeoutMs >= 0 ? timeoutMs : DEFAULT_REQUEST_TIMEOUT_MS
+  let timeoutId
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      try {
+        onTimeout()
+      } finally {
+        reject(new Error('DeepAgents ACP request timed out.'))
+      }
+    }, ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    clearTimeout(timeoutId)
+  })
+}
+
+async function cleanupDeepAgentsAcpChild(child) {
+  if (!child) return
+  if (child.exitCode !== null || child.signalCode !== null) return
+
+  try {
+    child.stdin?.end()
+  } catch {
+    // Best-effort cleanup only.
+  }
+
+  terminateChild(child)
+  await waitForChildExit(child, ACP_CHILD_GRACEFUL_SHUTDOWN_MS)
+
+  if (child.exitCode !== null || child.signalCode !== null) return
+  terminateChild(child, 'SIGKILL')
+  await waitForChildExit(child, ACP_CHILD_FORCE_SHUTDOWN_MS)
+}
+
+function terminateChild(child, signal = 'SIGTERM') {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return
+  try {
+    child.kill(signal)
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
+async function waitForChildExit(child, timeoutMs) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return
+  await Promise.race([
+    new Promise((resolve) => child.once('exit', resolve)),
+    sleep(timeoutMs),
+  ])
+}
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function deepAgentsAcpRuntimeError(message, details = {}) {
+  const error = new Error(message)
+  if (details.cause) error.cause = details.cause
+  error.deepAgentsAcp = removeUndefinedProperties({
+    timeout: details.timeout ? true : undefined,
+    exitCode: Number.isInteger(details.exitCode) ? details.exitCode : undefined,
+    signal: typeof details.signal === 'string' && details.signal ? details.signal : undefined,
+    invalidJson: details.stdoutMonitor?.invalidJson ? true : undefined,
+    stderr: details.stderr ? details.stderr.redactedText() : undefined,
+    stderrTruncated: details.stderr?.truncated ? true : undefined,
+  })
+  return error
+}
+
+function isDeepAgentsAcpRuntimeError(error) {
+  return Boolean(asRecord(error)?.deepAgentsAcp)
+}
+
+function deepAgentsAcpErrorDetails(error) {
+  return asRecord(asRecord(error)?.deepAgentsAcp) || {}
+}
+
+function byteCapture(maxBytes) {
+  const chunks = []
+  let size = 0
+  let truncated = false
+  return {
+    append(chunk) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      const remaining = maxBytes - size
+      if (remaining > 0) {
+        const accepted = buffer.subarray(0, remaining)
+        chunks.push(accepted)
+        size += accepted.byteLength
+      }
+      if (buffer.byteLength > remaining) truncated = true
+    },
+    redactedText() {
+      const text = Buffer.concat(chunks).toString('utf8').trim()
+      return text ? redactRuntimeProcessText(text) : undefined
+    },
+    get truncated() {
+      return truncated
+    },
+  }
+}
+
+function ndjsonMonitor() {
+  let invalidJson = false
+  return {
+    parseLine(line) {
+      const trimmed = line.trim()
+      if (!trimmed) return null
+      try {
+        const message = JSON.parse(trimmed)
+        if (asRecord(message) || Array.isArray(message)) return message
+      } catch {
+        invalidJson = true
+        return null
+      }
+      invalidJson = true
+      return null
+    },
+    get invalidJson() {
+      return invalidJson
+    },
+  }
+}
+
+function redactRuntimeProcessText(value) {
+  return redactIoString(value)
 }
 
 function runtimePromptFromMessages(messages) {
@@ -3252,6 +3581,7 @@ function runtimeFailureDiagnostic(error, config) {
 }
 
 function runtimeAdapterDiagnostic(error, config) {
+  const acp = deepAgentsAcpErrorDetails(error)
   return diagnostic({
     severity: 'error',
     scope: 'runtime',
@@ -3263,11 +3593,15 @@ function runtimeAdapterDiagnostic(error, config) {
     observations: [
       ['httpStatus', httpStatusFromError(error)],
       ['timeout', isTimeoutError(error) ? 'true' : undefined],
-      ['invalidJson', isInvalidJsonError(error) ? 'true' : undefined],
+      ['invalidJson', acp.invalidJson ? 'true' : isInvalidJsonError(error) ? 'true' : undefined],
+      ['processExitCode', acp.exitCode],
+      ['processSignal', acp.signal],
+      ['stderr', acp.stderr],
+      ['stderrTruncated', acp.stderrTruncated ? 'true' : undefined],
       ['runtimeProfile', config.runtimeProfile],
       ['runtimeAdapter', config.runtimeAdapter],
       ['timeoutMs', config.requestTimeoutMs],
-      ['redaction', 'runtime adapter command, session, credentials, prompt, headers, and upstream body omitted'],
+      ['redaction', 'runtime adapter command, session, credentials, prompt, headers, and upstream body omitted; stderr is capped and redacted'],
     ],
     remediation: runtimeAdapterRemediation(config),
     message: 'Runtime adapter request failed.',
@@ -6831,6 +7165,15 @@ function bridgeConfig(env, options = {}) {
     ?? runtimeAdapterOption(env.HERMES_A2A_BRIDGE_RUNTIME_ADAPTER)
     ?? runtimeAdapterOption(persistentConfig.runtimeAdapter)
     ?? DEFAULT_RUNTIME_ADAPTER
+  const deepagentsAcpCommand = stringOption(options.deepagentsAcpCommand)
+    || stringOption(env[DEEPAGENTS_ACP_COMMAND_ENV])
+    || DEFAULT_DEEPAGENTS_ACP_COMMAND
+  const deepagentsAcpArgs = commandArgsOption(options.deepagentsAcpArgs, 'deepagentsAcpArgs')
+    ?? commandArgsOption(env[DEEPAGENTS_ACP_ARGS_ENV], DEEPAGENTS_ACP_ARGS_ENV)
+    ?? DEFAULT_DEEPAGENTS_ACP_ARGS
+  const deepagentsAcpCwd = absolutePathOption(options.deepagentsAcpCwd)
+    || absolutePathOption(env[DEEPAGENTS_ACP_CWD_ENV])
+    || process.cwd()
   const runtimeProfileDefaults = runtimeProfiles[runtimeProfile]
   const runtimeId = stringOption(options.runtimeId)
     || stringOption(env.LLMWIKI_AGENT_BRIDGE_RUNTIME_ID)
@@ -6895,6 +7238,9 @@ function bridgeConfig(env, options = {}) {
     ioLogPath,
     runtimeProfile,
     runtimeAdapter,
+    deepagentsAcpCommand,
+    deepagentsAcpArgs,
+    deepagentsAcpCwd,
     runtimeId,
     runtimeName,
     runtime,
@@ -6959,6 +7305,64 @@ function stringOption(value) {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
   return trimmed ? trimmed : undefined
+}
+
+function absolutePathOption(value) {
+  const text = stringOption(value)
+  return text ? resolve(text) : undefined
+}
+
+function commandArgsOption(value, field) {
+  if (Array.isArray(value)) return value.map(String).filter((item) => item.length > 0)
+  if (typeof value !== 'string') return undefined
+  const text = value.trim()
+  if (!text) return []
+  if (text.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(text)
+      if (Array.isArray(parsed)) return parsed.map(String).filter((item) => item.length > 0)
+    } catch {
+      // Fall through to the explicit validation error below.
+    }
+    throw new Error(`${field} must be a JSON string array or a whitespace-separated argument list.`)
+  }
+  return splitCommandArgs(text, field)
+}
+
+function splitCommandArgs(value, field) {
+  const args = []
+  let current = ''
+  let quote = ''
+
+  for (const char of value) {
+    if (quote) {
+      if (char === quote) {
+        quote = ''
+      } else {
+        current += char
+      }
+      continue
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char
+      continue
+    }
+
+    if (/\s/.test(char)) {
+      if (current) {
+        args.push(current)
+        current = ''
+      }
+      continue
+    }
+
+    current += char
+  }
+
+  if (quote) throw new Error(`${field} has an unterminated quoted argument.`)
+  if (current) args.push(current)
+  return args
 }
 
 function booleanOption(value) {

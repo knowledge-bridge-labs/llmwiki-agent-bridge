@@ -8,20 +8,20 @@
 - [x] Update generated OpenAPI.
 - [x] Add ADR for runtime profile vs runtime adapter boundary.
 - [x] Evaluate official ACP TypeScript SDK integration.
-- [ ] Implement live DeepAgents ACP subprocess adapter.
+- [x] Implement live DeepAgents ACP subprocess adapter.
 - [ ] Add live-safe DeepAgents ACP smoke script.
 - [ ] Wire llmwiki-bridge-start quickstart to the new adapter.
 
 ## Current slice
 
-Adapter boundary only. Live DeepAgents subprocess execution is deliberately
-tracked as a follow-up until the injected-adapter contract is green.
+Live DeepAgents ACP subprocess execution is implemented for opt-in
+`runtimeAdapter=deepagents-acp` runs. It remains non-default; live provider
+smoke coverage and quickstart wiring remain follow-up tasks.
 
 ## Validation status
 
-- A focused `node --test test/agent-bridge.test.mjs --test-name-pattern ...`
-  run covering adapter-boundary and runtime metadata tests passed.
-- `npm run lint` passed.
-- Full `npm test` passed with 112 tests.
-- `npm run contracts:generate` refreshed `docs/openapi.json`.
-- `npm run contracts:check` passed after generation.
+- A focused `node --test --test-name-pattern "deepagents-acp|ACP"
+  test/agent-bridge.test.mjs` run covering injected dispatch, live fake ACP
+  subprocess execution, permission cancellation, hard timeout cleanup, and
+  redacted nonzero/malformed failures passed.
+- Full `npm test` and `npm run check` should be rerun before merge.
