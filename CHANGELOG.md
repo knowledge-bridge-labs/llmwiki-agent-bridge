@@ -8,6 +8,24 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 No unreleased changes.
 
+## [0.2.1] - 2026-07-27
+
+### Added
+
+- CLI `--help` and `--version` handling so package users can inspect the bridge
+  command without starting the HTTP server.
+- Onboarding quality spec coverage for CLI usage, package contents, and stale
+  install guidance.
+
+### Changed
+
+- Updated README and release guidance to use `llmwiki-agent-bridge@latest`
+  instead of stale `0.1.0` install commands.
+- Narrowed npm package contents to runtime files, public docs, examples,
+  integrations, and release metadata while excluding repository planning
+  artifacts.
+- Generalized private live-provider validation wording in specs and decisions.
+
 ## [0.2.0] - 2026-07-26
 
 ### Added

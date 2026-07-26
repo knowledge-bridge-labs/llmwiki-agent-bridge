@@ -31,6 +31,37 @@ const silentLogger = {
 }
 
 describe('llmwiki-agent-bridge', () => {
+  it('prints CLI help without starting the bridge server', async () => {
+    const { stdout, stderr } = await execFileAsync(process.execPath, [
+      'bin/llmwiki-agent-bridge.mjs',
+      '--help',
+    ], {
+      cwd: packageRoot,
+      maxBuffer: 1024 * 1024,
+    })
+
+    assert.equal(stderr, '')
+    assert.match(stdout, /Usage:/)
+    assert.match(stdout, /llmwiki-agent-bridge \[--help\] \[--version\]/)
+    assert.match(stdout, /--version/)
+    assert.doesNotMatch(stdout, /"event":"ready"/)
+  })
+
+  it('prints the CLI package version without starting the bridge server', async () => {
+    const packageJson = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'))
+    const { stdout, stderr } = await execFileAsync(process.execPath, [
+      'bin/llmwiki-agent-bridge.mjs',
+      '--version',
+    ], {
+      cwd: packageRoot,
+      maxBuffer: 1024 * 1024,
+    })
+
+    assert.equal(stderr, '')
+    assert.equal(stdout, `${packageJson.version}\n`)
+    assert.doesNotMatch(stdout, /"event":"ready"/)
+  })
+
   it('serves a Hermes-compatible A2A agent card and health response by default', async (t) => {
     const bridge = await startAgentBridge({
       port: 0,
@@ -8119,8 +8150,16 @@ describe('llmwiki-agent-bridge', () => {
     assert(files.has('package.json'))
     assert(files.has('src/index.mjs'))
     assert(files.has('bin/llmwiki-agent-bridge.mjs'))
+    assert(files.has('docs/client-paths.md'))
+    assert(files.has('docs/message-send-contract.md'))
     assert(files.has('docs/openapi.json'))
+    assert(files.has('docs/release.md'))
+    assert(files.has('docs/runtime-profiles.md'))
     assert(files.has('scripts/export-openapi.mjs'))
+    assert(!files.has('docs/decisions/2026-07-25-deepagents-direct-runtime-adapter.md'))
+    assert(!files.has('docs/runtime-prompt-evaluation.md'))
+    assert(!files.has('specs/deepagents-direct-runtime/tests.md'))
+    assert(!files.has('specs/runtime-prompt-projection-quality/tasks.md'))
     assert(!files.has('scripts/benchmark-runtime-prompt.mjs'))
     assert(!files.has('scripts/validate-runtime-prompt-live-safe.mjs'))
     assert(!files.has('scripts/e2e-runtime-prompt-production-approval.mjs'))

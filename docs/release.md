@@ -5,9 +5,9 @@ tagging a public preview.
 
 ## Status
 
-`0.1.0` is the published first public-preview npm package. Current installation
-guidance may point at `llmwiki-agent-bridge@0.1.0` plus source checkout as the
-supported development path.
+Installation guidance should point at `llmwiki-agent-bridge@latest` for normal
+package runs plus source checkout as the supported development path for release
+checks.
 
 For the next release, verify the current registry state, choose a new package
 version, and update package metadata, changelog entries, docs, and release
@@ -54,14 +54,17 @@ used and whether it was a local mock, a local runtime, or an external runtime.
 
 ## Package Contents
 
-Confirm the npm dry-run includes only public runtime files and release metadata:
+Confirm the npm dry-run includes only public runtime files, public docs, and
+release metadata:
 
 - `bin/llmwiki-agent-bridge.mjs`
 - `src/index.mjs`
 - `scripts/export-openapi.mjs`
-- `docs/`
 - `docs/openapi.json`
 - `docs/message-send-contract.md`
+- `docs/runtime-profiles.md`
+- `docs/client-paths.md`
+- `docs/release.md`
 - `examples/`
 - `integrations/`
 - `README.md`
@@ -76,6 +79,8 @@ Confirm the npm dry-run includes only public runtime files and release metadata:
 Do not ship credentials, token caches, local environment files, private endpoint
 URLs, private wiki content, generated traces, or GitHub workflow internals in
 the npm package.
+Do not ship `specs/`, `docs/decisions/`, `.llmwiki-work/`, `.runtime-logs/`, or
+private live-run notes in the npm package.
 
 ## Publication Gate
 
@@ -95,9 +100,10 @@ Before publishing a new npm version:
    ```
 
 3. Confirm repository URLs point at the final GitHub organization.
-4. Confirm the cross-repo status matrix records `0.1.0` as published and the
-   intended next bridge release state. After upload and install-smoke
-   verification finish, update the matrix to the new npm-published version.
+4. Confirm the cross-repo status matrix records the latest published bridge
+   version and the intended next bridge release state. After upload and
+   install-smoke verification finish, update the matrix to the new
+   npm-published version.
 5. Confirm the `CHANGELOG.md` entry for the target version matches the
    publication date and release contents.
 6. Confirm npm Trusted Publishing is configured for this package and workflow.

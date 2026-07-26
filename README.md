@@ -27,7 +27,7 @@ its own answer synthesis.
 [Quick Start](#quick-start) | [Choose a Path](#choose-a-path) | [Demo](https://knowledge-bridge-labs.github.io/llmwiki-docs/demo) | [Runtime Profiles](./docs/runtime-profiles.md) | [Message Contract](./docs/message-send-contract.md) | [OpenAPI](./docs/openapi.json) | [Integrations](./integrations/README.md) | [Examples](./examples/README.md) | [Docs portal](https://knowledge-bridge-labs.github.io/llmwiki-docs/) | [Contributing](./CONTRIBUTING.md) | [Security](./SECURITY.md) | [Support](./SUPPORT.md) | [Changelog](./CHANGELOG.md)
 
 > Public-preview note: npm install is available for
-> `llmwiki-agent-bridge@0.1.0`; source checkout remains supported for local
+> `llmwiki-agent-bridge@latest`; source checkout remains supported for local
 > development and release checks.
 
 For a visual first-run walkthrough, see the
@@ -100,7 +100,7 @@ curl -s http://127.0.0.1:8765/manifest
 Start the published public-preview package:
 
 ```sh
-npx llmwiki-agent-bridge@0.1.0
+npx llmwiki-agent-bridge@latest
 ```
 
 For source-checkout development instead, open Terminal 2 in the same parent
@@ -135,7 +135,7 @@ macOS/Linux:
 LLMWIKI_AGENT_BRIDGE_BASE_URL=http://127.0.0.1:8642/v1 \
 LLMWIKI_AGENT_BRIDGE_MODEL=local-model \
 LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE=generic \
-npx llmwiki-agent-bridge@0.1.0
+npx llmwiki-agent-bridge@latest
 ```
 
 Windows PowerShell:
@@ -144,7 +144,7 @@ Windows PowerShell:
 $env:LLMWIKI_AGENT_BRIDGE_BASE_URL = 'http://127.0.0.1:8642/v1'
 $env:LLMWIKI_AGENT_BRIDGE_MODEL = 'local-model'
 $env:LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE = 'generic'
-npx llmwiki-agent-bridge@0.1.0
+npx llmwiki-agent-bridge@latest
 ```
 
 From a source checkout, use `node ./bin/llmwiki-agent-bridge.mjs` or
@@ -446,17 +446,17 @@ More detail: [docs/runtime-profiles.md](./docs/runtime-profiles.md).
 | `examples/message-send.local.json` | Minimal local request for smoke testing. |
 | `integrations/` | Direct-client templates and routing guidance for Codex, Claude Code, and Copilot. |
 
-The current public-preview package is published as
-`llmwiki-agent-bridge@0.1.0`. Run it without installing globally:
+The public-preview package is available through
+`llmwiki-agent-bridge@latest`. Run it without installing globally:
 
 ```sh
-npx llmwiki-agent-bridge@0.1.0
+npx llmwiki-agent-bridge@latest
 ```
 
 Or install the package and run the CLI:
 
 ```sh
-npm install --global llmwiki-agent-bridge@0.1.0
+npm install --global llmwiki-agent-bridge@latest
 llmwiki-agent-bridge
 ```
 
@@ -576,10 +576,11 @@ during migration.
 
 ## Release Status
 
-`llmwiki-agent-bridge` is in public preview. The npm package
-`llmwiki-agent-bridge@0.1.0` is published, and package-based `npx` or
-`npm install --global` runs are supported for local use. Source checkout remains
-supported for development, repository validation, and release checks.
+`llmwiki-agent-bridge` is in public preview. The npm package is published, and
+package-based `npx llmwiki-agent-bridge@latest` or
+`npm install --global llmwiki-agent-bridge@latest` runs are supported for local
+use. Source checkout remains supported for development, repository validation,
+and release checks.
 
 Repository, issue, CI badge, package, and hosted docs URLs intentionally target
 the Knowledge Bridge Labs organization. The hosted Release Status &

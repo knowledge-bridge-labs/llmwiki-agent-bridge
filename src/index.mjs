@@ -32,6 +32,8 @@ const DEFAULT_RUNTIME_NAME = 'LLMWiki Agent Bridge for Hermes'
 const DEFAULT_RUNTIME_KIND = 'hermes'
 const DEFAULT_AGENT_RUNTIME = 'hermes'
 const DEFAULT_PROVIDER_ORGANIZATION = 'LLMWiki'
+const PACKAGE_NAME = 'llmwiki-agent-bridge'
+const PACKAGE_VERSION = readPackageVersion()
 const MAX_BODY_BYTES = 2 * 1024 * 1024
 const MAX_EVIDENCE_ITEMS_PER_SOURCE = 8
 const MAX_SEARCH_AUGMENT_QUERIES = 2
@@ -272,7 +274,7 @@ export async function startAgentBridge(options = {}) {
 export const createHermesA2aBridge = createAgentBridge
 export const startHermesA2aBridge = startAgentBridge
 
-export function agentBridgeOpenApi({ version = '0.1.0' } = {}) {
+export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
   return {
     openapi: '3.1.0',
     info: {
@@ -8195,15 +8197,28 @@ class HttpError extends Error {
   }
 }
 
-export function runAgentBridgeCli() {
+export function runAgentBridgeCli(argv = process.argv.slice(2), options = {}) {
+  const env = options.env || process.env
+  const stdout = options.stdout || process.stdout
+  const stderr = options.stderr || process.stderr
+
+  if (hasCliFlag(argv, '--help', '-h')) {
+    stdout.write(agentBridgeCliHelp())
+    return
+  }
+  if (hasCliFlag(argv, '--version', '-v')) {
+    stdout.write(`${PACKAGE_VERSION}\n`)
+    return
+  }
+
   let runningServer
-  const configPath = stringOption(process.env[CONFIG_PATH_ENV])
-    ?? stringOption(process.env[DEPRECATED_CONFIG_PATH_ENV])
-    ?? defaultBridgeConfigPath(process.env)
-  startAgentBridge({ configPath })
+  const configPath = stringOption(env[CONFIG_PATH_ENV])
+    ?? stringOption(env[DEPRECATED_CONFIG_PATH_ENV])
+    ?? defaultBridgeConfigPath(env)
+  startAgentBridge({ configPath, env })
     .then(({ server, url, config }) => {
       runningServer = server
-      process.stdout.write(JSON.stringify({
+      stdout.write(JSON.stringify({
         event: 'ready',
         url,
         baseUrl: redactedUrlSummary(config.baseUrl),
@@ -8219,7 +8234,7 @@ export function runAgentBridgeCli() {
       }) + '\n')
     })
     .catch((error) => {
-      console.error(redactedLogLine('failed to start llmwiki agent bridge', error))
+      stderr.write(`${redactedLogLine('failed to start llmwiki agent bridge', error)}\n`)
       process.exit(1)
     })
 
@@ -8231,4 +8246,45 @@ export function runAgentBridgeCli() {
   }
   process.on('SIGTERM', shutdown)
   process.on('SIGINT', shutdown)
+}
+
+function readPackageVersion() {
+  try {
+    const metadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+    return typeof metadata.version === 'string' && metadata.version.trim()
+      ? metadata.version.trim()
+      : '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
+}
+
+function hasCliFlag(argv, longFlag, shortFlag) {
+  return argv.some((arg) => arg === longFlag || arg === shortFlag)
+}
+
+function agentBridgeCliHelp() {
+  return [
+    `${PACKAGE_NAME} ${PACKAGE_VERSION}`,
+    '',
+    'Usage:',
+    `  ${PACKAGE_NAME} [--help] [--version]`,
+    '',
+    'Starts the local LLMWiki Agent Bridge HTTP service.',
+    '',
+    'Options:',
+    '  -h, --help       Print this help and exit.',
+    '  -v, --version    Print the package version and exit.',
+    '',
+    'Common environment variables:',
+    '  LLMWIKI_AGENT_BRIDGE_HOST             Bridge bind host.',
+    '  LLMWIKI_AGENT_BRIDGE_PORT             Bridge HTTP port.',
+    '  LLMWIKI_AGENT_BRIDGE_BASE_URL         OpenAI-compatible runtime base URL.',
+    '  LLMWIKI_AGENT_BRIDGE_MODEL            Runtime model name.',
+    '  LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE  hermes, deepagents, or generic.',
+    '  LLMWIKI_AGENT_BRIDGE_RUNTIME_ADAPTER  chat-completions or deepagents-acp.',
+    '  LLMWIKI_AGENT_BRIDGE_CONFIG_PATH      Persistent settings file.',
+    '',
+    'Run without options to start the service.',
+  ].join('\n') + '\n'
 }
