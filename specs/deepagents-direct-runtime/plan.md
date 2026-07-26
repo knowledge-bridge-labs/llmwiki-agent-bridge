@@ -17,9 +17,10 @@
 - Add an ACP client implementation using the official
   `@agentclientprotocol/sdk` package or a small isolated adapter if the SDK API
   does not expose the needed stdio client primitives.
-- Spawn `npx --yes deepagents-acp` (`npx.cmd` on Windows) only when
-  `runtimeAdapter=deepagents-acp` is selected and no injected adapter is
-  provided.
+- Spawn `npx --yes deepagents-acp` only when `runtimeAdapter=deepagents-acp`
+  is selected and no injected adapter is provided. On Windows, prefer
+  `node <npm>/bin/npx-cli.js` when available so the adapter still runs without
+  a shell; fall back to `npx.cmd` when npm's bundled CLI is not discoverable.
 - Create one isolated ACP session per bridge runtime request at first; consider
   pooling only after correctness and cleanup tests pass.
 - Send the LLMWiki evidence prompt as a text prompt block.
@@ -35,6 +36,9 @@
   `LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE=deepagents` and
   `LLMWIKI_AGENT_BRIDGE_RUNTIME_ADAPTER=deepagents-acp`.
 - Print one bridge MCP/A2A handoff URL for coding-agent clients.
+- Scrub inherited runtime adapter and provider env in `llmwiki-bridge-start`;
+  only an explicit QuickStart/runtime setup choice may select
+  `runtimeAdapter=deepagents-acp`.
 
 ## Risks
 
@@ -44,3 +48,5 @@
   or shell permissions beyond explicit DeepAgents configuration.
 - Non-interactive/headless behavior differs from editor ACP behavior. Live tests
   must cover DGX/Linux and local dev separately.
+- Windows `.cmd` launchers are not portable through `spawn(..., shell:false)`;
+  defaults must remain no-shell-safe or require an explicit operator override.

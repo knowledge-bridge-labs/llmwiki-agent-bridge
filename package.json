@@ -1,6 +1,6 @@
 {
   "name": "llmwiki-agent-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "type": "module",
   "description": "Generic companion runtime bridge with Hermes, DeepAgents, and OpenAI-compatible profiles for Markdown/wiki knowledge sources.",

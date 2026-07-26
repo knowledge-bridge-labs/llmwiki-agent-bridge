@@ -60,11 +60,13 @@ The direct-provider direction is ACP-first. Current DeepAgents documentation
 describes `deepagents-acp` as a CLI and programmatic API for exposing Deep
 Agents over ACP stdio. `llmwiki-agent-bridge` starts
 `npx --yes deepagents-acp` by default when `runtimeAdapter=deepagents-acp` is
-selected (`npx.cmd` on Windows), without using a shell. Each bridge request gets
-one ACP process and one ACP session. Permission requests are answered with ACP
-`cancelled`; the bridge does not grant file, terminal, or tool permissions on
-the caller's behalf. `requestTimeoutMs` is a hard timeout for the ACP turn and
-child cleanup. Process stderr in diagnostics is capped and redacted.
+selected; on Windows it uses `node` plus npm's bundled `npx-cli.js` when
+available and falls back to `npx.cmd`, without using a shell. Each bridge
+request gets one ACP process and one ACP session. Permission requests are
+answered with ACP `cancelled`; the bridge does not grant file, terminal, or
+tool permissions on the caller's behalf. `requestTimeoutMs` is a hard timeout
+for the ACP turn and child cleanup. Process stderr in diagnostics is capped and
+redacted.
 
 The default remains `runtimeAdapter=chat-completions`; select
 `deepagents-acp` only when the local DeepAgents ACP command and its provider
@@ -146,7 +148,7 @@ runtime is Hermes or DeepAgents.
 | `LLMWIKI_AGENT_BRIDGE_API_KEY` | unset | Optional runtime API key. When set, the bridge sends it to the runtime as bearer auth. |
 | `LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE` | `hermes` | Runtime profile: `hermes`, `deepagents`, or `generic`. |
 | `LLMWIKI_AGENT_BRIDGE_RUNTIME_ADAPTER` | `chat-completions` | Runtime invocation adapter. Set `deepagents-acp` to use the opt-in DeepAgents ACP subprocess adapter. |
-| `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_COMMAND` | `npx` / `npx.cmd` | Command spawned for `deepagents-acp`; executed without a shell. |
+| `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_COMMAND` | `npx`; Windows uses `node` plus npm's `npx-cli.js` when available, then falls back to `npx.cmd` | Command spawned for `deepagents-acp`; executed without a shell. |
 | `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_ARGS` | `--yes deepagents-acp` | Arguments for the ACP command. May be a JSON string array or whitespace-separated list. |
 | `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_CWD` | current working directory | Working directory for the ACP subprocess and ACP session. |
 | `LLMWIKI_AGENT_BRIDGE_BEARER_TOKEN` | unset | Optional bearer token required by clients that call the bridge. Required for non-loopback binds unless the insecure development escape hatch is explicit. |

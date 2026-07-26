@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer, request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
@@ -769,6 +769,60 @@ describe('llmwiki-agent-bridge', () => {
         assert.equal(runtimeStep.status, 'done')
       })
     }
+  })
+
+  it('builds a no-shell-safe Windows default DeepAgents ACP spawn command', async (t) => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+    const execPathDescriptor = Object.getOwnPropertyDescriptor(process, 'execPath')
+    const dir = await mkdtemp(join(tmpdir(), 'llmwiki-agent-bridge-windows-npx-'))
+    t.after(() => rm(dir, { recursive: true, force: true }))
+    t.after(() => {
+      if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor)
+      if (execPathDescriptor) Object.defineProperty(process, 'execPath', execPathDescriptor)
+    })
+
+    Object.defineProperty(process, 'platform', {
+      value: 'win32',
+      enumerable: platformDescriptor?.enumerable ?? true,
+      configurable: true,
+    })
+    Object.defineProperty(process, 'execPath', {
+      value: join(dir, 'missing-node', 'node.exe'),
+      writable: true,
+      enumerable: execPathDescriptor?.enumerable ?? true,
+      configurable: true,
+    })
+
+    const fallbackBridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(fallbackBridge.server))
+
+    assert.equal(fallbackBridge.config.deepagentsAcpCommand, 'npx.cmd')
+    assert.deepEqual(fallbackBridge.config.deepagentsAcpArgs, ['--yes', 'deepagents-acp'])
+
+    const fakeNodePath = join(dir, 'node-install', 'node.exe')
+    const npxCliPath = join(dirname(fakeNodePath), 'node_modules', 'npm', 'bin', 'npx-cli.js')
+    await mkdir(dirname(npxCliPath), { recursive: true })
+    await writeFile(npxCliPath, '')
+    Object.defineProperty(process, 'execPath', {
+      value: fakeNodePath,
+      writable: true,
+      enumerable: execPathDescriptor?.enumerable ?? true,
+      configurable: true,
+    })
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    assert.equal(bridge.config.deepagentsAcpCommand, fakeNodePath)
+    assert.deepEqual(bridge.config.deepagentsAcpArgs, [npxCliPath, '--yes', 'deepagents-acp'])
   })
 
   it('dispatches explicit deepagents-acp runtimeAdapter through an injected adapter without chat completions HTTP', async (t) => {

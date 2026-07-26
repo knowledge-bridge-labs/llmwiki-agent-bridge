@@ -26,6 +26,9 @@
 - `requestTimeoutMs` is a hard timeout that cleans up the child process.
 - Nonzero exits and malformed stdout return redacted diagnostics with capped
   stderr and no raw secrets, URLs, local paths, prompts, commands, or sessions.
+- Windows default ACP launch configuration uses `node` plus npm's bundled
+  `npx-cli.js` when discoverable so the bridge can keep `shell:false`; an
+  explicit command override does not receive automatic argument prefixing.
 - `/health`, `/.well-known/agent-card.json`, and `/settings.json` expose
   `runtimeAdapter` without leaking sensitive runtime details.
 - `agentBridgeOpenApi()` and `docs/openapi.json` stay in sync.
@@ -34,6 +37,7 @@
 
 - `keeps legacy runtime profiles on chat completions unless runtimeAdapter is explicit`
 - `dispatches explicit deepagents-acp runtimeAdapter through an injected adapter without chat completions HTTP`
+- `builds a no-shell-safe Windows default DeepAgents ACP spawn command`
 - `returns a redacted contract-safe failure when an injected runtime adapter fails`
 - `runs explicit deepagents-acp through a live ACP subprocess without chat completions HTTP`
 - `responds to ACP permission requests with cancelled by default`
@@ -47,3 +51,14 @@
   and create a session.
 - A separate provider-backed live test verifies one grounded answer only after
   the operator has explicitly configured model credentials.
+
+## Manual live validation
+
+- Direct provider smoke passed against a private OpenAI-compatible vLLM
+  endpoint using a lab-hosted Qwen-family model.
+- `chat-completions` adapter smoke returned a cited answer using fixture
+  LLMWiki evidence.
+- `deepagents-acp` adapter smoke returned a cited answer using fixture LLMWiki
+  evidence with `OPENAI_BASE_URL` set to a private provider endpoint and
+  `OPENAI_API_KEY` set to a non-secret placeholder required by the local
+  OpenAI-compatible server.

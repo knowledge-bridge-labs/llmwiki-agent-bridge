@@ -54,6 +54,9 @@ manually configure DeepAgents as another client of the same sources.
    `LLMWIKI_AGENT_BRIDGE_RUNTIME_ADAPTER=deepagents-acp` or programmatic
    `runtimeAdapter`. Without an injected adapter, the bridge launches the live
    DeepAgents ACP subprocess adapter.
+   On Windows, the default ACP launcher must remain compatible with
+   `spawn(..., shell:false)` by preferring npm's bundled `npx-cli.js` through
+   `process.execPath` when available.
 4. The bridge runtime call accepts the same normalized evidence bundle and
    returns answer text for the same `llmwiki_agent_result` artifact.
 5. Runtime errors remain redacted and contract-safe. Chat-completions failures
@@ -86,3 +89,5 @@ fields. Existing `baseUrl`, `model`, `apiKey`, `hermesBaseUrl`,
   use chat completions and do not call injected direct adapters.
 - Docs state that DeepAgents direct-provider support is ACP-first, opt-in, and
   not the production default.
+- QuickStart only selects the ACP adapter from an explicit runtime setup choice
+  and must scrub inherited runtime adapter/provider environment variables.

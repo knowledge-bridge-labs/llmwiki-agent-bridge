@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "LLMWiki Agent Bridge",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Local runtime bridge for selected LLMWiki Knowledge Sources and OpenAI-compatible chat completions runtimes."
   },
   "servers": [

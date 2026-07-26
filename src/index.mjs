@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -24,8 +24,9 @@ const DEFAULT_SOURCE_POLICY = 'private-http'
 const DEFAULT_ORCHESTRATION_MODE = 'delegated-runtime'
 const DEFAULT_RUNTIME_PROFILE = 'hermes'
 const DEFAULT_RUNTIME_ADAPTER = 'chat-completions'
-const DEFAULT_DEEPAGENTS_ACP_COMMAND = process.platform === 'win32' ? 'npx.cmd' : 'npx'
 const DEFAULT_DEEPAGENTS_ACP_ARGS = ['--yes', 'deepagents-acp']
+const FALLBACK_WINDOWS_DEEPAGENTS_ACP_COMMAND = 'npx.cmd'
+const DEFAULT_DEEPAGENTS_ACP_COMMAND = 'npx'
 const DEFAULT_RUNTIME_ID = 'llmwiki-agent-bridge-hermes'
 const DEFAULT_RUNTIME_NAME = 'LLMWiki Agent Bridge for Hermes'
 const DEFAULT_RUNTIME_KIND = 'hermes'
@@ -7165,12 +7166,16 @@ function bridgeConfig(env, options = {}) {
     ?? runtimeAdapterOption(env.HERMES_A2A_BRIDGE_RUNTIME_ADAPTER)
     ?? runtimeAdapterOption(persistentConfig.runtimeAdapter)
     ?? DEFAULT_RUNTIME_ADAPTER
-  const deepagentsAcpCommand = stringOption(options.deepagentsAcpCommand)
+  const deepagentsAcpDefaults = defaultDeepAgentsAcpLauncher()
+  const deepagentsAcpCommandOverride = stringOption(options.deepagentsAcpCommand)
     || stringOption(env[DEEPAGENTS_ACP_COMMAND_ENV])
-    || DEFAULT_DEEPAGENTS_ACP_COMMAND
-  const deepagentsAcpArgs = commandArgsOption(options.deepagentsAcpArgs, 'deepagentsAcpArgs')
+  const deepagentsAcpCommand = deepagentsAcpCommandOverride || deepagentsAcpDefaults.command
+  const configuredDeepagentsAcpArgs = commandArgsOption(options.deepagentsAcpArgs, 'deepagentsAcpArgs')
     ?? commandArgsOption(env[DEEPAGENTS_ACP_ARGS_ENV], DEEPAGENTS_ACP_ARGS_ENV)
     ?? DEFAULT_DEEPAGENTS_ACP_ARGS
+  const deepagentsAcpArgs = deepagentsAcpCommandOverride
+    ? configuredDeepagentsAcpArgs
+    : [...deepagentsAcpDefaults.argsPrefix, ...configuredDeepagentsAcpArgs]
   const deepagentsAcpCwd = absolutePathOption(options.deepagentsAcpCwd)
     || absolutePathOption(env[DEEPAGENTS_ACP_CWD_ENV])
     || process.cwd()
@@ -7251,6 +7256,33 @@ function bridgeConfig(env, options = {}) {
     runtimeAdapters: asRecord(options.runtimeAdapters) || {},
     logger,
   }
+}
+
+function defaultDeepAgentsAcpLauncher() {
+  if (process.platform !== 'win32') {
+    return {
+      command: DEFAULT_DEEPAGENTS_ACP_COMMAND,
+      argsPrefix: [],
+    }
+  }
+
+  const npxCliPath = bundledWindowsNpxCliPath()
+  if (!npxCliPath) {
+    return {
+      command: FALLBACK_WINDOWS_DEEPAGENTS_ACP_COMMAND,
+      argsPrefix: [],
+    }
+  }
+
+  return {
+    command: process.execPath,
+    argsPrefix: [npxCliPath],
+  }
+}
+
+function bundledWindowsNpxCliPath() {
+  const npxCliPath = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npx-cli.js')
+  return existsSync(npxCliPath) ? npxCliPath : ''
 }
 
 function defaultBridgeConfigPath(env = process.env) {

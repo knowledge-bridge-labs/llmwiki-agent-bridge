@@ -504,7 +504,7 @@ testing an explicit adapter integration:
 | `LLMWIKI_AGENT_BRIDGE_MODEL` | `hermes-agent` | Chat completions model name. |
 | `LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE` | `hermes` | Runtime profile preset: `hermes`, `deepagents`, or `generic`. |
 | `LLMWIKI_AGENT_BRIDGE_RUNTIME_ADAPTER` | `chat-completions` | Runtime invocation adapter. Set `deepagents-acp` to use the opt-in DeepAgents ACP subprocess adapter. |
-| `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_COMMAND` | `npx` / `npx.cmd` | Command spawned for `runtimeAdapter=deepagents-acp`; executed without a shell. |
+| `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_COMMAND` | `npx`; Windows uses `node` plus npm's `npx-cli.js` when available, then falls back to `npx.cmd` | Command spawned for `runtimeAdapter=deepagents-acp`; executed without a shell. |
 | `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_ARGS` | `--yes deepagents-acp` | Arguments for the ACP command. Use a JSON string array when arguments contain spaces. |
 | `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_CWD` | current working directory | Working directory for the ACP subprocess and per-request ACP session. |
 | `LLMWIKI_AGENT_BRIDGE_HOST` | `127.0.0.1` | Bridge bind host; non-loopback values require explicit opt-in. Host changes saved from `/settings` require restart. |

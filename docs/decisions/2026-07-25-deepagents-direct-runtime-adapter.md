@@ -56,12 +56,15 @@ responses.
 - DeepAgents direct-provider work has a clear place to land without overloading
   OpenAI-compatible endpoint semantics.
 - Settings, health, OpenAPI, and docs need to expose adapter metadata.
-- Provider-backed ACP smoke tests and QuickStart wiring must pass before
-  recommending `deepagents-acp` as a production onboarding default.
+- Initial provider-backed ACP smoke tests and QuickStart wiring have passed
+  against a private OpenAI-compatible vLLM endpoint. A reusable live-safe smoke
+  script is still needed before recommending `deepagents-acp` as a production
+  onboarding default.
 
 ## Follow-ups
 
 - Add a live-safe provider-backed DeepAgents ACP smoke script.
-- Wire `llmwiki-bridge-start` QuickStart to the opt-in DeepAgents ACP adapter.
+- Keep Windows ACP launcher defaults no-shell-safe; npm distributions without
+  bundled `npx-cli.js` still require explicit operator validation.
 - If an official DeepAgents A2A server surface is verified, add it as a sibling
   adapter rather than replacing the ACP path.
