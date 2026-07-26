@@ -47,6 +47,7 @@
 - DeepAgents can execute tools. The bridge must not silently grant filesystem
   or shell permissions beyond explicit DeepAgents configuration.
 - Non-interactive/headless behavior differs from editor ACP behavior. Live tests
-  must cover DGX/Linux and local dev separately.
+  must cover provider-backed Linux and local dev paths separately without
+  exposing private infrastructure details.
 - Windows `.cmd` launchers are not portable through `spawn(..., shell:false)`;
   defaults must remain no-shell-safe or require an explicit operator override.

@@ -12,7 +12,7 @@
 - [x] Add Windows no-shell-safe default ACP launcher coverage.
 - [x] Wire `llmwiki-bridge-start` QuickStart to the opt-in adapter.
 - [x] Verify provider-backed ACP smoke against a private OpenAI-compatible
-      vLLM endpoint.
+      endpoint.
 - [ ] Add live-safe DeepAgents ACP smoke script.
 
 ## Current slice
@@ -20,7 +20,7 @@
 Live DeepAgents ACP subprocess execution is implemented for opt-in
 `runtimeAdapter=deepagents-acp` runs. It remains non-default; live provider
 smoke coverage has been manually verified against a private OpenAI-compatible
-vLLM endpoint, and a reusable live-safe script remains follow-up work.
+endpoint, and a reusable live-safe script remains follow-up work.
 
 ## Validation status
 

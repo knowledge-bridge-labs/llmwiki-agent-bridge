@@ -46,16 +46,16 @@
 
 ## Required before provider-backed DeepAgents ACP approval
 
-- DGX/Linux live-safe test runs DeepAgents ACP in an isolated HOME/XDG
-  directory with no provider secrets and verifies the process can initialize
-  and create a session.
+- Provider-backed Linux live-safe test runs DeepAgents ACP in an isolated
+  HOME/XDG directory with no provider secrets and verifies the process can
+  initialize and create a session.
 - A separate provider-backed live test verifies one grounded answer only after
   the operator has explicitly configured model credentials.
 
 ## Manual live validation
 
-- Direct provider smoke passed against a private OpenAI-compatible vLLM
-  endpoint using a lab-hosted Qwen-family model.
+- Direct provider smoke passed against a private OpenAI-compatible endpoint
+  using a lab-hosted model.
 - `chat-completions` adapter smoke returned a cited answer using fixture
   LLMWiki evidence.
 - `deepagents-acp` adapter smoke returned a cited answer using fixture LLMWiki

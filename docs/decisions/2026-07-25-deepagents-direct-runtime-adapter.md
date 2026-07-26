@@ -57,7 +57,7 @@ responses.
   OpenAI-compatible endpoint semantics.
 - Settings, health, OpenAPI, and docs need to expose adapter metadata.
 - Initial provider-backed ACP smoke tests and QuickStart wiring have passed
-  against a private OpenAI-compatible vLLM endpoint. A reusable live-safe smoke
+  against a private OpenAI-compatible endpoint. A reusable live-safe smoke
   script is still needed before recommending `deepagents-acp` as a production
   onboarding default.
 
