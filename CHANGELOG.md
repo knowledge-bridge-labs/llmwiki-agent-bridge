@@ -8,6 +8,22 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 No unreleased changes.
 
+## [0.2.0] - 2026-07-26
+
+### Added
+
+- Opt-in `deepagents-acp` runtime adapter with ACP subprocess execution,
+  diagnostics, and Windows no-shell-safe launcher coverage.
+- Runtime profile documentation and ADR coverage for separating runtime profile
+  labels from runtime adapter transport.
+- QuickStart integration support for selecting the DeepAgents ACP adapter from
+  `llmwiki-bridge-start`.
+
+### Changed
+
+- Redacted private live provider smoke details from release-packaged specs and
+  decision records while preserving the validation outcome.
+
 ## [0.1.0] - 2026-07-21 public package preview
 
 ### Added

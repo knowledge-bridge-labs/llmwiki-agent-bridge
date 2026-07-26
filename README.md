@@ -8,15 +8,16 @@
 layer for the LLMWiki toolchain. It runs as a local HTTP service, gathers
 evidence from one or more `llmwiki-serve` Knowledge Sources, and returns one
 normalized answer artifact with citations, optional graph context, and trace
-steps. It can run evidence-only for a first smoke test, or call an
-OpenAI-compatible chat completions runtime for synthesized answers.
+steps. It can run evidence-only for a first smoke test, or call a configured
+runtime adapter for synthesized answers. The default adapter targets
+OpenAI-compatible chat completions.
 
 Use it when:
 
 - A client wants one endpoint instead of managing source fan-out, prompting,
   runtime calls, citations, and trace shaping itself.
-- You are connecting Hermes, DeepAgents, or a generic OpenAI-compatible local
-  runtime to LLMWiki evidence.
+- You are connecting Hermes, DeepAgents, or a generic local runtime to LLMWiki
+  evidence.
 - `llmwiki-chat` or another UI needs Agent Bridge A2A or MCP endpoints backed
   by local Knowledge Sources.
 
@@ -37,7 +38,8 @@ Sources, and the optional bridge can query selected served sources together.
 
 It is not a Hermes-only bridge. Hermes is one supported runtime profile beside
 `generic` and `deepagents`; all profiles use the same message contract and
-return the same `llmwiki_agent_result` artifact shape.
+return the same `llmwiki_agent_result` artifact shape. Runtime profiles identify
+the runtime family; runtime adapters choose how the bridge invokes it.
 
 It is independent community tooling for LLM Wiki-style Markdown knowledge
 folders and agent-readable context. It is not an official project from Andrej
@@ -52,7 +54,7 @@ normalized result behind one local service.
 | Path | Use when | Flow |
 | --- | --- | --- |
 | Direct to `llmwiki-serve` | Codex, Claude Code, Copilot, an IDE agent, or a script can safely call the Knowledge Source and handle its own prompting or synthesis. | `client -> llmwiki-serve` |
-| Through `llmwiki-agent-bridge` | The client wants source fan-out, evidence bundling, OpenAI-compatible runtime synthesis, citations, graph context, and trace steps returned as one artifact. | `client -> bridge -> sources -> runtime -> artifact` |
+| Through `llmwiki-agent-bridge` | The client wants source fan-out, evidence bundling, runtime synthesis, citations, graph context, and trace steps returned as one artifact. | `client -> bridge -> sources -> runtime -> artifact` |
 
 Direct-client templates live in [integrations](./integrations/README.md). The
 bridge request and artifact contract is documented in
@@ -66,7 +68,8 @@ Requirements:
 - Node.js `>=22.12`
 - npm `>=10`
 - One or more running `llmwiki-serve` Knowledge Source endpoints
-- Optional: an OpenAI-compatible `/v1/chat/completions` runtime for synthesis
+- Optional: a runtime for synthesis. Packaged runs currently default to an
+  OpenAI-compatible `/v1/chat/completions` adapter.
 - `uv` and Python 3.11 or newer when starting the sample source from a checkout
 
 This quickstart starts a source-server checkout in Terminal 1. In Terminal 2,
@@ -147,14 +150,22 @@ npx llmwiki-agent-bridge@0.1.0
 From a source checkout, use `node ./bin/llmwiki-agent-bridge.mjs` or
 `node .\bin\llmwiki-agent-bridge.mjs` in place of the final `npx` command.
 
-For Hermes or DeepAgents, keep the same command shape and change
-`LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE` plus the model name:
+For Hermes or a compatible OpenAI-style runtime, keep the same command shape
+and change `LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE` plus the model name:
 
 | Profile | Use when | Example model |
 | --- | --- | --- |
 | `generic` | Any local runtime that implements `/v1/chat/completions`. | `local-model` |
 | `hermes` | Hermes or a Hermes-compatible local gateway. | `hermes-agent` |
-| `deepagents` | DeepAgents behind an OpenAI-compatible endpoint. | `deepagents-local` |
+| `deepagents` | DeepAgents identity metadata. Defaults to chat completions for compatibility unless an explicit adapter is selected. | `deepagents-local` |
+
+DeepAgents direct-provider integration should be ACP-first. Official DeepAgents
+documentation describes `deepagents-acp` as an ACP stdio CLI/programmatic API.
+This package ships an opt-in live ACP subprocess adapter behind
+`runtimeAdapter=deepagents-acp`. The default remains chat completions; the ACP
+adapter starts one `deepagents-acp` stdio process per bridge runtime request,
+fails permission prompts closed with ACP `cancelled`, and applies the bridge
+request timeout to child cleanup.
 
 Leave the bridge running. The following commands are also bridge-checkout
 commands; if Terminal 2 is occupied by the bridge process, open another prompt
@@ -399,7 +410,7 @@ The generated OpenAPI contract is committed at
 surface and the `llmwiki_agent_result` artifact shape as a public-preview
 compatibility contract, not as certified A2A conformance.
 
-The package includes `@a2a-js/sdk@0.3.13` for A2A discovery compatibility
+The package includes `@a2a-js/sdk@0.3.14` for A2A discovery compatibility
 checks while keeping the existing `/message:send` route stable.
 
 ## Runtime Profiles
@@ -415,7 +426,7 @@ prompt approval e2e, not a profile switch.
 | --- | --- | --- |
 | `generic` | Running any local runtime that implements OpenAI-compatible `/v1/chat/completions`. | `LLMWIKI_AGENT_BRIDGE_MODEL=local-model` |
 | `hermes` | Running Hermes or a Hermes-compatible local gateway. | `LLMWIKI_AGENT_BRIDGE_MODEL=hermes-agent` |
-| `deepagents` | Running DeepAgents behind an OpenAI-compatible chat completions endpoint. | `LLMWIKI_AGENT_BRIDGE_MODEL=deepagents-local` |
+| `deepagents` | Identifying the bridge as DeepAgents-backed. Defaults to chat completions unless an explicit adapter is selected. | `LLMWIKI_AGENT_BRIDGE_MODEL=deepagents-local` |
 
 Legacy `HERMES_*` and `HERMES_A2A_BRIDGE_*` environment aliases remain
 available for migration. New deployments should prefer the
@@ -479,18 +490,23 @@ export LLMWIKI_SERVE_URL=http://127.0.0.1:8765
 ```
 
 Use `llmwiki-agent-bridge` when the workflow also needs source fan-out,
-OpenAI-compatible runtime synthesis, and one normalized answer artifact.
+runtime synthesis, and one normalized answer artifact.
 
 ## Configuration
 
 Most local runs only need the runtime base URL, model, profile, and optional
-bridge bearer token:
+bridge bearer token. Keep `runtimeAdapter` at its default unless you are
+testing an explicit adapter integration:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `LLMWIKI_AGENT_BRIDGE_BASE_URL` | `http://127.0.0.1:8642/v1` | OpenAI-compatible chat completions base URL. |
 | `LLMWIKI_AGENT_BRIDGE_MODEL` | `hermes-agent` | Chat completions model name. |
 | `LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE` | `hermes` | Runtime profile preset: `hermes`, `deepagents`, or `generic`. |
+| `LLMWIKI_AGENT_BRIDGE_RUNTIME_ADAPTER` | `chat-completions` | Runtime invocation adapter. Set `deepagents-acp` to use the opt-in DeepAgents ACP subprocess adapter. |
+| `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_COMMAND` | `npx`; Windows uses `node` plus npm's `npx-cli.js` when available, then falls back to `npx.cmd` | Command spawned for `runtimeAdapter=deepagents-acp`; executed without a shell. |
+| `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_ARGS` | `--yes deepagents-acp` | Arguments for the ACP command. Use a JSON string array when arguments contain spaces. |
+| `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_CWD` | current working directory | Working directory for the ACP subprocess and per-request ACP session. |
 | `LLMWIKI_AGENT_BRIDGE_HOST` | `127.0.0.1` | Bridge bind host; non-loopback values require explicit opt-in. Host changes saved from `/settings` require restart. |
 | `LLMWIKI_AGENT_BRIDGE_PORT` | `8788` | Bridge HTTP port. Port changes saved from `/settings` require restart. |
 | `LLMWIKI_AGENT_BRIDGE_API_KEY` | unset | Optional runtime API key sent only to the configured runtime. |
