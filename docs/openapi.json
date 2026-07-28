@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "LLMWiki Agent Bridge",
-    "version": "0.2.1",
+    "version": "0.3.0",
     "description": "Local runtime bridge for selected LLMWiki Knowledge Sources and OpenAI-compatible chat completions runtimes."
   },
   "servers": [
@@ -15,6 +15,17 @@
     "/health": {
       "get": {
         "summary": "Bridge health and runtime profile metadata",
+        "parameters": [
+          {
+            "name": "probe",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "When true, probes runtime reachability where supported."
+          }
+        ],
         "responses": {
           "200": {
             "description": "Bridge health",
@@ -22,6 +33,54 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sources": {
+      "get": {
+        "summary": "Redacted registered Knowledge Source registry",
+        "parameters": [
+          {
+            "name": "probe",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "When true, performs live source probes before returning health metadata."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Registered sources",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourcesResponse"
                 }
               }
             }
@@ -205,7 +264,7 @@
             }
           },
           "409": {
-            "description": "Settings persistence disabled",
+            "description": "Settings persistence disabled or duplicate source id conflict",
             "content": {
               "application/json": {
                 "schema": {
@@ -616,6 +675,9 @@
               "selectedReadySourceCount",
               "unavailableSourceCount"
             ]
+          },
+          "runtimeConnection": {
+            "$ref": "#/components/schemas/PublicRuntimeConnection"
           }
         },
         "required": [
@@ -725,6 +787,9 @@
               },
               "hermesModelConfigured": {
                 "type": "boolean"
+              },
+              "runtimeConnection": {
+                "$ref": "#/components/schemas/PublicRuntimeConnection"
               },
               "sourcePolicy": {
                 "enum": [
@@ -1041,6 +1106,24 @@
           },
           "implementation": {
             "type": "string"
+          },
+          "bundleId": {
+            "type": "string"
+          },
+          "pageCount": {
+            "type": "number"
+          },
+          "approvedPageCount": {
+            "type": "number"
+          },
+          "root": {
+            "type": "string"
+          },
+          "rootLabel": {
+            "type": "string"
+          },
+          "rootRedacted": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -1259,6 +1342,9 @@
               "health": {
                 "const": "/health"
               },
+              "sources": {
+                "const": "/sources"
+              },
               "agentCard": {
                 "const": "/.well-known/agent-card.json"
               },
@@ -1283,6 +1369,7 @@
             },
             "required": [
               "health",
+              "sources",
               "agentCard",
               "messageSend",
               "mcp",
@@ -1342,8 +1429,27 @@
               "baseUrl": {
                 "type": "string"
               },
+              "baseUrlConfigured": {
+                "type": "boolean"
+              },
+              "baseUrlSource": {
+                "enum": [
+                  "option",
+                  "env",
+                  "settings",
+                  "default"
+                ]
+              },
               "modelConfigured": {
                 "type": "boolean"
+              },
+              "modelSource": {
+                "enum": [
+                  "option",
+                  "env",
+                  "settings",
+                  "default"
+                ]
               },
               "apiKeyConfigured": {
                 "type": "boolean"
@@ -1351,13 +1457,20 @@
               "requestTimeoutMs": {
                 "type": "integer",
                 "minimum": 0
+              },
+              "reachability": {
+                "$ref": "#/components/schemas/RuntimeReachability"
               }
             },
             "required": [
               "baseUrl",
+              "baseUrlConfigured",
+              "baseUrlSource",
               "modelConfigured",
+              "modelSource",
               "apiKeyConfigured",
-              "requestTimeoutMs"
+              "requestTimeoutMs",
+              "reachability"
             ]
           },
           "bridgeAuth": {
@@ -1722,6 +1835,368 @@
           "registeredSources"
         ]
       },
+      "PublicRuntimeConnection": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "baseUrlConfigured": {
+            "type": "boolean"
+          },
+          "baseUrlSource": {
+            "enum": [
+              "option",
+              "env",
+              "settings",
+              "default"
+            ]
+          },
+          "modelConfigured": {
+            "type": "boolean"
+          },
+          "modelSource": {
+            "enum": [
+              "option",
+              "env",
+              "settings",
+              "default"
+            ]
+          },
+          "apiKeyConfigured": {
+            "type": "boolean"
+          },
+          "requestTimeoutMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reachability": {
+            "$ref": "#/components/schemas/RuntimeReachability"
+          }
+        },
+        "required": [
+          "baseUrlConfigured",
+          "baseUrlSource",
+          "modelConfigured",
+          "modelSource",
+          "apiKeyConfigured",
+          "requestTimeoutMs",
+          "reachability"
+        ]
+      },
+      "RuntimeReachability": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "checked": {
+            "type": "boolean"
+          },
+          "basis": {
+            "enum": [
+              "not_probed",
+              "adapter_not_probeable",
+              "live_probe"
+            ]
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "checkedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "reachable": {
+            "type": "boolean"
+          },
+          "httpStatus": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 599
+          },
+          "reason": {
+            "enum": [
+              "missing_base_url",
+              "timeout",
+              "request_failed"
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "redacted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "checked",
+          "basis"
+        ]
+      },
+      "SourcesResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schemaVersion": {
+            "const": "llmwiki.agent-bridge.sources.v1"
+          },
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "healthBasis": {
+            "enum": [
+              "last_known_status_bridge_policy",
+              "live_probe"
+            ]
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RegistrySourceSummary"
+            }
+          },
+          "registeredCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "totalSourceCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "selectedCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "selectedSourceCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "readyCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "readySourceCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "selectedReadyCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "selectedReadySourceCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unavailableCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unavailableSourceCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "warningCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourceRegistryWarning"
+            }
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "generatedAt",
+          "healthBasis",
+          "sources",
+          "registeredCount",
+          "selectedCount",
+          "readyCount",
+          "unavailableCount",
+          "warningCount",
+          "warnings"
+        ]
+      },
+      "RegistrySourceSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "protocol": {
+            "enum": [
+              "llmwiki-http",
+              "mcp",
+              "a2a"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "selected": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string"
+          },
+          "readiness": {
+            "$ref": "#/components/schemas/McpSourceReadiness"
+          },
+          "health": {
+            "$ref": "#/components/schemas/SourceHealth"
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "adapter": {
+            "type": "string"
+          },
+          "implementation": {
+            "type": "string"
+          },
+          "bundleId": {
+            "type": "string"
+          },
+          "pageCount": {
+            "type": "number"
+          },
+          "approvedPageCount": {
+            "type": "number"
+          },
+          "root": {
+            "type": "string"
+          },
+          "rootLabel": {
+            "type": "string"
+          },
+          "rootRedacted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "protocol",
+          "status",
+          "selected",
+          "url",
+          "health"
+        ]
+      },
+      "SourceHealth": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "basis": {
+            "enum": [
+              "selection",
+              "last_known_status",
+              "descriptor",
+              "bridge_policy",
+              "last_known_status_bridge_policy",
+              "live_probe"
+            ]
+          },
+          "reason": {
+            "enum": [
+              "not_selected",
+              "status_not_ready",
+              "missing_url",
+              "unsupported_protocol",
+              "source_policy_blocked",
+              "probe_failed"
+            ]
+          },
+          "checkedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endpoint": {
+            "enum": [
+              "source-bundle",
+              "manifest",
+              "llmwiki_source_bundle",
+              "agent-card"
+            ]
+          },
+          "httpStatus": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 599
+          },
+          "timeout": {
+            "type": "boolean"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "redacted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "basis"
+        ]
+      },
+      "SourceRegistryWarning": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "severity": {
+            "enum": [
+              "warning"
+            ]
+          },
+          "code": {
+            "enum": [
+              "duplicate_source_id",
+              "duplicate_bundle_id",
+              "overlapping_source_roots"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "sourceIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "rootLabels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "severity",
+          "code",
+          "message",
+          "sourceIds"
+        ]
+      },
       "StringListSetting": {
         "oneOf": [
           {
@@ -1747,6 +2222,9 @@
           },
           "method": {
             "enum": [
+              "initialize",
+              "notifications/initialized",
+              "ping",
               "tools/list",
               "tools/call"
             ]
@@ -1783,6 +2261,12 @@
           },
           "result": {
             "oneOf": [
+              {
+                "$ref": "#/components/schemas/McpInitializeResult"
+              },
+              {
+                "$ref": "#/components/schemas/McpPingResult"
+              },
               {
                 "$ref": "#/components/schemas/McpToolListResult"
               },
@@ -1844,10 +2328,81 @@
           }
         ]
       },
+      "McpInitializeResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "protocolVersion": {
+            "type": "string"
+          },
+          "capabilities": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "tools": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "listChanged": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "listChanged"
+                ]
+              }
+            },
+            "required": [
+              "tools"
+            ]
+          },
+          "serverInfo": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "version"
+            ]
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "capabilities",
+          "serverInfo"
+        ]
+      },
+      "McpPingResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
       "McpToolListResult": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "serverInfo": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "settingsUrl": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
           "tools": {
             "type": "array",
             "items": {
@@ -1990,6 +2545,16 @@
           "unavailableSourceCount": {
             "type": "integer",
             "minimum": 0
+          },
+          "warningCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SourceRegistryWarning"
+            }
           }
         },
         "required": [
@@ -2043,6 +2608,21 @@
           },
           "implementation": {
             "type": "string"
+          },
+          "bundleId": {
+            "type": "string"
+          },
+          "pageCount": {
+            "type": "number"
+          },
+          "approvedPageCount": {
+            "type": "number"
+          },
+          "rootLabel": {
+            "type": "string"
+          },
+          "rootRedacted": {
+            "type": "boolean"
           }
         },
         "required": [

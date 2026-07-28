@@ -57,6 +57,7 @@ const DIAGNOSTIC_SCHEMA_VERSION = 'llmwiki.agent-bridge.diagnostic.v1'
 const AGENT_CARD_ROUTE = `/${AGENT_CARD_PATH}`
 const MESSAGE_SEND_ROUTE = '/message:send'
 const MCP_ROUTE = '/mcp'
+const SOURCES_ROUTE = '/sources'
 const SETTINGS_ROUTE = '/settings'
 const SETTINGS_JSON_ROUTE = '/settings.json'
 const SETTINGS_CONFIG_JSON_ROUTE = '/settings/config.json'
@@ -82,6 +83,8 @@ const LOGGER_IO_LOG_MODE = 'logger'
 const OFF_IO_LOG_MODE = 'off'
 const DEFAULT_IO_LOG_MODE = FILE_IO_LOG_MODE
 const DEFAULT_IO_LOG_FILE_PATH = join('.runtime-logs', 'llmwiki-agent-bridge-io.jsonl')
+const MCP_PROTOCOL_VERSION = '2025-06-18'
+const SUPPORTED_MCP_PROTOCOL_VERSIONS = new Set(['2025-06-18', '2024-11-05'])
 const MAX_IO_LOG_DEPTH = 8
 const MAX_IO_LOG_ARRAY_ITEMS = 50
 const MAX_IO_LOG_STRING_CHARS = 20_000
@@ -227,6 +230,7 @@ const baseCorsHeaders = {
 const auditedBridgeRoutes = new Set([
   MESSAGE_SEND_ROUTE,
   MCP_ROUTE,
+  SOURCES_ROUTE,
   SETTINGS_ROUTE,
   SETTINGS_JSON_ROUTE,
   SETTINGS_CONFIG_JSON_ROUTE,
@@ -234,7 +238,7 @@ const auditedBridgeRoutes = new Set([
   AGENT_CARD_ROUTE,
   '/health',
 ])
-const auditedMcpMethods = new Set(['tools/list', 'tools/call'])
+const auditedMcpMethods = new Set(['initialize', 'notifications/initialized', 'ping', 'tools/list', 'tools/call'])
 const conversationMessageRoles = new Set(['user', 'assistant', 'system'])
 const conversationRuntimeRoles = new Set(['user', 'assistant'])
 
@@ -292,8 +296,36 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
       '/health': {
         get: {
           summary: 'Bridge health and runtime profile metadata',
+          parameters: [
+            {
+              name: 'probe',
+              in: 'query',
+              required: false,
+              schema: { type: 'boolean' },
+              description: 'When true, probes runtime reachability where supported.',
+            },
+          ],
           responses: {
             200: jsonResponse('Bridge health', '#/components/schemas/HealthResponse'),
+            401: jsonResponse('Unauthorized', '#/components/schemas/ErrorResponse'),
+            403: jsonResponse('Origin not allowed', '#/components/schemas/ErrorResponse'),
+          },
+        },
+      },
+      [SOURCES_ROUTE]: {
+        get: {
+          summary: 'Redacted registered Knowledge Source registry',
+          parameters: [
+            {
+              name: 'probe',
+              in: 'query',
+              required: false,
+              schema: { type: 'boolean' },
+              description: 'When true, performs live source probes before returning health metadata.',
+            },
+          ],
+          responses: {
+            200: jsonResponse('Registered sources', '#/components/schemas/SourcesResponse'),
             401: jsonResponse('Unauthorized', '#/components/schemas/ErrorResponse'),
             403: jsonResponse('Origin not allowed', '#/components/schemas/ErrorResponse'),
           },
@@ -344,7 +376,7 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
             400: jsonResponse('Bad settings request', '#/components/schemas/ErrorResponse'),
             401: jsonResponse('Unauthorized', '#/components/schemas/ErrorResponse'),
             403: jsonResponse('Origin not allowed', '#/components/schemas/ErrorResponse'),
-            409: jsonResponse('Settings persistence disabled', '#/components/schemas/ErrorResponse'),
+            409: jsonResponse('Settings persistence disabled or duplicate source id conflict', '#/components/schemas/ErrorResponse'),
             413: jsonResponse('Request body too large', '#/components/schemas/ErrorResponse'),
             500: jsonResponse('Settings persistence failure', '#/components/schemas/ErrorResponse'),
           },
@@ -444,6 +476,7 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
           configuredAllowedOrigins: { type: 'integer', minimum: 0 },
           sourcePolicy: { enum: ['private-http', 'allowlist', 'public-https'] },
           sourceRegistry: sourceRegistrySummarySchema(),
+          runtimeConnection: { $ref: '#/components/schemas/PublicRuntimeConnection' },
         }, ['status', 'runtime', 'runtimeProfile', 'runtimeAdapter', 'runtimeId', 'agentRuntime', 'modelConfigured', 'hermesModelConfigured', 'configuredAllowedOrigins', 'sourcePolicy', 'sourceRegistry']),
         AgentCardResponse: objectSchema({
           id: { type: 'string' },
@@ -471,6 +504,7 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
             runtimeAdapter: { enum: ['chat-completions', 'deepagents-acp'] },
             modelConfigured: { type: 'boolean' },
             hermesModelConfigured: { type: 'boolean' },
+            runtimeConnection: { $ref: '#/components/schemas/PublicRuntimeConnection' },
             sourcePolicy: { enum: ['private-http', 'allowlist', 'public-https'] },
             settingsUrl: { const: SETTINGS_ROUTE },
             protocolSurface: objectSchema({
@@ -580,6 +614,12 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
           },
           adapter: { type: 'string' },
           implementation: { type: 'string' },
+          bundleId: { type: 'string' },
+          pageCount: { type: 'number' },
+          approvedPageCount: { type: 'number' },
+          root: { type: 'string' },
+          rootLabel: { type: 'string' },
+          rootRedacted: { type: 'boolean' },
         }, ['protocol', 'status', 'url']),
         MessageSendResponse: objectSchema({
           id: { type: 'string' },
@@ -653,6 +693,7 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
           bridge: { const: 'llmwiki-agent-bridge' },
           endpoints: objectSchema({
             health: { const: '/health' },
+            sources: { const: SOURCES_ROUTE },
             agentCard: { const: AGENT_CARD_ROUTE },
             messageSend: { const: MESSAGE_SEND_ROUTE },
             mcp: { const: MCP_ROUTE },
@@ -660,7 +701,7 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
             settingsJson: { const: SETTINGS_JSON_ROUTE },
             settingsConfigJson: { const: SETTINGS_CONFIG_JSON_ROUTE },
             settingsSourcesJson: { const: SETTINGS_SOURCES_JSON_ROUTE },
-          }, ['health', 'agentCard', 'messageSend', 'mcp', 'settings', 'settingsJson', 'settingsConfigJson', 'settingsSourcesJson']),
+          }, ['health', 'sources', 'agentCard', 'messageSend', 'mcp', 'settings', 'settingsJson', 'settingsConfigJson', 'settingsSourcesJson']),
           runtime: objectSchema({
             profile: { enum: ['hermes', 'deepagents', 'generic'] },
             adapter: { enum: ['chat-completions', 'deepagents-acp'] },
@@ -672,10 +713,14 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
           }, ['profile', 'adapter', 'id', 'name', 'runtime', 'agentRuntime', 'providerOrganization']),
           runtimeConnection: objectSchema({
             baseUrl: { type: 'string' },
+            baseUrlConfigured: { type: 'boolean' },
+            baseUrlSource: { enum: ['option', 'env', 'settings', 'default'] },
             modelConfigured: { type: 'boolean' },
+            modelSource: { enum: ['option', 'env', 'settings', 'default'] },
             apiKeyConfigured: { type: 'boolean' },
             requestTimeoutMs: { type: 'integer', minimum: 0 },
-          }, ['baseUrl', 'modelConfigured', 'apiKeyConfigured', 'requestTimeoutMs']),
+            reachability: { $ref: '#/components/schemas/RuntimeReachability' },
+          }, ['baseUrl', 'baseUrlConfigured', 'baseUrlSource', 'modelConfigured', 'modelSource', 'apiKeyConfigured', 'requestTimeoutMs', 'reachability']),
           bridgeAuth: objectSchema({
             bearerTokenConfigured: { type: 'boolean' },
           }, ['bearerTokenConfigured']),
@@ -763,6 +808,90 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
           configPathConfigured: { type: 'boolean' },
           registeredSources: { type: 'integer', minimum: 0 },
         }, ['enabled', 'configPathConfigured', 'registeredSources']),
+        PublicRuntimeConnection: objectSchema({
+          baseUrlConfigured: { type: 'boolean' },
+          baseUrlSource: { enum: ['option', 'env', 'settings', 'default'] },
+          modelConfigured: { type: 'boolean' },
+          modelSource: { enum: ['option', 'env', 'settings', 'default'] },
+          apiKeyConfigured: { type: 'boolean' },
+          requestTimeoutMs: { type: 'integer', minimum: 0 },
+          reachability: { $ref: '#/components/schemas/RuntimeReachability' },
+        }, ['baseUrlConfigured', 'baseUrlSource', 'modelConfigured', 'modelSource', 'apiKeyConfigured', 'requestTimeoutMs', 'reachability']),
+        RuntimeReachability: objectSchema({
+          checked: { type: 'boolean' },
+          basis: { enum: ['not_probed', 'adapter_not_probeable', 'live_probe'] },
+          protocol: { type: 'string' },
+          checkedAt: { type: 'string', format: 'date-time' },
+          ok: { type: 'boolean' },
+          reachable: { type: 'boolean' },
+          httpStatus: { type: 'integer', minimum: 100, maximum: 599 },
+          reason: { enum: ['missing_base_url', 'timeout', 'request_failed'] },
+          retryable: { type: 'boolean' },
+          redacted: { type: 'boolean' },
+        }, ['checked', 'basis']),
+        SourcesResponse: objectSchema({
+          schemaVersion: { const: 'llmwiki.agent-bridge.sources.v1' },
+          generatedAt: { type: 'string', format: 'date-time' },
+          healthBasis: { enum: ['last_known_status_bridge_policy', 'live_probe'] },
+          sources: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/RegistrySourceSummary' },
+          },
+          registeredCount: { type: 'integer', minimum: 0 },
+          totalSourceCount: { type: 'integer', minimum: 0 },
+          selectedCount: { type: 'integer', minimum: 0 },
+          selectedSourceCount: { type: 'integer', minimum: 0 },
+          readyCount: { type: 'integer', minimum: 0 },
+          readySourceCount: { type: 'integer', minimum: 0 },
+          selectedReadyCount: { type: 'integer', minimum: 0 },
+          selectedReadySourceCount: { type: 'integer', minimum: 0 },
+          unavailableCount: { type: 'integer', minimum: 0 },
+          unavailableSourceCount: { type: 'integer', minimum: 0 },
+          warningCount: { type: 'integer', minimum: 0 },
+          warnings: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/SourceRegistryWarning' },
+          },
+        }, ['schemaVersion', 'generatedAt', 'healthBasis', 'sources', 'registeredCount', 'selectedCount', 'readyCount', 'unavailableCount', 'warningCount', 'warnings']),
+        RegistrySourceSummary: objectSchema({
+          id: { type: 'string' },
+          name: { type: 'string' },
+          title: { type: 'string' },
+          description: { type: 'string' },
+          protocol: { enum: ['llmwiki-http', 'mcp', 'a2a'] },
+          status: { type: 'string' },
+          selected: { type: 'boolean' },
+          url: { type: 'string' },
+          readiness: { $ref: '#/components/schemas/McpSourceReadiness' },
+          health: { $ref: '#/components/schemas/SourceHealth' },
+          capabilities: { type: 'array', items: { type: 'string' } },
+          adapter: { type: 'string' },
+          implementation: { type: 'string' },
+          bundleId: { type: 'string' },
+          pageCount: { type: 'number' },
+          approvedPageCount: { type: 'number' },
+          root: { type: 'string' },
+          rootLabel: { type: 'string' },
+          rootRedacted: { type: 'boolean' },
+        }, ['id', 'name', 'protocol', 'status', 'selected', 'url', 'health']),
+        SourceHealth: objectSchema({
+          ok: { type: 'boolean' },
+          basis: { enum: ['selection', 'last_known_status', 'descriptor', 'bridge_policy', 'last_known_status_bridge_policy', 'live_probe'] },
+          reason: { enum: ['not_selected', 'status_not_ready', 'missing_url', 'unsupported_protocol', 'source_policy_blocked', 'probe_failed'] },
+          checkedAt: { type: 'string', format: 'date-time' },
+          endpoint: { enum: ['source-bundle', 'manifest', 'llmwiki_source_bundle', 'agent-card'] },
+          httpStatus: { type: 'integer', minimum: 100, maximum: 599 },
+          timeout: { type: 'boolean' },
+          retryable: { type: 'boolean' },
+          redacted: { type: 'boolean' },
+        }, ['ok', 'basis']),
+        SourceRegistryWarning: objectSchema({
+          severity: { enum: ['warning'] },
+          code: { enum: ['duplicate_source_id', 'duplicate_bundle_id', 'overlapping_source_roots'] },
+          message: { type: 'string' },
+          sourceIds: { type: 'array', items: { type: 'string' } },
+          rootLabels: { type: 'array', items: { type: 'string' } },
+        }, ['severity', 'code', 'message', 'sourceIds']),
         StringListSetting: {
           oneOf: [
             {
@@ -775,7 +904,7 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
         McpJsonRpcRequest: objectSchema({
           jsonrpc: { const: '2.0' },
           id: { $ref: '#/components/schemas/JsonRpcId' },
-          method: { enum: ['tools/list', 'tools/call'] },
+          method: { enum: ['initialize', 'notifications/initialized', 'ping', 'tools/list', 'tools/call'] },
           params: { type: 'object', additionalProperties: true },
         }, ['jsonrpc', 'method']),
         McpJsonRpcResponse: {
@@ -789,6 +918,8 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
           id: { $ref: '#/components/schemas/JsonRpcId' },
           result: {
             oneOf: [
+              { $ref: '#/components/schemas/McpInitializeResult' },
+              { $ref: '#/components/schemas/McpPingResult' },
               { $ref: '#/components/schemas/McpToolListResult' },
               { $ref: '#/components/schemas/McpToolCallResult' },
             ],
@@ -809,7 +940,24 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
             { type: 'null' },
           ],
         },
+        McpInitializeResult: objectSchema({
+          protocolVersion: { type: 'string' },
+          capabilities: objectSchema({
+            tools: objectSchema({
+              listChanged: { type: 'boolean' },
+            }, ['listChanged']),
+          }, ['tools']),
+          serverInfo: objectSchema({
+            name: { type: 'string' },
+            version: { type: 'string' },
+          }, ['name', 'version']),
+        }, ['protocolVersion', 'capabilities', 'serverInfo']),
+        McpPingResult: objectSchema({}),
         McpToolListResult: objectSchema({
+          serverInfo: objectSchema({
+            name: { type: 'string' },
+            settingsUrl: { type: 'string' },
+          }, ['name']),
           tools: {
             type: 'array',
             items: { $ref: '#/components/schemas/McpToolDescriptor' },
@@ -866,6 +1014,11 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
           selectedSourceCount: { type: 'integer', minimum: 0 },
           readySourceCount: { type: 'integer', minimum: 0 },
           unavailableSourceCount: { type: 'integer', minimum: 0 },
+          warningCount: { type: 'integer', minimum: 0 },
+          warnings: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/SourceRegistryWarning' },
+          },
         }, ['sources', 'totalSourceCount', 'selectedSourceCount', 'readySourceCount', 'unavailableSourceCount']),
         McpSourceSummary: objectSchema({
           id: { type: 'string' },
@@ -882,6 +1035,11 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
           },
           adapter: { type: 'string' },
           implementation: { type: 'string' },
+          bundleId: { type: 'string' },
+          pageCount: { type: 'number' },
+          approvedPageCount: { type: 'number' },
+          rootLabel: { type: 'string' },
+          rootRedacted: { type: 'boolean' },
         }, ['id', 'name', 'description', 'protocol', 'status', 'selected', 'url', 'readiness', 'capabilities', 'adapter', 'implementation']),
         McpSourceReadiness: objectSchema({
           ready: { type: 'boolean' },
@@ -1107,6 +1265,13 @@ function errorResponseBody(httpError, fallbackContext = null) {
       ? httpError.diagnostics
       : undefined,
   })
+}
+
+function queryFlag(searchParams, name) {
+  const value = searchParams.get(name)
+  if (value === null) return false
+  const normalized = value.trim().toLowerCase()
+  return normalized === '' || ['1', 'true', 'yes', 'on'].includes(normalized)
 }
 
 function bridgeRoutePattern(pathname) {
@@ -1521,7 +1686,18 @@ async function handleBridgeRequest(request, response, config) {
       return
     }
 
+    if (request.method === 'GET' && url.pathname === SOURCES_ROUTE) {
+      const result = await sourceRegistryHttpResponse(config, {
+        probe: queryFlag(url.searchParams, 'probe'),
+      })
+      writeJson(response, 200, result, config, request)
+      return
+    }
+
     if (request.method === 'GET' && url.pathname === '/health') {
+      const runtimeReachability = queryFlag(url.searchParams, 'probe')
+        ? await probeRuntimeConnection(config)
+        : runtimeReachabilityNotProbed()
       writeJson(response, 200, {
         status: 'ok',
         runtime: 'llmwiki-agent-bridge',
@@ -1534,6 +1710,7 @@ async function handleBridgeRequest(request, response, config) {
         configuredAllowedOrigins: config.allowedOrigins.length,
         sourcePolicy: config.sourcePolicy,
         sourceRegistry: sourceRegistrySummary(config),
+        runtimeConnection: publicRuntimeConnection(config, runtimeReachability),
       }, config, request)
       return
     }
@@ -1563,6 +1740,10 @@ async function handleBridgeRequest(request, response, config) {
       const body = await readJsonBody(request)
       const result = await handleMcpJsonRpc(body, config, auditContext, auditDetails)
       Object.assign(auditDetails, mcpResultAudit(result))
+      if (result === null) {
+        writeJson(response, 202, null, config, request)
+        return
+      }
       writeJson(response, 200, result, config, request)
       return
     }
@@ -1915,6 +2096,18 @@ async function handleMcpJsonRpc(body, config, runContextInput = {}, auditDetails
     return mcpJsonRpcError(id, -32600, 'Invalid JSON-RPC request.')
   }
 
+  if (request.method === 'initialize') {
+    return mcpJsonRpcSuccess(id, mcpInitializeResult(request.params))
+  }
+
+  if (request.method === 'notifications/initialized') {
+    return null
+  }
+
+  if (request.method === 'ping') {
+    return mcpJsonRpcSuccess(id, {})
+  }
+
   if (request.method === 'tools/list') {
     return mcpJsonRpcSuccess(id, {
       serverInfo: {
@@ -1930,6 +2123,25 @@ async function handleMcpJsonRpc(body, config, runContextInput = {}, auditDetails
   }
 
   return mcpJsonRpcError(id, -32601, `Method not found: ${request.method}`)
+}
+
+function mcpInitializeResult(params) {
+  const requestedVersion = readString(asRecord(params) || {}, 'protocolVersion')
+  const protocolVersion = SUPPORTED_MCP_PROTOCOL_VERSIONS.has(requestedVersion)
+    ? requestedVersion
+    : MCP_PROTOCOL_VERSION
+  return {
+    protocolVersion,
+    capabilities: {
+      tools: {
+        listChanged: false,
+      },
+    },
+    serverInfo: {
+      name: PACKAGE_NAME,
+      version: PACKAGE_VERSION,
+    },
+  }
 }
 
 async function handleMcpToolsCall(request, id, config, runContextInput = {}, auditDetails = null) {
@@ -2500,12 +2712,15 @@ async function runGraphNeighborsMcpSourceTool(args, config) {
 function listMcpKnowledgeSources(args, config) {
   const sources = mcpToolSources(args, config)
   const sourceSummaries = sources.map((source) => knowledgeSourceToolSummary(source, config))
+  const warnings = sourceRegistryWarnings(sources)
   const result = {
     sources: sourceSummaries,
     totalSourceCount: sourceSummaries.length,
     selectedSourceCount: sourceSummaries.filter((source) => source.selected !== false).length,
     readySourceCount: sourceSummaries.filter((source) => source.readiness.ready).length,
     unavailableSourceCount: sourceSummaries.filter((source) => !source.readiness.ready).length,
+    warningCount: warnings.length,
+    warnings,
   }
   return {
     summary: listSourcesSummary(result.sources),
@@ -2730,6 +2945,10 @@ function knowledgeSourceToolSummary(source, config = null) {
     capabilities: source.capabilities,
     adapter: source.adapter,
     implementation: source.implementation,
+    bundleId: source.bundleId,
+    pageCount: source.pageCount,
+    approvedPageCount: source.approvedPageCount,
+    ...sourceRootMetadataForOutput(source, { includeLocalRoots: false }),
   })
 }
 
@@ -3566,7 +3785,7 @@ function runtimeFailureContract(config) {
   if (config.runtimeAdapter === 'chat-completions') {
     return {
       code: 'chat_completions_failed',
-      message: 'Chat completions request failed.',
+      message: chatCompletionsFailureMessage(),
       logPrefix: 'chat completions failed',
     }
   }
@@ -4361,13 +4580,20 @@ function runtimeChatCompletionsDiagnostic(error, config) {
       ['timeout', isTimeoutError(error) ? 'true' : undefined],
       ['invalidJson', isInvalidJsonError(error) ? 'true' : undefined],
       ['runtimeProfile', config.runtimeProfile],
+      ['runtimeAdapter', config.runtimeAdapter],
       ['runtimeModelConfigured', Boolean(config.hermesModel)],
+      ['runtimeBaseUrlSource', config.baseUrlSource || 'default'],
+      ['runtimeModelSource', config.modelSource || 'default'],
       ['timeoutMs', config.requestTimeoutMs],
       ['redaction', 'runtime URL, API key, headers, and upstream body omitted'],
     ],
-    remediation: 'Check the configured runtime base URL, model, API key, and chat completions compatibility, then retry the request.',
-    message: 'Chat completions request failed.',
+    remediation: `Check the configured OpenAI-compatible runtime at ${SETTINGS_ROUTE}, verify /v1/models or /v1/chat/completions reachability, or retry with orchestrationMode: "evidence-only".`,
+    message: chatCompletionsFailureMessage(),
   })
+}
+
+function chatCompletionsFailureMessage() {
+  return `Chat completions request failed. Check the configured OpenAI-compatible runtime at ${SETTINGS_ROUTE}, or retry with orchestrationMode: "evidence-only".`
 }
 
 function diagnostic(input) {
@@ -4674,8 +4900,9 @@ function conversationRuntimeContextForPrompt(conversation) {
 
 function normalizeKnowledgeSourceDescriptors(rawSources) {
   return readRecordArray(rawSources).map((source, index) => ({
-    id: readString(source, 'id') || `source-${index + 1}`,
+    id: readString(source, 'id') || readString(source, 'source_id') || readString(source, 'sourceId') || `source-${index + 1}`,
     name: readString(source, 'name') || readString(source, 'title') || `Source ${index + 1}`,
+    title: readString(source, 'title') || readString(source, 'name') || `Source ${index + 1}`,
     description: readString(source, 'description'),
     protocol: readString(source, 'protocol'),
     status: readString(source, 'status') || 'unknown',
@@ -4684,6 +4911,11 @@ function normalizeKnowledgeSourceDescriptors(rawSources) {
     capabilities: readStringArray(source.capabilities),
     adapter: readString(source, 'adapter'),
     implementation: readString(source, 'implementation'),
+    bundleId: readString(source, 'bundleId') || readString(source, 'bundle_id'),
+    pageCount: readNumber(source, 'pageCount') ?? readNumber(source, 'page_count'),
+    approvedPageCount: readNumber(source, 'approvedPageCount') ?? readNumber(source, 'approved_page_count'),
+    root: sourceRootValue(source),
+    rootLabel: sourceRootLabelValue(source),
   }))
 }
 
@@ -4736,6 +4968,7 @@ function agentCard(config) {
       hermesModelConfigured: Boolean(config.hermesModel),
       sourcePolicy: config.sourcePolicy,
       settingsUrl: SETTINGS_ROUTE,
+      runtimeConnection: publicRuntimeConnection(config, runtimeReachabilityNotProbed()),
       protocolSurface: {
         a2a: 'compatible',
         mcp: 'compatible',
@@ -4763,6 +4996,7 @@ function redactedBridgeSettings(config, request) {
     bridge: 'llmwiki-agent-bridge',
     endpoints: {
       health: '/health',
+      sources: SOURCES_ROUTE,
       agentCard: AGENT_CARD_ROUTE,
       messageSend: MESSAGE_SEND_ROUTE,
       mcp: MCP_ROUTE,
@@ -4780,12 +5014,7 @@ function redactedBridgeSettings(config, request) {
       agentRuntime: config.agentRuntime,
       providerOrganization: config.providerOrganization,
     },
-    runtimeConnection: {
-      baseUrl: redactedUrlSummary(config.baseUrl),
-      modelConfigured: Boolean(config.model),
-      apiKeyConfigured: Boolean(config.apiKey),
-      requestTimeoutMs: config.requestTimeoutMs,
-    },
+    runtimeConnection: settingsRuntimeConnection(config, runtimeReachabilityNotProbed()),
     bridgeAuth: {
       bearerTokenConfigured: Boolean(config.bridgeBearerToken),
     },
@@ -4817,6 +5046,87 @@ function redactedBridgeSettings(config, request) {
   }
 }
 
+function settingsRuntimeConnection(config, reachability = runtimeReachabilityNotProbed()) {
+  return {
+    baseUrl: redactedUrlSummary(config.baseUrl),
+    ...publicRuntimeConnection(config, reachability),
+  }
+}
+
+function publicRuntimeConnection(config, reachability = runtimeReachabilityNotProbed()) {
+  return {
+    baseUrlConfigured: Boolean(config.baseUrl),
+    baseUrlSource: config.baseUrlSource || 'default',
+    modelConfigured: Boolean(config.model),
+    modelSource: config.modelSource || 'default',
+    apiKeyConfigured: Boolean(config.apiKey),
+    requestTimeoutMs: config.requestTimeoutMs,
+    reachability,
+  }
+}
+
+function runtimeReachabilityNotProbed() {
+  return {
+    checked: false,
+    basis: 'not_probed',
+  }
+}
+
+async function probeRuntimeConnection(config) {
+  const checkedAt = new Date().toISOString()
+  if (config.runtimeAdapter !== 'chat-completions') {
+    return {
+      checked: false,
+      basis: 'adapter_not_probeable',
+      protocol: runtimeAdapterProtocol(config),
+    }
+  }
+
+  if (!config.baseUrl) {
+    return {
+      checked: true,
+      basis: 'live_probe',
+      protocol: 'openai-compatible',
+      checkedAt,
+      ok: false,
+      reachable: false,
+      reason: 'missing_base_url',
+    }
+  }
+
+  const headers = { Accept: 'application/json' }
+  if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`
+  try {
+    const response = await fetchWithTimeout(runtimeModelsUrl(config.baseUrl), {
+      method: 'GET',
+      headers,
+      redirect: 'error',
+    }, Math.min(config.requestTimeoutMs, 5000))
+    await response.arrayBuffer()
+    return {
+      checked: true,
+      basis: 'live_probe',
+      protocol: 'openai-compatible',
+      checkedAt,
+      ok: response.ok,
+      reachable: true,
+      httpStatus: response.status,
+    }
+  } catch (error) {
+    return removeUndefinedProperties({
+      checked: true,
+      basis: 'live_probe',
+      protocol: 'openai-compatible',
+      checkedAt,
+      ok: false,
+      reachable: false,
+      reason: isTimeoutError(error) ? 'timeout' : 'request_failed',
+      retryable: retryableFailure(error),
+      redacted: true,
+    })
+  }
+}
+
 function saveBridgeConfigSettings(body, config, request) {
   assertSettingsPersistenceEnabled(config)
   const input = asRecord(asRecord(body)?.config) || asRecord(body)
@@ -4844,16 +5154,378 @@ function saveRegisteredSources(body, config) {
 
   return {
     status: 'saved',
-    sources,
+    sources: sources.map(settingsSourceDescriptorForHttp),
     persistence: persistenceStatus(config),
   }
 }
 
 function registeredSourcesResponse(config) {
   return {
-    sources: config.registeredSources,
+    sources: config.registeredSources.map(settingsSourceDescriptorForHttp),
     persistence: persistenceStatus(config),
   }
+}
+
+async function sourceRegistryHttpResponse(config, { probe = false } = {}) {
+  return sourceRegistryView(config, {
+    includeLocalRoots: false,
+    redactSourceUrls: true,
+    probe,
+  })
+}
+
+async function sourceRegistryCliResponse(config, { probe = false, status = false } = {}) {
+  const registry = await sourceRegistryView(config, {
+    includeLocalRoots: true,
+    redactSourceUrls: false,
+    probe,
+  })
+  return status
+    ? {
+        bridge: 'llmwiki-agent-bridge',
+        runtime: {
+          profile: config.runtimeProfile,
+          adapter: config.runtimeAdapter,
+          id: config.runtimeId,
+          runtime: config.runtime,
+          agentRuntime: config.agentRuntime,
+        },
+        runtimeConnection: settingsRuntimeConnection(config, probe ? await probeRuntimeConnection(config) : runtimeReachabilityNotProbed()),
+        sourceRegistry: registry,
+        persistence: persistenceStatus(config),
+      }
+    : registry
+}
+
+async function sourceRegistryView(config, { includeLocalRoots = false, redactSourceUrls = true, probe = false } = {}) {
+  const sources = normalizeKnowledgeSourceDescriptors(config.registeredSources)
+  const sourceEntries = probe
+    ? await mapWithConcurrency(sources, DEFAULT_SOURCE_FAN_OUT_CONCURRENCY, async (source) => {
+        const probeResult = await probeKnowledgeSource(source, config)
+        return registrySourceDescriptor({ ...source, ...(probeResult.metadata || {}) }, config, {
+          health: probeResult.health,
+          includeLocalRoots,
+          redactSourceUrls,
+        })
+      })
+    : sources.map((source) => registrySourceDescriptor(source, config, {
+        includeLocalRoots,
+        redactSourceUrls,
+      }))
+  const selectedSources = sourceEntries.filter((source) => source.selected !== false)
+  const readySources = sourceEntries.filter((source) => source.health?.ok === true)
+  const selectedReadySources = selectedSources.filter((source) => source.health?.ok === true)
+  const warnings = sourceRegistryWarnings(sources)
+  return removeUndefinedProperties({
+    schemaVersion: 'llmwiki.agent-bridge.sources.v1',
+    generatedAt: new Date().toISOString(),
+    healthBasis: probe ? 'live_probe' : 'last_known_status_bridge_policy',
+    sources: sourceEntries,
+    registeredCount: sourceEntries.length,
+    totalSourceCount: sourceEntries.length,
+    selectedCount: selectedSources.length,
+    selectedSourceCount: selectedSources.length,
+    readyCount: readySources.length,
+    readySourceCount: readySources.length,
+    selectedReadyCount: selectedReadySources.length,
+    selectedReadySourceCount: selectedReadySources.length,
+    unavailableCount: sourceEntries.length - readySources.length,
+    unavailableSourceCount: sourceEntries.length - readySources.length,
+    warningCount: warnings.length,
+    warnings,
+  })
+}
+
+function settingsSourceDescriptorForHttp(source) {
+  const descriptor = normalizeKnowledgeSourceDescriptors([source])[0]
+  return registrySourceDescriptor(descriptor, null, {
+    includeHealth: false,
+    includeLocalRoots: false,
+    redactSourceUrls: false,
+  })
+}
+
+function registrySourceDescriptor(source, config = null, {
+  health = undefined,
+  includeHealth = true,
+  includeLocalRoots = false,
+  redactSourceUrls = true,
+} = {}) {
+  const rootMetadata = sourceRootMetadataForOutput(source, { includeLocalRoots })
+  const readiness = config ? knowledgeSourceReadiness(source, config) : knowledgeSourceReadiness(source)
+  return removeUndefinedProperties({
+    id: source.id,
+    name: source.name,
+    title: source.title,
+    description: source.description,
+    protocol: source.protocol,
+    status: source.status,
+    selected: source.selected !== false,
+    url: redactSourceUrls ? redactedUrlSummary(source.url) : source.url,
+    readiness: includeHealth ? readiness : undefined,
+    health: includeHealth ? (health || sourceHealthFromReadiness(readiness)) : undefined,
+    capabilities: source.capabilities,
+    adapter: source.adapter,
+    implementation: source.implementation,
+    bundleId: source.bundleId,
+    pageCount: source.pageCount,
+    approvedPageCount: source.approvedPageCount,
+    ...rootMetadata,
+  })
+}
+
+function sourceHealthFromReadiness(readiness) {
+  return removeUndefinedProperties({
+    ok: Boolean(readiness.ready),
+    basis: readiness.basis,
+    reason: readiness.reason,
+  })
+}
+
+async function probeKnowledgeSource(source, config) {
+  const readiness = knowledgeSourceReadiness(source, config)
+  if (!readiness.ready) {
+    return {
+      health: sourceHealthFromReadiness(readiness),
+      metadata: {},
+    }
+  }
+
+  if (source.protocol === 'llmwiki-http') return probeLlmwikiHttpSource(source, config)
+  if (source.protocol === 'mcp') return probeMcpSource(source, config)
+  if (source.protocol === 'a2a') return probeA2aSource(source, config)
+
+  return {
+    health: {
+      ok: false,
+      basis: 'live_probe',
+      checkedAt: new Date().toISOString(),
+      reason: 'unsupported_protocol',
+    },
+    metadata: {},
+  }
+}
+
+async function probeLlmwikiHttpSource(source, config) {
+  const checkedAt = new Date().toISOString()
+  const candidates = [
+    { url: joinUrl(source.url, '/source-bundle'), label: 'source-bundle' },
+    { url: joinUrl(source.url, '/manifest'), label: 'manifest' },
+  ]
+  let lastError
+  for (const candidate of candidates) {
+    try {
+      const payload = await fetchKnowledgeSourceJson(
+        candidate.url,
+        { method: 'GET' },
+        `llmwiki-http ${candidate.label}`,
+        config,
+        ioLogSourceContext(source, {}, `llmwiki-http ${candidate.label}`),
+      )
+      return {
+        health: {
+          ok: true,
+          basis: 'live_probe',
+          checkedAt,
+          endpoint: candidate.label,
+        },
+        metadata: registryManifestMetadata(source, payload),
+      }
+    } catch (error) {
+      lastError = error
+    }
+  }
+  return registryProbeFailure(lastError, checkedAt)
+}
+
+async function probeMcpSource(source, config) {
+  const checkedAt = new Date().toISOString()
+  try {
+    const payload = await callMcpTool(source, 'llmwiki_source_bundle', {}, config)
+    const sourceBundle = asRecord(payload.sourceBundle) || asRecord(payload.source_bundle) || payload
+    return {
+      health: {
+        ok: true,
+        basis: 'live_probe',
+        checkedAt,
+        endpoint: 'llmwiki_source_bundle',
+      },
+      metadata: registryManifestMetadata(source, sourceBundle),
+    }
+  } catch (error) {
+    return registryProbeFailure(error, checkedAt)
+  }
+}
+
+async function probeA2aSource(source, config) {
+  const checkedAt = new Date().toISOString()
+  try {
+    const card = await fetchKnowledgeSourceJson(
+      a2aAgentCardUrl(source.url),
+      { method: 'GET' },
+      'a2a agent card',
+      config,
+      ioLogSourceContext(source, {}, 'a2a agent-card'),
+    )
+    return {
+      health: {
+        ok: true,
+        basis: 'live_probe',
+        checkedAt,
+        endpoint: 'agent-card',
+      },
+      metadata: registryManifestMetadata(source, asRecord(card.metadata) || card),
+    }
+  } catch (error) {
+    return registryProbeFailure(error, checkedAt)
+  }
+}
+
+function registryProbeFailure(error, checkedAt) {
+  return {
+    health: removeUndefinedProperties({
+      ok: false,
+      basis: 'live_probe',
+      checkedAt,
+      reason: 'probe_failed',
+      httpStatus: httpStatusFromError(error),
+      timeout: isTimeoutError(error) ? true : undefined,
+      retryable: retryableFailure(error),
+      redacted: true,
+    }),
+    metadata: {},
+  }
+}
+
+function registryManifestMetadata(source, payload) {
+  const manifest = asRecord(payload)
+  if (!manifest) return {}
+  const metadata = asRecord(manifest.metadata) || {}
+  const projectionRecord = asRecord(manifest.projection)
+  const projection = projectionRecord ? { ...manifest, ...projectionRecord } : manifest
+  const rootCarrier = { ...metadata, ...manifest, ...(projectionRecord || {}) }
+  const root = sourceRootValue(rootCarrier) || source.root
+  const rootLabel = sourceRootLabelValue(rootCarrier) || sourceRootLabelValue(source) || safePathBasename(root)
+  return removeUndefinedProperties({
+    bundleId: readString(manifest, 'bundle_id') || readString(manifest, 'bundleId') || source.bundleId,
+    adapter: readString(manifest, 'adapter') || readString(metadata, 'adapter') || source.adapter,
+    implementation: readString(manifest, 'implementation') || readString(metadata, 'implementation') || source.implementation,
+    pageCount: readNumber(projection, 'page_count') ?? readNumber(projection, 'pageCount') ?? source.pageCount,
+    approvedPageCount: readNumber(projection, 'approved_page_count') ?? readNumber(projection, 'approvedPageCount') ?? source.approvedPageCount,
+    ...(root ? { root } : {}),
+    ...(rootLabel ? { rootLabel } : {}),
+  })
+}
+
+function sourceRegistryWarnings(sources) {
+  return [
+    ...duplicateSourceIdWarnings(sources),
+    ...duplicateBundleIdWarnings(sources),
+    ...ancestorRootWarnings(sources),
+  ]
+}
+
+function duplicateSourceIdWarnings(sources) {
+  return duplicateValueWarnings(
+    sources,
+    (source) => source.id,
+    'duplicate_source_id',
+    'Duplicate Knowledge Source id is present in the registry.',
+  )
+}
+
+function duplicateBundleIdWarnings(sources) {
+  return duplicateValueWarnings(
+    sources,
+    (source) => source.bundleId,
+    'duplicate_bundle_id',
+    'Multiple Knowledge Sources report the same bundle id.',
+  )
+}
+
+function duplicateValueWarnings(sources, valueForSource, code, message) {
+  const groups = new Map()
+  for (const source of sources) {
+    const value = valueForSource(source)
+    if (!value) continue
+    const group = groups.get(value) || []
+    group.push(source)
+    groups.set(value, group)
+  }
+  return [...groups.values()]
+    .filter((group) => group.length > 1)
+    .map((group) => registryWarning(code, message, group))
+}
+
+function ancestorRootWarnings(sources) {
+  const warnings = []
+  for (let leftIndex = 0; leftIndex < sources.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < sources.length; rightIndex += 1) {
+      const left = sources[leftIndex]
+      const right = sources[rightIndex]
+      if (!left.root || !right.root) continue
+      if (!rootsOverlapAsAncestor(left.root, right.root)) continue
+      warnings.push(registryWarning(
+        'overlapping_source_roots',
+        'Knowledge Source roots appear to overlap by ancestor path.',
+        [left, right],
+      ))
+    }
+  }
+  return warnings
+}
+
+function registryWarning(code, message, sources) {
+  return removeUndefinedProperties({
+    severity: 'warning',
+    code,
+    message,
+    sourceIds: sources.map((source) => diagnosticSubject(source.id)),
+    rootLabels: uniqueNonEmptyStrings(sources.map((source) => source.rootLabel || safePathBasename(source.root))),
+  })
+}
+
+function rootsOverlapAsAncestor(left, right) {
+  const normalizedLeft = comparableRootPath(left)
+  const normalizedRight = comparableRootPath(right)
+  if (!normalizedLeft || !normalizedRight || normalizedLeft === normalizedRight) return false
+  return isAncestorComparablePath(normalizedLeft, normalizedRight)
+    || isAncestorComparablePath(normalizedRight, normalizedLeft)
+}
+
+function comparableRootPath(value) {
+  const text = readStringValue(value).trim().replace(/[\\/]+$/g, '')
+  if (!text) return ''
+  const normalized = text.replace(/\\/g, '/')
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+
+function isAncestorComparablePath(parent, child) {
+  return child.startsWith(`${parent}/`)
+}
+
+function sourceRootMetadataForOutput(source, { includeLocalRoots = false } = {}) {
+  const root = source.root
+  const rootLabel = source.rootLabel || safePathBasename(root)
+  if (!root) return rootLabel ? { rootLabel } : {}
+  if (includeLocalRoots) {
+    return removeUndefinedProperties({
+      root,
+      rootLabel,
+      rootRedacted: false,
+    })
+  }
+  if (isAbsolutePathLike(root)) {
+    return removeUndefinedProperties({
+      rootLabel,
+      rootRedacted: true,
+    })
+  }
+  return removeUndefinedProperties({
+    root,
+    rootLabel,
+    rootRedacted: false,
+  })
 }
 
 function assertSettingsPersistenceEnabled(config) {
@@ -4927,6 +5599,7 @@ function normalizeBridgeConfigSettingsInput(input, currentConfig) {
     persisted.baseUrl = baseUrl
     live.baseUrl = baseUrl
     live.hermesBaseUrl = baseUrl
+    live.baseUrlSource = 'settings'
     markApplied(applied, 'baseUrl', 'hermesBaseUrl')
   }
 
@@ -4945,12 +5618,14 @@ function normalizeBridgeConfigSettingsInput(input, currentConfig) {
     persisted.model = model
     live.model = model
     live.hermesModel = model
+    live.modelSource = 'settings'
     markApplied(applied, 'model', 'hermesModel')
   } else if (runtimeProfileChanged && !currentConfig.model) {
     const model = DEFAULT_AGENT_MODEL
     persisted.model = model
     live.model = model
     live.hermesModel = model
+    live.modelSource = 'default'
     markApplied(applied, 'model', 'hermesModel')
   }
 
@@ -5093,7 +5768,9 @@ function normalizeSourceRegistryInput(body) {
   if (!Array.isArray(rawSources)) {
     throw new HttpError(400, 'Sources body must be an array or an object with a sources array.', 'bad_request')
   }
-  return rawSources.map((source, index) => normalizeRegisteredSource(source, index))
+  const sources = rawSources.map((source, index) => normalizeRegisteredSource(source, index))
+  assertUniqueRegisteredSourceIds(sources)
+  return sources
 }
 
 function normalizeRegisteredSource(value, index) {
@@ -5109,13 +5786,18 @@ function normalizeRegisteredSource(value, index) {
   if (!url) throw new HttpError(400, `Source ${index + 1} url is required.`, 'bad_request')
   assertRegistrySourceUrl(url, index)
 
-  const id = readString(source, 'id') || `source-${index + 1}`
+  const id = readString(source, 'id') || readString(source, 'source_id') || readString(source, 'sourceId') || `source-${index + 1}`
   const name = readString(source, 'name') || readString(source, 'title') || `Source ${index + 1}`
   const title = readString(source, 'title') || name
   const description = readString(source, 'description')
   const capabilities = readStringArray(source.capabilities).map((item) => item.trim()).filter(Boolean)
   const adapter = readString(source, 'adapter')
   const implementation = readString(source, 'implementation')
+  const bundleId = readString(source, 'bundleId') || readString(source, 'bundle_id')
+  const pageCount = readNumber(source, 'pageCount') ?? readNumber(source, 'page_count')
+  const approvedPageCount = readNumber(source, 'approvedPageCount') ?? readNumber(source, 'approved_page_count')
+  const root = sourceRootValue(source)
+  const rootLabel = sourceRootLabelValue(source) || safePathBasename(root)
 
   return removeUndefinedProperties({
     id,
@@ -5129,7 +5811,28 @@ function normalizeRegisteredSource(value, index) {
     ...(capabilities.length ? { capabilities } : {}),
     ...(adapter ? { adapter } : {}),
     ...(implementation ? { implementation } : {}),
+    ...(bundleId ? { bundleId } : {}),
+    ...(pageCount !== undefined ? { pageCount } : {}),
+    ...(approvedPageCount !== undefined ? { approvedPageCount } : {}),
+    ...(root ? { root } : {}),
+    ...(rootLabel ? { rootLabel } : {}),
   })
+}
+
+function assertUniqueRegisteredSourceIds(sources) {
+  const firstIndexById = new Map()
+  for (const [index, source] of sources.entries()) {
+    const id = source.id
+    if (!firstIndexById.has(id)) {
+      firstIndexById.set(id, index)
+      continue
+    }
+    throw new HttpError(
+      409,
+      `Duplicate Knowledge Source id "${diagnosticSubject(id)}" at positions ${firstIndexById.get(id) + 1} and ${index + 1}; source ids must be unique.`,
+      'duplicate_source_id',
+    )
+  }
 }
 
 function assertRegistrySourceUrl(value, index) {
@@ -5147,6 +5850,40 @@ function assertRegistrySourceUrl(value, index) {
   if (parsedUrl.username || parsedUrl.password) {
     throw new HttpError(400, `Source ${index + 1} url must not include credentials.`, 'bad_request')
   }
+}
+
+function sourceRootValue(source) {
+  return readString(source, 'root')
+    || readString(source, 'path')
+    || readString(source, 'rootPath')
+    || readString(source, 'root_path')
+    || readString(source, 'servedRoot')
+    || readString(source, 'served_root')
+}
+
+function sourceRootLabelValue(source) {
+  return readString(source, 'rootLabel')
+    || readString(source, 'root_label')
+    || readString(source, 'rootName')
+    || readString(source, 'root_name')
+}
+
+function safePathBasename(value) {
+  let text = readStringValue(value).trim()
+  while (text.endsWith('/') || text.endsWith('\\')) {
+    text = text.slice(0, -1)
+  }
+  if (!text) return ''
+  const normalized = text.replace(/\\/g, '/')
+  const parts = normalized.split('/').filter(Boolean)
+  return parts.at(-1) || normalized
+}
+
+function isAbsolutePathLike(value) {
+  const text = readStringValue(value).trim()
+  return text.startsWith('/')
+    || text.startsWith('\\\\')
+    || /^[A-Za-z]:[\\/]/.test(text)
 }
 
 function persistBridgeSettings(config, patch) {
@@ -7073,15 +7810,17 @@ function bridgeConfig(env, options = {}) {
     ?? numberFromEnvValue(env.PORT)
     ?? readNumberValue(persistentConfig.port)
     ?? DEFAULT_PORT
-  const baseUrl = stringOption(options.baseUrl)
-    || stringOption(options.agentBaseUrl)
-    || stringOption(options.hermesBaseUrl)
-    || stringOption(env.LLMWIKI_AGENT_BRIDGE_BASE_URL)
-    || stringOption(env.HERMES_BASE_URL)
-    || stringOption(persistentConfig.baseUrl)
-    || stringOption(persistentConfig.agentBaseUrl)
-    || stringOption(persistentConfig.hermesBaseUrl)
-    || DEFAULT_AGENT_BASE_URL
+  const baseUrlSelection = firstStringOptionWithSource([
+    ['option', options.baseUrl],
+    ['option', options.agentBaseUrl],
+    ['option', options.hermesBaseUrl],
+    ['env', env.LLMWIKI_AGENT_BRIDGE_BASE_URL],
+    ['env', env.HERMES_BASE_URL],
+    ['settings', persistentConfig.baseUrl],
+    ['settings', persistentConfig.agentBaseUrl],
+    ['settings', persistentConfig.hermesBaseUrl],
+  ], DEFAULT_AGENT_BASE_URL)
+  const baseUrl = baseUrlSelection.value
   const apiKey = stringOption(options.apiKey)
     ?? stringOption(options.agentApiKey)
     ?? stringOption(options.hermesApiKey)
@@ -7091,15 +7830,17 @@ function bridgeConfig(env, options = {}) {
     ?? stringOption(persistentConfig.agentApiKey)
     ?? stringOption(persistentConfig.hermesApiKey)
     ?? ''
-  const model = stringOption(options.model)
-    || stringOption(options.agentModel)
-    || stringOption(options.hermesModel)
-    || stringOption(env.LLMWIKI_AGENT_BRIDGE_MODEL)
-    || stringOption(env.HERMES_MODEL)
-    || stringOption(persistentConfig.model)
-    || stringOption(persistentConfig.agentModel)
-    || stringOption(persistentConfig.hermesModel)
-    || DEFAULT_AGENT_MODEL
+  const modelSelection = firstStringOptionWithSource([
+    ['option', options.model],
+    ['option', options.agentModel],
+    ['option', options.hermesModel],
+    ['env', env.LLMWIKI_AGENT_BRIDGE_MODEL],
+    ['env', env.HERMES_MODEL],
+    ['settings', persistentConfig.model],
+    ['settings', persistentConfig.agentModel],
+    ['settings', persistentConfig.hermesModel],
+  ], DEFAULT_AGENT_MODEL)
+  const model = modelSelection.value
   const bridgeBearerToken = stringOption(options.bridgeBearerToken)
     ?? stringOption(env.LLMWIKI_AGENT_BRIDGE_BEARER_TOKEN)
     ?? stringOption(env.HERMES_A2A_BRIDGE_BEARER_TOKEN)
@@ -7226,8 +7967,10 @@ function bridgeConfig(env, options = {}) {
     host,
     port,
     baseUrl,
+    baseUrlSource: baseUrlSelection.source,
     apiKey,
     model,
+    modelSource: modelSelection.source,
     hermesBaseUrl: baseUrl,
     hermesApiKey: apiKey,
     hermesModel: model,
@@ -7339,6 +8082,14 @@ function stringOption(value) {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
   return trimmed ? trimmed : undefined
+}
+
+function firstStringOptionWithSource(entries, defaultValue) {
+  for (const [source, value] of entries) {
+    const option = stringOption(value)
+    if (option !== undefined) return { value: option, source }
+  }
+  return { value: defaultValue, source: 'default' }
 }
 
 function absolutePathOption(value) {
@@ -7944,6 +8695,16 @@ function chatCompletionsUrl(baseUrl) {
   return pathName(clean).endsWith('/chat/completions') ? clean : `${clean}/chat/completions`
 }
 
+function runtimeModelsUrl(baseUrl) {
+  const clean = trimTrailingSlashes(baseUrl.trim())
+  const path = pathName(clean)
+  if (path.endsWith('/models')) return clean
+  if (path.endsWith('/chat/completions')) {
+    return `${clean.slice(0, -'/chat/completions'.length)}/models`
+  }
+  return `${clean}/models`
+}
+
 function joinUrl(base, path) {
   return `${trimTrailingSlashes(base)}${path}`
 }
@@ -8211,6 +8972,16 @@ export function runAgentBridgeCli(argv = process.argv.slice(2), options = {}) {
     return
   }
 
+  const registryCommand = parseRegistryCliCommand(argv)
+  if (registryCommand) {
+    runAgentBridgeCliRegistryCommand(registryCommand, { env, stdout, stderr })
+      .catch((error) => {
+        stderr.write(`${redactedLogLine('llmwiki agent bridge cli failed', error)}\n`)
+        process.exitCode = 1
+      })
+    return
+  }
+
   let runningServer
   const configPath = stringOption(env[CONFIG_PATH_ENV])
     ?? stringOption(env[DEPRECATED_CONFIG_PATH_ENV])
@@ -8222,7 +8993,9 @@ export function runAgentBridgeCli(argv = process.argv.slice(2), options = {}) {
         event: 'ready',
         url,
         baseUrl: redactedUrlSummary(config.baseUrl),
+        baseUrlSource: config.baseUrlSource,
         modelConfigured: Boolean(config.model),
+        modelSource: config.modelSource,
         hermesBaseUrl: redactedUrlSummary(config.hermesBaseUrl),
         hermesModelConfigured: Boolean(config.hermesModel),
         publicBind: config.publicBind,
@@ -8269,12 +9042,18 @@ function agentBridgeCliHelp() {
     '',
     'Usage:',
     `  ${PACKAGE_NAME} [--help] [--version]`,
+    `  ${PACKAGE_NAME} sources [--json] [--probe] [--config PATH]`,
+    `  ${PACKAGE_NAME} ls [--json] [--probe] [--config PATH]`,
+    `  ${PACKAGE_NAME} status [--json] [--probe] [--config PATH]`,
     '',
     'Starts the local LLMWiki Agent Bridge HTTP service.',
     '',
     'Options:',
     '  -h, --help       Print this help and exit.',
     '  -v, --version    Print the package version and exit.',
+    '      --json       Print command output as JSON.',
+    '      --probe      Probe registered source and runtime reachability when supported.',
+    '      --config     Read a specific persistent settings file.',
     '',
     'Common environment variables:',
     '  LLMWIKI_AGENT_BRIDGE_HOST             Bridge bind host.',
@@ -8287,4 +9066,89 @@ function agentBridgeCliHelp() {
     '',
     'Run without options to start the service.',
   ].join('\n') + '\n'
+}
+
+function parseRegistryCliCommand(argv) {
+  const index = argv.findIndex((arg) => ['sources', 'ls', 'status'].includes(arg))
+  if (index < 0) return null
+  return {
+    name: argv[index],
+    argv,
+  }
+}
+
+async function runAgentBridgeCliRegistryCommand(command, { env, stdout }) {
+  const configPath = cliConfigPath(command.argv, env)
+  const config = bridgeConfig(env, { configPath })
+  const probe = hasCliFlag(command.argv, '--probe')
+  const json = hasCliFlag(command.argv, '--json')
+  const status = command.name === 'status'
+  const result = await sourceRegistryCliResponse(config, { probe, status })
+  stdout.write(json
+    ? `${JSON.stringify(result, null, 2)}\n`
+    : cliRegistryText(result, { status }))
+}
+
+function cliConfigPath(argv, env) {
+  return stringOption(cliStringOption(argv, '--config'))
+    ?? stringOption(cliStringOption(argv, '--config-path'))
+    ?? stringOption(env[CONFIG_PATH_ENV])
+    ?? stringOption(env[DEPRECATED_CONFIG_PATH_ENV])
+    ?? defaultBridgeConfigPath(env)
+}
+
+function cliStringOption(argv, name) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+    if (arg === name) return argv[index + 1]
+    if (arg.startsWith(`${name}=`)) return arg.slice(name.length + 1)
+  }
+  return undefined
+}
+
+function cliRegistryText(result, { status = false } = {}) {
+  const registry = status ? result.sourceRegistry : result
+  const lines = []
+  if (status) {
+    lines.push(`Bridge: ${result.bridge}`)
+    lines.push(`Runtime: ${result.runtime.profile} / ${result.runtime.adapter} (${result.runtimeConnection.modelSource} model, ${result.runtimeConnection.baseUrlSource} base URL)`)
+    lines.push(`Persistence: ${result.persistence.configPathConfigured ? 'configured' : 'not configured'}`)
+    lines.push('')
+  }
+
+  lines.push(`Sources: ${registry.registeredCount} registered, ${registry.selectedCount} selected, ${registry.readyCount} ready (${registry.healthBasis})`)
+  if (!registry.sources.length) {
+    lines.push('No Knowledge Sources are registered.')
+  } else {
+    lines.push(cliSourceTable(registry.sources))
+  }
+
+  if (registry.warnings.length) {
+    lines.push('')
+    lines.push('Warnings:')
+    for (const warning of registry.warnings) {
+      lines.push(`- ${warning.code}: ${warning.sourceIds.join(', ')}`)
+    }
+  }
+
+  return `${lines.join('\n')}\n`
+}
+
+function cliSourceTable(sources) {
+  const rows = [
+    ['ID', 'URL', 'ROOT', 'PROTOCOL', 'HEALTH', 'SELECTED', 'PAGES'],
+    ...sources.map((source) => [
+      source.id,
+      source.url,
+      source.root || source.rootLabel || '',
+      source.protocol,
+      source.health?.ok ? 'ok' : source.health?.reason || 'unavailable',
+      source.selected === false ? 'no' : 'yes',
+      source.pageCount === undefined ? '' : String(source.pageCount),
+    ]),
+  ]
+  const widths = rows[0].map((_, column) => Math.max(...rows.map((row) => String(row[column] || '').length)))
+  return rows
+    .map((row) => row.map((cell, column) => String(cell || '').padEnd(widths[column])).join('  ').trimEnd())
+    .join('\n')
 }

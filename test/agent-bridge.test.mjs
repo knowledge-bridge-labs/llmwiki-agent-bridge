@@ -216,10 +216,13 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(settingsResponse.status, 200)
     assert.equal(settings.endpoints.settings, '/settings')
     assert.equal(settings.endpoints.settingsJson, '/settings.json')
+    assert.equal(settings.endpoints.sources, '/sources')
     assert.equal(settings.endpoints.mcp, '/mcp')
     assert.equal(settings.runtime.profile, 'hermes')
     assert.equal(settings.runtime.adapter, 'chat-completions')
     assert.equal(settings.runtimeConnection.baseUrl, 'http://runtime.example.test/v1')
+    assert.equal(settings.runtimeConnection.baseUrlSource, 'option')
+    assert(['default', 'env'].includes(settings.runtimeConnection.modelSource))
     assert.equal(settings.runtimeConnection.apiKeyConfigured, true)
     assert.equal(settings.bridgeAuth.bearerTokenConfigured, true)
     assert.equal(settings.network.port, bridge.config.port)
@@ -441,6 +444,181 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(persisted.sources[0].id, 'registered-source')
     assert.equal(persisted.sources[1].id, 'secondary-source')
     assert.equal(persisted.sources[1].selected, false)
+  })
+
+  it('serves redacted registered sources and optional live source probe metadata', async (t) => {
+    const configPath = await tempConfigPath(t)
+    const rootPath = join(await mkdtemp(join(tmpdir(), 'llmwiki-agent-bridge-root-')), 'wiki')
+    await mkdir(rootPath, { recursive: true })
+    const source = await startFixtureServer(async ({ url, response }) => {
+      assert.equal(url.pathname, '/source-bundle')
+      writeJson(response, 200, {
+        source_id: 'registry-source',
+        bundle_id: 'registry-bundle',
+        adapter: 'llmwiki-markdown',
+        implementation: 'fixture-source',
+        projection: {
+          page_count: 67,
+          approved_page_count: 61,
+        },
+        root: rootPath,
+      })
+    })
+    const bridge = await startAgentBridge({
+      port: 0,
+      configPath,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(async () => {
+      await closeServer(bridge.server)
+      await closeServer(source.server)
+    })
+
+    const saveResponse = await fetch(`${bridge.url}/settings/sources.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sources: [
+          {
+            ...knowledgeSource('registry-source', 'Registry Source', 'llmwiki-http', source.url),
+            root: rootPath,
+          },
+        ],
+      }),
+    })
+    const saved = await saveResponse.json()
+    const savedText = JSON.stringify(saved)
+
+    assert.equal(saveResponse.status, 200)
+    assert.equal(saved.sources[0].root, undefined)
+    assert.equal(saved.sources[0].rootLabel, 'wiki')
+    assert.equal(saved.sources[0].rootRedacted, true)
+    assert.doesNotMatch(savedText, new RegExp(escapeRegExp(rootPath)))
+
+    const listResponse = await fetch(`${bridge.url}/sources`)
+    const listed = await listResponse.json()
+
+    assert.equal(listResponse.status, 200)
+    assert.equal(listed.schemaVersion, 'llmwiki.agent-bridge.sources.v1')
+    assert.equal(listed.registeredCount, 1)
+    assert.equal(listed.selectedCount, 1)
+    assert.equal(listed.readyCount, 1)
+    assert.equal(listed.healthBasis, 'last_known_status_bridge_policy')
+    assert.equal(listed.sources[0].root, undefined)
+    assert.equal(listed.sources[0].rootLabel, 'wiki')
+    assert.equal(listed.sources[0].rootRedacted, true)
+    assert.equal(listed.sources[0].health.basis, 'last_known_status_bridge_policy')
+    assert.doesNotMatch(JSON.stringify(listed), new RegExp(escapeRegExp(rootPath)))
+
+    const probeResponse = await fetch(`${bridge.url}/sources?probe=1`)
+    const probed = await probeResponse.json()
+
+    assert.equal(probeResponse.status, 200)
+    assert.equal(probed.healthBasis, 'live_probe')
+    assert.equal(probed.sources[0].health.ok, true)
+    assert.equal(probed.sources[0].health.basis, 'live_probe')
+    assert.equal(probed.sources[0].health.endpoint, 'source-bundle')
+    assert.equal(probed.sources[0].adapter, 'llmwiki-markdown')
+    assert.equal(probed.sources[0].implementation, 'fixture-source')
+    assert.equal(probed.sources[0].bundleId, 'registry-bundle')
+    assert.equal(probed.sources[0].pageCount, 67)
+    assert.equal(probed.sources[0].approvedPageCount, 61)
+    assert.equal(probed.sources[0].root, undefined)
+    assert.equal(probed.sources[0].rootLabel, 'wiki')
+    assert.equal(probed.sources[0].rootRedacted, true)
+    assert.doesNotMatch(JSON.stringify(probed), new RegExp(escapeRegExp(rootPath)))
+  })
+
+  it('rejects duplicate registered source ids instead of accepting ambiguous registry state', async (t) => {
+    const configPath = await tempConfigPath(t)
+    const bridge = await startAgentBridge({
+      port: 0,
+      configPath,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/settings/sources.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sources: [
+          knowledgeSource('duplicate-source', 'Duplicate Source A', 'llmwiki-http', 'http://127.0.0.1:11001'),
+          knowledgeSource('duplicate-source', 'Duplicate Source B', 'llmwiki-http', 'http://127.0.0.1:11002'),
+        ],
+      }),
+    })
+    const body = await response.json()
+
+    assert.equal(response.status, 409)
+    assert.equal(body.error.code, 'duplicate_source_id')
+    assert.match(body.error.message, /Duplicate Knowledge Source id/)
+    assert.match(body.error.message, /duplicate-source/)
+    assert.doesNotMatch(JSON.stringify(body), /11001|11002/)
+  })
+
+  it('prints local source registry and status from the CLI without starting the server', async (t) => {
+    const configPath = await tempConfigPath(t)
+    const rootPath = join(await mkdtemp(join(tmpdir(), 'llmwiki-agent-bridge-cli-root-')), 'wiki')
+    await mkdir(rootPath, { recursive: true })
+    await writeFile(configPath, JSON.stringify({
+      version: 1,
+      config: {
+        runtimeProfile: 'generic',
+        baseUrl: 'http://runtime.example.test/v1',
+        model: 'local-model',
+      },
+      sources: [
+        {
+          ...knowledgeSource('cli-source', 'CLI Source', 'llmwiki-http', 'http://127.0.0.1:11003'),
+          root: rootPath,
+          bundleId: 'cli-bundle',
+          pageCount: 12,
+        },
+      ],
+    }))
+
+    const sources = await execFileAsync(process.execPath, [
+      'bin/llmwiki-agent-bridge.mjs',
+      'sources',
+      '--json',
+      '--config',
+      configPath,
+    ], {
+      cwd: packageRoot,
+      env: cliSettingsOnlyEnv(),
+      maxBuffer: 1024 * 1024,
+    })
+    const listed = JSON.parse(sources.stdout)
+
+    assert.equal(sources.stderr, '')
+    assert.equal(listed.registeredCount, 1)
+    assert.equal(listed.sources[0].id, 'cli-source')
+    assert.equal(listed.sources[0].root, rootPath)
+    assert.equal(listed.sources[0].rootRedacted, false)
+    assert.doesNotMatch(sources.stdout, /"event":"ready"/)
+
+    const status = await execFileAsync(process.execPath, [
+      'bin/llmwiki-agent-bridge.mjs',
+      'status',
+      '--json',
+      '--config',
+      configPath,
+    ], {
+      cwd: packageRoot,
+      env: cliSettingsOnlyEnv(),
+      maxBuffer: 1024 * 1024,
+    })
+    const statusJson = JSON.parse(status.stdout)
+
+    assert.equal(status.stderr, '')
+    assert.equal(statusJson.runtime.profile, 'generic')
+    assert.equal(statusJson.runtimeConnection.baseUrlSource, 'settings')
+    assert.equal(statusJson.runtimeConnection.modelSource, 'settings')
+    assert.equal(statusJson.sourceRegistry.sources[0].root, rootPath)
+    assert.doesNotMatch(status.stdout, /"event":"ready"/)
   })
 
   it('fails closed without leaking URLs when a persisted ready registered source is stale', async (t) => {
@@ -1196,6 +1374,7 @@ describe('llmwiki-agent-bridge', () => {
       '/settings.json',
       '/settings/config.json',
       '/settings/sources.json',
+      '/sources',
     ])
     assert.equal(
       schema.paths['/message:send'].post.responses[200].content['application/json'].schema.$ref,
@@ -1290,8 +1469,28 @@ describe('llmwiki-agent-bridge', () => {
       'SettingsSourcesResponse schema missing',
     )
     assert(
+      Object.hasOwn(schema.components.schemas, 'SourcesResponse'),
+      'SourcesResponse schema missing',
+    )
+    assert(
+      Object.hasOwn(schema.components.schemas, 'PublicRuntimeConnection'),
+      'PublicRuntimeConnection schema missing',
+    )
+    assert(
       Object.hasOwn(schema.components.schemas, 'McpJsonRpcResponse'),
       'McpJsonRpcResponse schema missing',
+    )
+    assert.deepEqual(
+      schema.components.schemas.McpJsonRpcRequest.properties.method.enum,
+      ['initialize', 'notifications/initialized', 'ping', 'tools/list', 'tools/call'],
+    )
+    assert(
+      Object.hasOwn(schema.components.schemas, 'McpInitializeResult'),
+      'McpInitializeResult schema missing',
+    )
+    assert(
+      Object.hasOwn(schema.components.schemas, 'McpPingResult'),
+      'McpPingResult schema missing',
     )
     assert(
       Object.hasOwn(schema.components.schemas, 'McpSourcesResult'),
@@ -2092,6 +2291,42 @@ describe('llmwiki-agent-bridge', () => {
     assert.match(runtime.lastBody.messages[1].content, new RegExp(escapeRegExp(contextCanary)))
     assert.match(runtime.lastBody.messages[1].content, new RegExp(escapeRegExp(sessionCanary)))
     assert.match(runtime.lastBody.messages[1].content, new RegExp(escapeRegExp(turnCanary)))
+  })
+
+  it('supports MCP initialize, initialized notification, and ping lifecycle methods', async (t) => {
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const initialized = await callBridgeMcp(bridge, 1, 'initialize', {
+      protocolVersion: '2025-06-18',
+      capabilities: {},
+      clientInfo: { name: 'probe', version: '1' },
+    })
+
+    assert.equal(initialized.result.protocolVersion, '2025-06-18')
+    assert.equal(initialized.result.serverInfo.name, 'llmwiki-agent-bridge')
+    assert.equal(typeof initialized.result.serverInfo.version, 'string')
+    assert.deepEqual(initialized.result.capabilities, {
+      tools: { listChanged: false },
+    })
+
+    const notificationResponse = await fetch(`${bridge.url}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'notifications/initialized',
+      }),
+    })
+    assert.equal(notificationResponse.status, 202)
+    assert.equal(await notificationResponse.text(), '')
+
+    const ping = await callBridgeMcp(bridge, 2, 'ping')
+    assert.deepEqual(ping.result, {})
   })
 
   it('exposes an MCP llmwiki_agent_run tool backed by the A2A run path', async (t) => {
@@ -4940,12 +5175,12 @@ describe('llmwiki-agent-bridge', () => {
 
     assert.equal(response.status, 502)
     assert.equal(body.error.code, 'chat_completions_failed')
-    assert.equal(body.error.message, 'Chat completions request failed.')
+    assert.equal(body.error.message, 'Chat completions request failed. Check the configured OpenAI-compatible runtime at /settings, or retry with orchestrationMode: "evidence-only".')
     assert.equal(body.requestId, 'test-runtime-failure')
     assert.equal(typeof body.traceId, 'string')
     assert(body.traceId.length > 0)
     assert.equal(runtimeStep.status, 'error')
-    assert.equal(runtimeStep.error, 'Chat completions request failed.')
+    assert.equal(runtimeStep.error, 'Chat completions request failed. Check the configured OpenAI-compatible runtime at /settings, or retry with orchestrationMode: "evidence-only".')
     assert.equal(runtimeStep.diagnostic.schemaVersion, 'llmwiki.agent-bridge.diagnostic.v1')
     assert.equal(runtimeStep.diagnostic.scope, 'runtime')
     assert.equal(runtimeStep.diagnostic.phase, 'chat-completions')
@@ -4953,6 +5188,8 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(runtimeStep.diagnostic.redacted, true)
     assert.equal(observationValue(runtimeStep.diagnostic, 'httpStatus'), '500')
     assert.equal(observationValue(runtimeStep.diagnostic, 'runtimeProfile'), 'hermes')
+    assert.equal(observationValue(runtimeStep.diagnostic, 'runtimeAdapter'), 'chat-completions')
+    assert.equal(observationValue(runtimeStep.diagnostic, 'runtimeBaseUrlSource'), 'option')
     assert.equal(observationValue(runtimeStep.diagnostic, 'timeoutMs'), '120000')
     assert.deepEqual(body.diagnostics, [runtimeStep.diagnostic])
     assert.doesNotMatch(JSON.stringify(body), /sk-secret-runtime/)
@@ -8216,6 +8453,16 @@ function mockRuntimeEnv(runtime, {
     LLMWIKI_AGENT_BRIDGE_BASE_URL: baseUrl,
     LLMWIKI_AGENT_BRIDGE_MODEL: model,
     LLMWIKI_AGENT_BRIDGE_API_KEY: apiKey,
+  }
+}
+
+function cliSettingsOnlyEnv() {
+  return {
+    ...process.env,
+    LLMWIKI_AGENT_BRIDGE_BASE_URL: '',
+    HERMES_BASE_URL: '',
+    LLMWIKI_AGENT_BRIDGE_MODEL: '',
+    HERMES_MODEL: '',
   }
 }
 

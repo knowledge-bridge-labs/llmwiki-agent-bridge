@@ -8,6 +8,27 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 No unreleased changes.
 
+## [0.3.0] - 2026-07-28
+
+### Added
+
+- MCP lifecycle handling for `initialize`, `notifications/initialized`, and
+  `ping` before tool discovery and tool calls.
+- Redacted `GET /sources` source-registry visibility, with `?probe=1` live
+  health checks and safe source manifest metadata.
+- Local CLI source inspection commands: `sources`, `ls`, and `status`.
+- Public runtime configuration and reachability metadata for health, settings,
+  agent card, and source registry consumers.
+- Source registry visibility spec and ADR coverage.
+
+### Changed
+
+- Chat-completions runtime failures now return more actionable redacted error
+  details without exposing prompts, upstream response bodies, credentials, or
+  private endpoint values.
+- Duplicate source IDs are rejected on persisted settings writes and surfaced as
+  warnings in read-only registry views.
+
 ## [0.2.1] - 2026-07-27
 
 ### Added

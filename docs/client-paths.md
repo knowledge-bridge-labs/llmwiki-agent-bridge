@@ -138,6 +138,8 @@ The first-run path is:
    descriptors through `GET/PUT /settings/sources.json`. A client may still send
    `knowledgeSources` on each request; when it omits them, the bridge uses the
    registered sources instead.
+   Use `GET /sources` for a redacted registry view, or `GET /sources?probe=1`
+   when an operator needs live source health and safe manifest metadata.
 3. Verify Bridge. The page sends `POST /message:send` with the registered
    source set and displays the returned answer artifact, citations, graph, and
    trace steps.
