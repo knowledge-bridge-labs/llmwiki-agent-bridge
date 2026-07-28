@@ -223,27 +223,36 @@ The bundled `examples/message-send.local.json` points at
 temporary path, update the source URL, and post it to the bridge URL you
 started.
 
-MCP-style clients can list bridge tools at `/mcp`. Use
-`llmwiki_agent_run` when you want the bridge to produce a full grounded answer,
-or use the read-only source tools when your host agent wants to inspect sources
-progressively:
+MCP-style clients can complete the basic lifecycle on `/mcp` with
+`initialize`, `notifications/initialized`, and `ping`, then list bridge tools.
+Use `llmwiki_agent_run` when you want the bridge to produce a full grounded
+answer, or use the read-only source tools when your host agent wants to inspect
+sources progressively:
 
 ```sh
 curl -s http://127.0.0.1:8788/mcp \
   -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}'
 
 curl -s http://127.0.0.1:8788/mcp \
   -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"llmwiki_agent_run","arguments":{"query":"release readiness"}}}'
+  -d '{"jsonrpc":"2.0","id":2,"method":"ping"}'
 
 curl -s http://127.0.0.1:8788/mcp \
   -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"llmwiki_context","arguments":{"sourceId":"sample-wiki","query":"release readiness","limit":5}}}'
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
 
 curl -s http://127.0.0.1:8788/mcp \
   -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"llmwiki_graph_neighbors","arguments":{"sourceId":"sample-wiki","nodeId":"sample-wiki:overview","direction":"out","relation":"supports","limit":20}}}'
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"llmwiki_agent_run","arguments":{"query":"release readiness"}}}'
+
+curl -s http://127.0.0.1:8788/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"llmwiki_context","arguments":{"sourceId":"sample-wiki","query":"release readiness","limit":5}}}'
+
+curl -s http://127.0.0.1:8788/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"llmwiki_graph_neighbors","arguments":{"sourceId":"sample-wiki","nodeId":"sample-wiki:overview","direction":"out","relation":"supports","limit":20}}}'
 ```
 
 Omit `knowledgeSources` to use sources registered through `/settings`. Passing
@@ -300,13 +309,14 @@ The bridge exposes one small local HTTP surface:
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /health` | Runtime, configuration, source policy, and redacted source-registry readiness snapshot. |
+| `GET /sources` | Redacted source registry view. Add `?probe=1` for live source health and safe manifest metadata. |
 | `GET /.well-known/agent-card.json` | Local A2A-style agent card metadata with redacted source-registry readiness counts. |
 | `GET /settings` | Guided local setup UI: connect runtime, register Knowledge Sources, and verify with `POST /message:send`. |
 | `GET /settings.json` | Redacted runtime, bridge, persistence, and endpoint metadata. |
 | `PUT /settings/config.json` | Persists runtime configuration plus advanced access, CORS, timeout, and source-policy settings. |
 | `GET/PUT /settings/sources.json` | Reads or persists registered Knowledge Sources. |
 | `POST /message:send` | A2A-style request that returns a completed task artifact. |
-| `POST /mcp` | MCP-style JSON-RPC endpoint with `llmwiki_agent_run` plus read-only source tools. |
+| `POST /mcp` | MCP-style JSON-RPC endpoint with lifecycle methods, `llmwiki_agent_run`, and read-only source tools. |
 
 For each `POST /message:send` request, the bridge:
 
@@ -329,6 +339,13 @@ call the configured runtime; they let a host agent list sources, read
 orientation-first context, search, open a page, inspect graph data, traverse a
 bounded neighborhood, or read safe source-bundle metadata before deciding
 whether more source exploration or a full answer run is needed.
+
+For local operator checks without starting the HTTP service, use
+`llmwiki-agent-bridge sources --json`, `llmwiki-agent-bridge ls`, or
+`llmwiki-agent-bridge status --probe`. CLI output reads the local settings file
+and may show stored local roots for diagnostics. HTTP registry responses redact
+absolute roots to safe labels and reject duplicate source IDs on
+`PUT /settings/sources.json`.
 
 Requests may supply `knowledgeSources` directly, or omit them and use the
 bridge's registered Knowledge Sources. Register sources in Step 2 of
