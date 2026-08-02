@@ -204,6 +204,80 @@ const runtimeAdapterAliases = new Map([
   ['acp', 'deepagents-acp'],
 ])
 const orchestrationModes = new Set(['evidence-only', 'delegated-runtime', 'hybrid'])
+const RETRIEVAL_SCHEMA_VERSION = 'llmwiki.retrieval.v1'
+const RETRIEVAL_GUIDANCE_SCHEMA_VERSION = 'llmwiki.retrieval_guidance.v1'
+const RETRIEVAL_CAPABILITY_V1 = 'llmwiki_retrieval_v1'
+const GUIDED_LEXICAL_CAPABILITY_V1 = 'llmwiki_agent_guided_lexical_v1'
+const A2A_RETRIEVAL_CAPABILITIES = Symbol('llmwiki.a2aRetrievalCapabilities')
+const RETRIEVAL_GUIDANCE_CONTENT_TRUST = 'untrusted_source_evidence'
+const RETRIEVAL_SEARCH_MODE_CAPABILITIES = {
+  lexical: 'llmwiki_search_mode_lexical',
+  literal: 'llmwiki_search_mode_literal',
+  vector: 'llmwiki_search_mode_vector',
+  hybrid: 'llmwiki_search_mode_hybrid',
+}
+const retrievalSearchModes = new Set(Object.keys(RETRIEVAL_SEARCH_MODE_CAPABILITIES))
+const retrievalFallbackModes = new Set(['lexical', 'none'])
+const retrievalGuidanceOrientationSources = new Set(['authored', 'projection_extractive', 'none'])
+const retrievalGuidanceFallbackModes = ['literal', 'hybrid', 'vector']
+const retrievalCapabilitySet = new Set([
+  RETRIEVAL_CAPABILITY_V1,
+  GUIDED_LEXICAL_CAPABILITY_V1,
+  ...Object.values(RETRIEVAL_SEARCH_MODE_CAPABILITIES),
+])
+const retrievalIntentKeys = new Set(['schemaVersion', 'searchMode', 'fallback', 'search'])
+const retrievalSearchOptionKeys = new Set(['limit', 'snippetChars', 'fields', 'excludePageIds', 'queryVariants'])
+const publicRetrievalGuidanceKeys = new Set([
+  'schemaVersion',
+  'orientationSource',
+  'contentTrust',
+  'maxQueryVariants',
+  'characterBudget',
+  'folderCards',
+  'pageCards',
+  'suggestedTerms',
+  'exactIdentifiers',
+  'fallbackModes',
+])
+const sourceRetrievalGuidanceKeys = new Set([
+  'schema_version',
+  'orientation_source',
+  'content_trust',
+  'max_query_variants',
+  'character_budget',
+  'folder_cards',
+  'page_cards',
+  'suggested_terms',
+  'exact_identifiers',
+  'fallback_modes',
+])
+const sourceRetrievalGuidanceFolderCardKeys = new Set(['path', 'page_count', 'terms'])
+const sourceRetrievalGuidancePageCardKeys = new Set(['page_id', 'title', 'path', 'headings', 'terms', 'exact_identifiers', 'excerpt'])
+const publicRetrievalGuidanceFolderCardKeys = new Set(['path', 'pageCount', 'terms'])
+const publicRetrievalGuidancePageCardKeys = new Set(['pageId', 'title', 'path', 'headings', 'terms', 'exactIdentifiers', 'excerpt'])
+const MAX_RETRIEVAL_SNIPPET_CHARS = 20_000
+const MAX_RETRIEVAL_SEARCH_FIELDS = 16
+const MAX_RETRIEVAL_SEARCH_FIELD_CHARS = 80
+const MAX_RETRIEVAL_EXCLUDE_PAGE_IDS = 50
+const MAX_RETRIEVAL_EXCLUDE_PAGE_ID_CHARS = 512
+const MAX_RETRIEVAL_QUERY_VARIANTS = 2
+const MAX_RETRIEVAL_QUERY_VARIANT_CHARS = 1000
+const MAX_RETRIEVAL_GUIDANCE_CHARACTER_BUDGET = 6000
+const MAX_RETRIEVAL_GUIDANCE_FOLDER_CARDS = 8
+const MAX_RETRIEVAL_GUIDANCE_PAGE_CARDS = 12
+const MAX_RETRIEVAL_GUIDANCE_FOLDER_TERMS = 8
+const MAX_RETRIEVAL_GUIDANCE_PAGE_HEADINGS = 8
+const MAX_RETRIEVAL_GUIDANCE_PAGE_TERMS = 12
+const MAX_RETRIEVAL_GUIDANCE_PAGE_IDENTIFIERS = 8
+const MAX_RETRIEVAL_GUIDANCE_TERMS = 16
+const MAX_RETRIEVAL_GUIDANCE_IDENTIFIERS = 16
+const MAX_RETRIEVAL_GUIDANCE_TERM_CHARS = 120
+const MAX_RETRIEVAL_GUIDANCE_IDENTIFIER_CHARS = 240
+const MAX_RETRIEVAL_GUIDANCE_PAGE_ID_CHARS = 512
+const MAX_RETRIEVAL_GUIDANCE_TITLE_CHARS = 240
+const MAX_RETRIEVAL_GUIDANCE_PATH_CHARS = 1024
+const MAX_RETRIEVAL_GUIDANCE_HEADING_CHARS = 160
+const MAX_RETRIEVAL_GUIDANCE_EXCERPT_CHARS = 240
 
 const unavailableIpv4CidrBlocks = [
   { base: [0, 0, 0, 0], prefixLength: 8 },
@@ -542,6 +616,8 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
             $ref: '#/components/schemas/OrchestrationMode',
             default: DEFAULT_ORCHESTRATION_MODE,
           },
+          retrieval: { $ref: '#/components/schemas/RetrievalIntent' },
+          retrievalGuidance: { $ref: '#/components/schemas/RetrievalGuidance' },
           knowledgeSources: {
             type: 'array',
             items: { $ref: '#/components/schemas/KnowledgeSourceDescriptor' },
@@ -689,6 +765,11 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
         OrchestrationMode: {
           enum: ['evidence-only', 'delegated-runtime', 'hybrid'],
         },
+        RetrievalIntent: retrievalIntentSchema(),
+        RetrievalSearchOptions: retrievalSearchOptionsSchema(),
+        RetrievalGuidance: retrievalGuidanceSchema(),
+        RetrievalGuidanceFolderCard: retrievalGuidanceFolderCardSchema(),
+        RetrievalGuidancePageCard: retrievalGuidancePageCardSchema(),
         SettingsResponse: objectSchema({
           bridge: { const: 'llmwiki-agent-bridge' },
           endpoints: objectSchema({
@@ -1219,6 +1300,108 @@ function objectSchema(properties, required = []) {
   }
 }
 
+function retrievalIntentSchema() {
+  return objectSchema({
+    schemaVersion: { const: RETRIEVAL_SCHEMA_VERSION },
+    searchMode: { enum: [...retrievalSearchModes] },
+    fallback: { enum: [...retrievalFallbackModes], default: 'lexical' },
+    search: { $ref: '#/components/schemas/RetrievalSearchOptions' },
+  }, ['schemaVersion', 'searchMode'])
+}
+
+function retrievalSearchOptionsSchema() {
+  return objectSchema({
+    limit: { type: 'integer', minimum: 1, maximum: MAX_SOURCE_TOOL_LIMIT },
+    snippetChars: { type: 'integer', minimum: 1, maximum: MAX_RETRIEVAL_SNIPPET_CHARS },
+    fields: {
+      type: 'array',
+      maxItems: MAX_RETRIEVAL_SEARCH_FIELDS,
+      items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_SEARCH_FIELD_CHARS },
+    },
+    excludePageIds: {
+      type: 'array',
+      maxItems: MAX_RETRIEVAL_EXCLUDE_PAGE_IDS,
+      items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_EXCLUDE_PAGE_ID_CHARS },
+    },
+    queryVariants: {
+      type: 'array',
+      maxItems: MAX_RETRIEVAL_QUERY_VARIANTS,
+      items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_QUERY_VARIANT_CHARS },
+    },
+  })
+}
+
+function retrievalGuidanceSchema() {
+  return objectSchema({
+    schemaVersion: { const: RETRIEVAL_GUIDANCE_SCHEMA_VERSION },
+    orientationSource: { enum: [...retrievalGuidanceOrientationSources] },
+    contentTrust: { const: RETRIEVAL_GUIDANCE_CONTENT_TRUST },
+    maxQueryVariants: { const: MAX_RETRIEVAL_QUERY_VARIANTS },
+    characterBudget: { type: 'integer', minimum: 1, maximum: MAX_RETRIEVAL_GUIDANCE_CHARACTER_BUDGET },
+    folderCards: {
+      type: 'array',
+      maxItems: MAX_RETRIEVAL_GUIDANCE_FOLDER_CARDS,
+      items: { $ref: '#/components/schemas/RetrievalGuidanceFolderCard' },
+    },
+    pageCards: {
+      type: 'array',
+      maxItems: MAX_RETRIEVAL_GUIDANCE_PAGE_CARDS,
+      items: { $ref: '#/components/schemas/RetrievalGuidancePageCard' },
+    },
+    suggestedTerms: {
+      type: 'array',
+      maxItems: MAX_RETRIEVAL_GUIDANCE_TERMS,
+      items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_TERM_CHARS },
+    },
+    exactIdentifiers: {
+      type: 'array',
+      maxItems: MAX_RETRIEVAL_GUIDANCE_IDENTIFIERS,
+      items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_IDENTIFIER_CHARS },
+    },
+    fallbackModes: {
+      type: 'array',
+      maxItems: retrievalGuidanceFallbackModes.length,
+      items: { enum: retrievalGuidanceFallbackModes },
+    },
+  }, [...publicRetrievalGuidanceKeys])
+}
+
+function retrievalGuidanceFolderCardSchema() {
+  return objectSchema({
+    path: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_PATH_CHARS },
+    pageCount: { type: 'integer', minimum: 1 },
+    terms: {
+      type: 'array',
+      maxItems: MAX_RETRIEVAL_GUIDANCE_FOLDER_TERMS,
+      items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_TERM_CHARS },
+    },
+  }, [...publicRetrievalGuidanceFolderCardKeys])
+}
+
+function retrievalGuidancePageCardSchema() {
+  return objectSchema({
+    pageId: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_PAGE_ID_CHARS },
+    title: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_TITLE_CHARS },
+    path: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_PATH_CHARS },
+    headings: {
+      type: 'array',
+      maxItems: MAX_RETRIEVAL_GUIDANCE_PAGE_HEADINGS,
+      items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_HEADING_CHARS },
+    },
+    terms: {
+      type: 'array',
+      maxItems: MAX_RETRIEVAL_GUIDANCE_PAGE_TERMS,
+      items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_TERM_CHARS },
+    },
+    exactIdentifiers: {
+      type: 'array',
+      maxItems: MAX_RETRIEVAL_GUIDANCE_PAGE_IDENTIFIERS,
+      items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_IDENTIFIER_CHARS },
+    },
+    excerpt: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_EXCERPT_CHARS },
+  }, [...publicRetrievalGuidancePageCardKeys])
+}
+
 function sourceRegistrySummarySchema() {
   return objectSchema({
     registeredSourceCount: { type: 'integer', minimum: 0 },
@@ -1405,6 +1588,10 @@ function redactForIoLog(value, depth = 0, seen = new WeakSet()) {
   const output = {}
   for (const [key, rawValue] of Object.entries(value)) {
     if (rawValue === undefined) continue
+    if (isUnsafeRetrievalIoKey(key)) {
+      output.redactedSensitiveField = true
+      continue
+    }
     if (isCredentialLikeKey(key)) {
       output[key] = '[redacted]'
       continue
@@ -1420,7 +1607,7 @@ function redactForIoLog(value, depth = 0, seen = new WeakSet()) {
 }
 
 function redactIoString(value) {
-  const text = String(value)
+  const text = redactRetrievalShapedIoString(value)
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
     .replace(/\bBasic\s+[A-Za-z0-9+/=-]+/gi, 'Basic [redacted]')
     .replace(/\b(Set-Cookie|Cookie)\s*:\s*[^\r\n]+/gi, '$1: [redacted]')
@@ -1434,6 +1621,68 @@ function redactIoString(value) {
 
   if (text.length <= MAX_IO_LOG_STRING_CHARS) return text
   return `${text.slice(0, MAX_IO_LOG_STRING_CHARS - 3)}...`
+}
+
+function redactRetrievalShapedIoString(value) {
+  return String(value)
+    .replace(/(["'])([A-Za-z][A-Za-z0-9_.-]{0,80})\1\s*:\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\[[^\r\n\]]{0,500}\]|\{[^\r\n}]{0,500}\}|[^,\r\n}\]]{1,500})/g, (match, quote, key) => {
+      if (!isUnsafeRetrievalIoKey(key) && !isCredentialLikeKey(key)) return match
+      return `${quote}redactedSensitiveField${quote}:"[redacted]"`
+    })
+    .replace(/\b([A-Za-z][A-Za-z0-9_.-]{0,80})\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\[[^\r\n\]]{0,500}\]|\{[^\r\n}]{0,500}\}|[^,\s;}\]]{1,500})/g, (match, key) => {
+      if (!isUnsafeRetrievalIoKey(key) && !isCredentialLikeKey(key)) return match
+      return 'redactedSensitiveField=[redacted]'
+    })
+}
+
+function isUnsafeRetrievalIoKey(key) {
+  const normalized = String(key || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+  const unsafeSuffixes = [
+    'embedding',
+    'embeddings',
+    'vector',
+    'vectors',
+    'provider',
+    'providers',
+    'providerurl',
+    'providerurls',
+    'provideruri',
+    'provideruris',
+    'model',
+    'models',
+    'modelname',
+    'modelnames',
+    'modelpath',
+    'modelpaths',
+    'modelurl',
+    'modelurls',
+    'modeluri',
+    'modeluris',
+    'cache',
+    'cachedir',
+    'cachedirs',
+    'cachepath',
+    'cachepaths',
+    'cacheurl',
+    'cacheurls',
+    'cacheuri',
+    'cacheuris',
+    'download',
+    'downloads',
+    'downloadpath',
+    'downloadpaths',
+    'downloadurl',
+    'downloadurls',
+    'downloaduri',
+    'downloaduris',
+    'endpoint',
+    'endpoints',
+    'baseurl',
+    'baseurls',
+    'baseuri',
+    'baseuris',
+  ]
+  return unsafeSuffixes.some((suffix) => normalized === suffix || normalized.endsWith(suffix))
 }
 
 function isCredentialLikeKey(key) {
@@ -1718,6 +1967,7 @@ async function handleBridgeRequest(request, response, config) {
     if (request.method === 'POST' && url.pathname === MESSAGE_SEND_ROUTE) {
       messageRunContext = auditContext
       const body = await readJsonBody(request)
+      validateMessageSendRetrievalForIoLog(body)
       emitIoLog(config, {
         phase: 'bridge.request',
         flow: 'bridge',
@@ -1786,7 +2036,7 @@ async function handleBridgeRequest(request, response, config) {
 async function runA2aMessage(body, config, runContextInput = {}, auditDetails = null) {
   const runContext = normalizedRunContext(runContextInput)
   const diagnostics = []
-  const { query, sources, orchestrationMode, conversation } = parseA2aRunRequest(body, config)
+  const { query, sources, orchestrationMode, conversation, retrieval } = parseA2aRunRequest(body, config)
   const readySources = sources.filter((source) => isSelectedReadySource(source))
   const policyReadySources = readySources.filter((source) => isSelectedReadySource(source, config))
   recordA2aAuditDetails(auditDetails, {
@@ -1809,11 +2059,14 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
   const sourceResults = []
   const sourceFailures = []
   const sourceBundles = []
+  const retrievalPlans = retrieval
+    ? await resolveRetrievalForSources(readySources, retrieval, config, runContext)
+    : new Map()
 
   const sourceOutcomes = await mapWithConcurrency(
     readySources,
     DEFAULT_SOURCE_FAN_OUT_CONCURRENCY,
-    (source) => gatherSourceEvidence(source, query, config, runContext),
+    (source) => gatherSourceEvidence(source, query, config, runContext, retrievalPlans.get(source)),
   )
 
   for (const outcome of sourceOutcomes) {
@@ -1996,8 +2249,8 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
   return result
 }
 
-async function gatherSourceEvidence(source, query, config, runContext = {}) {
-  const diagnostics = []
+async function gatherSourceEvidence(source, query, config, runContext = {}, retrievalPlan = null) {
+  const diagnostics = [...(retrievalPlan?.diagnostics || [])]
   const steps = []
   const sourceLabel = safeSourceLabel(source)
   const toolStep = step({
@@ -2010,13 +2263,20 @@ async function gatherSourceEvidence(source, query, config, runContext = {}) {
     parentId: 'bridge-plan',
   })
   steps.push(toolStep)
+  if (Array.isArray(retrievalPlan?.steps)) steps.push(...retrievalPlan.steps)
   const started = performance.now()
-  let sourceBundle = null
+  let sourceBundle = retrievalPlan?.sourceBundle || null
 
   try {
-    sourceBundle = await readSourceBundle(source, config, steps, toolStep.id, diagnostics, runContext)
-    const payload = await queryKnowledgeSource(source, query, config, runContext)
-    const result = normalizeKnowledgeResult(source, payload)
+    if (!retrievalPlan) {
+      sourceBundle = await readSourceBundle(source, config, steps, toolStep.id, diagnostics, runContext)
+    }
+    const payload = await queryKnowledgeSource(source, query, config, runContext, retrievalPlan)
+    const result = normalizeKnowledgeResult(source, payload, {
+      diagnostics,
+      sourceBundle,
+      a2aCard: retrievalPlan?.a2aCard,
+    })
     const citationRefs = traceCitationRefs(result.citations)
     replaceStep(steps, {
       ...toolStep,
@@ -2024,6 +2284,7 @@ async function gatherSourceEvidence(source, query, config, runContext = {}) {
       detail: sourceStepDetail(result, citationRefs),
       citationIds: result.citations.map((citation) => citation.id),
       citationRefs,
+      diagnostic: retrievalPlan?.traceDiagnostic,
       latencyMs: Math.round(performance.now() - started),
     })
     return { source, result, sourceBundle, steps, diagnostics }
@@ -2235,7 +2496,7 @@ function mcpSourceToolNames() {
 function llmwikiAgentRunToolDescriptor() {
   return {
     name: 'llmwiki_agent_run',
-    description: 'Run an LLMWiki grounded answer request through the configured bridge runtime.',
+    description: 'Run one single-shot LLMWiki grounded answer request through the configured bridge runtime.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -2256,6 +2517,8 @@ function llmwikiAgentRunToolDescriptor() {
           default: DEFAULT_ORCHESTRATION_MODE,
           description: 'Alias for orchestrationMode.',
         },
+        retrieval: retrievalIntentInputSchema(),
+        retrievalGuidance: retrievalGuidanceInputSchema(),
         knowledgeSources: {
           type: 'array',
           items: knowledgeSourceInputSchema(),
@@ -2274,7 +2537,7 @@ function llmwikiAgentRunToolDescriptor() {
 function llmwikiListSourcesToolDescriptor() {
   return {
     name: 'llmwiki_list_sources',
-    description: 'List registered bridge Knowledge Sources without querying them.',
+    description: 'Start the host-agent source workflow by listing registered bridge Knowledge Sources without querying them.',
     inputSchema: sourceSelectionInputSchema(),
   }
 }
@@ -2282,7 +2545,7 @@ function llmwikiListSourcesToolDescriptor() {
 function llmwikiContextToolDescriptor() {
   return {
     name: 'llmwiki_context',
-    description: 'Read an orientation-first context pack from one Knowledge Source without calling the answer runtime.',
+    description: 'Read orientation-first context and untrusted retrieval guidance from one Knowledge Source before lexical search.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -2291,6 +2554,7 @@ function llmwikiContextToolDescriptor() {
         ...sourceSelectionInputProperties(),
         query: { type: 'string', minLength: 1 },
         limit: { type: 'integer', minimum: 1, maximum: MAX_SOURCE_TOOL_LIMIT, default: DEFAULT_SOURCE_TOOL_LIMIT },
+        retrieval: retrievalIntentInputSchema(),
         includeDrafts: { type: 'boolean' },
         include_drafts: { type: 'boolean' },
       },
@@ -2301,7 +2565,7 @@ function llmwikiContextToolDescriptor() {
 function llmwikiSearchToolDescriptor() {
   return {
     name: 'llmwiki_search',
-    description: 'Search one Knowledge Source for matching wiki pages without calling the answer runtime.',
+    description: 'Search one Knowledge Source with the base query plus optional lexical query variants, then read specific pages.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -2310,6 +2574,7 @@ function llmwikiSearchToolDescriptor() {
         ...sourceSelectionInputProperties(),
         query: { type: 'string', minLength: 1 },
         limit: { type: 'integer', minimum: 1, maximum: MAX_SOURCE_TOOL_LIMIT, default: DEFAULT_SOURCE_TOOL_LIMIT },
+        retrieval: retrievalIntentInputSchema(),
         includeDrafts: { type: 'boolean' },
         include_drafts: { type: 'boolean' },
       },
@@ -2320,7 +2585,7 @@ function llmwikiSearchToolDescriptor() {
 function llmwikiReadToolDescriptor() {
   return {
     name: 'llmwiki_read',
-    description: 'Read one page from one Knowledge Source by page id or path.',
+    description: 'Read one selected page from one Knowledge Source by page id or path after context and search.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -2428,6 +2693,128 @@ function sourceSelectionInputProperties() {
   }
 }
 
+function retrievalIntentInputSchema() {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: ['schemaVersion', 'searchMode'],
+    properties: {
+      schemaVersion: { const: RETRIEVAL_SCHEMA_VERSION },
+      searchMode: { enum: [...retrievalSearchModes] },
+      fallback: { enum: [...retrievalFallbackModes], default: 'lexical' },
+      search: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          limit: { type: 'integer', minimum: 1, maximum: MAX_SOURCE_TOOL_LIMIT },
+          snippetChars: { type: 'integer', minimum: 1, maximum: MAX_RETRIEVAL_SNIPPET_CHARS },
+          fields: {
+            type: 'array',
+            maxItems: MAX_RETRIEVAL_SEARCH_FIELDS,
+            items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_SEARCH_FIELD_CHARS },
+          },
+          excludePageIds: {
+            type: 'array',
+            maxItems: MAX_RETRIEVAL_EXCLUDE_PAGE_IDS,
+            items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_EXCLUDE_PAGE_ID_CHARS },
+          },
+          queryVariants: {
+            type: 'array',
+            maxItems: MAX_RETRIEVAL_QUERY_VARIANTS,
+            items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_QUERY_VARIANT_CHARS },
+          },
+        },
+      },
+    },
+  }
+}
+
+function retrievalGuidanceInputSchema() {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: [...publicRetrievalGuidanceKeys],
+    properties: {
+      schemaVersion: { const: RETRIEVAL_GUIDANCE_SCHEMA_VERSION },
+      orientationSource: { enum: [...retrievalGuidanceOrientationSources] },
+      contentTrust: { const: RETRIEVAL_GUIDANCE_CONTENT_TRUST },
+      maxQueryVariants: { const: MAX_RETRIEVAL_QUERY_VARIANTS },
+      characterBudget: { type: 'integer', minimum: 1, maximum: MAX_RETRIEVAL_GUIDANCE_CHARACTER_BUDGET },
+      folderCards: {
+        type: 'array',
+        maxItems: MAX_RETRIEVAL_GUIDANCE_FOLDER_CARDS,
+        items: retrievalGuidanceFolderCardInputSchema(),
+      },
+      pageCards: {
+        type: 'array',
+        maxItems: MAX_RETRIEVAL_GUIDANCE_PAGE_CARDS,
+        items: retrievalGuidancePageCardInputSchema(),
+      },
+      suggestedTerms: {
+        type: 'array',
+        maxItems: MAX_RETRIEVAL_GUIDANCE_TERMS,
+        items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_TERM_CHARS },
+      },
+      exactIdentifiers: {
+        type: 'array',
+        maxItems: MAX_RETRIEVAL_GUIDANCE_IDENTIFIERS,
+        items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_IDENTIFIER_CHARS },
+      },
+      fallbackModes: {
+        type: 'array',
+        maxItems: retrievalGuidanceFallbackModes.length,
+        items: { enum: retrievalGuidanceFallbackModes },
+      },
+    },
+  }
+}
+
+function retrievalGuidanceFolderCardInputSchema() {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: [...publicRetrievalGuidanceFolderCardKeys],
+    properties: {
+      path: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_PATH_CHARS },
+      pageCount: { type: 'integer', minimum: 1 },
+      terms: {
+        type: 'array',
+        maxItems: MAX_RETRIEVAL_GUIDANCE_FOLDER_TERMS,
+        items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_TERM_CHARS },
+      },
+    },
+  }
+}
+
+function retrievalGuidancePageCardInputSchema() {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: [...publicRetrievalGuidancePageCardKeys],
+    properties: {
+      pageId: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_PAGE_ID_CHARS },
+      title: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_TITLE_CHARS },
+      path: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_PATH_CHARS },
+      headings: {
+        type: 'array',
+        maxItems: MAX_RETRIEVAL_GUIDANCE_PAGE_HEADINGS,
+        items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_HEADING_CHARS },
+      },
+      terms: {
+        type: 'array',
+        maxItems: MAX_RETRIEVAL_GUIDANCE_PAGE_TERMS,
+        items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_TERM_CHARS },
+      },
+      exactIdentifiers: {
+        type: 'array',
+        maxItems: MAX_RETRIEVAL_GUIDANCE_PAGE_IDENTIFIERS,
+        items: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_IDENTIFIER_CHARS },
+      },
+      excerpt: { type: 'string', minLength: 1, maxLength: MAX_RETRIEVAL_GUIDANCE_EXCERPT_CHARS },
+    },
+  }
+}
+
 function knowledgeSourceInputSchema() {
   return {
     type: 'object',
@@ -2524,11 +2911,22 @@ async function runMcpSourceTool(name, args, config) {
     const query = readString(args, 'query').trim()
     if (!query) throw new HttpError(400, 'llmwiki_context arguments.query is required.', 'bad_request')
     const limit = sourceToolLimit(args, DEFAULT_SOURCE_TOOL_LIMIT, MAX_SOURCE_TOOL_LIMIT)
-    const payload = await contextKnowledgeSource(source, query, limit, includeDrafts, config)
+    const retrieval = parseRetrievalIntent(args.retrieval, 'retrieval', { query })
+    const retrievalPlan = retrieval
+      ? await resolveRetrievalForSingleSource(source, retrieval, config)
+      : null
+    const payload = await contextKnowledgeSource(source, query, limit, includeDrafts, config, {}, retrievalPlan)
+    const diagnostics = [...(retrievalPlan?.diagnostics || [])]
+    const normalizedPayload = normalizeKnowledgeResult(source, payload, {
+      diagnostics,
+      sourceBundle: retrievalPlan?.sourceBundle,
+      a2aCard: retrievalPlan?.a2aCard,
+    })
     const context = {
       source: knowledgeSourceToolSummary(source, config),
       query,
-      ...normalizeKnowledgeResult(source, payload),
+      ...normalizedPayload,
+      ...(diagnostics.length ? { diagnostics } : {}),
     }
     return {
       summary: sourceContextSummary(context),
@@ -2541,8 +2939,13 @@ async function runMcpSourceTool(name, args, config) {
     const query = readString(args, 'query').trim()
     if (!query) throw new HttpError(400, 'llmwiki_search arguments.query is required.', 'bad_request')
     const limit = sourceToolLimit(args, DEFAULT_SOURCE_TOOL_LIMIT, MAX_SOURCE_TOOL_LIMIT)
-    const payload = await searchKnowledgeSource(source, query, limit, includeDrafts, config)
+    const retrieval = parseRetrievalIntent(args.retrieval, 'retrieval', { query })
+    const retrievalPlan = retrieval
+      ? await resolveRetrievalForSingleSource(source, retrieval, config)
+      : null
+    const payload = await searchKnowledgeSource(source, query, limit, includeDrafts, config, {}, retrievalPlan)
     const search = normalizeSearchToolResult(source, query, payload, config)
+    if (retrievalPlan?.diagnostics?.length) search.diagnostics = retrievalPlan.diagnostics
     return {
       summary: sourceSearchSummary(search),
       structuredKey: 'llmwiki_search',
@@ -2789,49 +3192,79 @@ function sourceToolSupportsProtocol(toolName, protocol) {
   return ['llmwiki-http', 'mcp'].includes(protocol)
 }
 
-async function contextKnowledgeSource(source, query, limit, includeDrafts, config, runContext = {}) {
+function retrievalSourceRequestBody(retrievalPlan, legacyBody) {
+  if (!retrievalPlan?.forwardMode) return legacyBody
+  return removeUndefinedProperties({
+    ...legacyBody,
+    limit: retrievalPlan.search?.limit ?? legacyBody.limit,
+    mode: retrievalPlan.forwardMode,
+    snippet_chars: retrievalPlan.search?.snippetChars,
+    fields: retrievalPlan.search?.fields,
+    exclude_page_ids: retrievalPlan.search?.excludePageIds,
+    query_variants: retrievalPlan.search?.queryVariants,
+  })
+}
+
+function retrievalForA2aSource(retrievalPlan) {
+  if (!retrievalPlan?.forwardMode) return undefined
+  const search = removeUndefinedProperties({
+    limit: retrievalPlan.search?.limit,
+    snippetChars: retrievalPlan.search?.snippetChars,
+    fields: retrievalPlan.search?.fields,
+    excludePageIds: retrievalPlan.search?.excludePageIds,
+    queryVariants: retrievalPlan.search?.queryVariants,
+  })
+  return removeUndefinedProperties({
+    schemaVersion: RETRIEVAL_SCHEMA_VERSION,
+    searchMode: retrievalPlan.forwardMode,
+    fallback: retrievalPlan.retrieval?.fallback,
+    search: Object.keys(search).length ? search : undefined,
+  })
+}
+
+async function contextKnowledgeSource(source, query, limit, includeDrafts, config, runContext = {}, retrievalPlan = null) {
   assertAllowedKnowledgeSourceFetchUrl(source.url, config)
 
   if (source.protocol === 'llmwiki-http') {
-    return postKnowledgeSourceJson(joinUrl(source.url, '/query'), {
+    return postKnowledgeSourceJson(joinUrl(source.url, '/query'), retrievalSourceRequestBody(retrievalPlan, {
       query,
       limit,
       include_drafts: includeDrafts,
-    }, 'llmwiki-http query', config, ioLogSourceContext(source, runContext, 'llmwiki-http query'))
+    }), 'llmwiki-http query', config, ioLogSourceContext(source, runContext, 'llmwiki-http query'))
   }
 
   if (source.protocol === 'mcp') {
-    return callMcpTool(source, 'llmwiki_context', {
+    return callMcpTool(source, 'llmwiki_context', retrievalSourceRequestBody(retrievalPlan, {
       query,
       limit,
       include_drafts: includeDrafts,
-    }, config, runContext)
+    }), config, runContext)
   }
 
   if (source.protocol === 'a2a') {
-    return queryA2aSource(source, query, config, runContext)
+    return queryA2aSource(source, query, config, runContext, retrievalPlan)
   }
 
   throw new Error(`Unsupported Knowledge Source protocol: ${source.protocol}`)
 }
 
-async function searchKnowledgeSource(source, query, limit, includeDrafts, config, runContext = {}) {
+async function searchKnowledgeSource(source, query, limit, includeDrafts, config, runContext = {}, retrievalPlan = null) {
   assertAllowedKnowledgeSourceFetchUrl(source.url, config)
 
   if (source.protocol === 'llmwiki-http') {
-    return postKnowledgeSourceJson(joinUrl(source.url, '/search'), {
+    return postKnowledgeSourceJson(joinUrl(source.url, '/search'), retrievalSourceRequestBody(retrievalPlan, {
       query,
       limit,
       include_drafts: includeDrafts,
-    }, 'llmwiki-http search', config, ioLogSourceContext(source, runContext, 'llmwiki-http search'))
+    }), 'llmwiki-http search', config, ioLogSourceContext(source, runContext, 'llmwiki-http search'))
   }
 
   if (source.protocol === 'mcp') {
-    return callMcpTool(source, 'llmwiki_search', {
+    return callMcpTool(source, 'llmwiki_search', retrievalSourceRequestBody(retrievalPlan, {
       query,
       limit,
       include_drafts: includeDrafts,
-    }, config, runContext)
+    }), config, runContext)
   }
 
   throw new Error(`Unsupported Knowledge Source protocol for search: ${source.protocol}`)
@@ -3068,13 +3501,13 @@ function sourceBundleSummary(result) {
   return `Source bundle from ${result.source.name}: ${title}.`
 }
 
-async function readSourceBundle(source, config, steps, parentId, diagnostics = [], runContext = {}) {
+async function readSourceBundle(source, config, steps, parentId, diagnostics = [], runContext = {}, options = {}) {
   if (source.protocol === 'llmwiki-http') {
     return readLlmwikiHttpSourceBundle(source, config, steps, parentId, diagnostics, runContext)
   }
 
   if (source.protocol === 'mcp') {
-    return readMcpSourceBundle(source, config, steps, parentId, diagnostics, runContext)
+    return readMcpSourceBundle(source, config, steps, parentId, diagnostics, runContext, options)
   }
 
   return null
@@ -3143,9 +3576,10 @@ async function readLlmwikiHttpSourceBundle(source, config, steps, parentId, diag
   return null
 }
 
-async function readMcpSourceBundle(source, config, steps, parentId, diagnostics = [], runContext = {}) {
+async function readMcpSourceBundle(source, config, steps, parentId, diagnostics = [], runContext = {}, options = {}) {
   if (
-    Array.isArray(source.capabilities)
+    !options.force
+    && Array.isArray(source.capabilities)
     && source.capabilities.length > 0
     && !source.capabilities.includes('llmwiki_source_bundle')
   ) {
@@ -3190,37 +3624,43 @@ async function readMcpSourceBundle(source, config, steps, parentId, diagnostics 
   }
 }
 
-async function queryKnowledgeSource(source, query, config, runContext = {}) {
+async function queryKnowledgeSource(source, query, config, runContext = {}, retrievalPlan = null) {
   assertAllowedKnowledgeSourceFetchUrl(source.url, config)
 
   if (source.protocol === 'llmwiki-http') {
-    return queryLlmwikiHttpSource(source, query, config, runContext)
+    return queryLlmwikiHttpSource(source, query, config, runContext, retrievalPlan)
   }
 
   if (source.protocol === 'mcp') {
-    return callMcpTool(source, 'llmwiki_context', { query, limit: MAX_EVIDENCE_ITEMS_PER_SOURCE }, config, runContext)
+    return callMcpTool(source, 'llmwiki_context', retrievalSourceRequestBody(retrievalPlan, {
+      query,
+      limit: MAX_EVIDENCE_ITEMS_PER_SOURCE,
+    }), config, runContext)
   }
 
   if (source.protocol === 'a2a') {
-    return queryA2aSource(source, query, config, runContext)
+    return queryA2aSource(source, query, config, runContext, retrievalPlan)
   }
 
   throw new Error(`Unsupported Knowledge Source protocol: ${source.protocol}`)
 }
 
-async function queryLlmwikiHttpSource(source, query, config, runContext = {}) {
-  const primaryPayload = await postKnowledgeSourceJson(joinUrl(source.url, '/query'), {
+async function queryLlmwikiHttpSource(source, query, config, runContext = {}, retrievalPlan = null) {
+  const primaryPayload = await postKnowledgeSourceJson(joinUrl(source.url, '/query'), retrievalSourceRequestBody(retrievalPlan, {
     query,
     limit: MAX_EVIDENCE_ITEMS_PER_SOURCE,
-  }, 'llmwiki-http query', config, ioLogSourceContext(source, runContext, 'llmwiki-http query'))
+  }), 'llmwiki-http query', config, ioLogSourceContext(source, runContext, 'llmwiki-http query'))
   const searchResults = []
 
-  for (const variant of compactSearchQueryVariants(query)) {
+  const augmentQueries = retrievalPlan?.search?.queryVariants?.length
+    ? [query]
+    : compactSearchQueryVariants(query)
+  for (const variant of augmentQueries) {
     try {
-      const searchPayload = await postKnowledgeSourceJson(joinUrl(source.url, '/search'), {
+      const searchPayload = await postKnowledgeSourceJson(joinUrl(source.url, '/search'), retrievalSourceRequestBody(retrievalPlan, {
         query: variant,
         limit: MAX_SEARCH_AUGMENT_RESULTS_PER_QUERY,
-      }, 'llmwiki-http search', config, ioLogSourceContext(source, runContext, 'llmwiki-http search-augment'))
+      }), 'llmwiki-http search', config, ioLogSourceContext(source, runContext, 'llmwiki-http search-augment'))
       searchResults.push(...searchResultsFromPayload(searchPayload))
     } catch (error) {
       config.logger.warn(redactedLogLine(`source ${safeId(source.id)} search augmentation failed`, error))
@@ -3253,16 +3693,36 @@ async function callMcpTool(source, name, args, config, runContext = {}) {
     || result
 }
 
-async function queryA2aSource(source, query, config, runContext = {}) {
+async function queryA2aSource(source, query, config, runContext = {}, retrievalPlan = null) {
   const cardUrl = a2aAgentCardUrl(source.url)
-  const card = await fetchKnowledgeSourceJson(cardUrl, {}, 'a2a agent card', config, ioLogSourceContext(source, runContext, 'a2a agent-card'))
-  const messageUrl = resolveA2aMessageUrl(card, cardUrl)
+  const card = retrievalPlan?.a2aCard
+    || await fetchKnowledgeSourceJson(cardUrl, {}, 'a2a agent card', config, ioLogSourceContext(source, runContext, 'a2a agent-card'))
+  const messageUrl = retrievalPlan?.a2aMessageUrl || resolveA2aMessageUrl(card, cardUrl)
   if (!isAllowedA2aKnowledgeSourceMessageUrl(messageUrl, config)) {
     throw new Error('A2A source agent card message URL is not allowed.')
   }
-  const message = await postKnowledgeSourceJson(messageUrl, { data: { query } }, 'a2a message', config, ioLogSourceContext(source, runContext, 'a2a message'))
+  const message = await postKnowledgeSourceJson(messageUrl, {
+    data: removeUndefinedProperties({
+      query,
+      retrieval: retrievalForA2aSource(retrievalPlan),
+    }),
+  }, 'a2a message', config, ioLogSourceContext(source, runContext, 'a2a message'))
   assertNoA2aError(message)
-  return extractA2aContextPayload(message) || fallbackA2aContextPayload(source, message)
+  const payload = extractA2aContextPayload(message) || fallbackA2aContextPayload(source, message)
+  return withA2aRetrievalCapabilityContext(payload, card)
+}
+
+function withA2aRetrievalCapabilityContext(payload, card) {
+  const payloadRecord = asRecord(payload)
+  if (!payloadRecord) return payload
+  const capabilities = a2aRetrievalCapabilities(card)
+  if (!capabilities.length) return payloadRecord
+  const annotated = { ...payloadRecord }
+  Object.defineProperty(annotated, A2A_RETRIEVAL_CAPABILITIES, {
+    value: capabilities,
+    enumerable: false,
+  })
+  return annotated
 }
 
 function evidenceOnlyAnswer({ sourceResults, sourceFailures, citations, graph, sourceBundles }) {
@@ -4016,10 +4476,10 @@ function relevanceTokens(value) {
 }
 
 function normalizeSearchText(value) {
-  return readableMarkdown(String(value || ''))
-    .toLowerCase()
-    .replace(/['`]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
+  return unicodeCaseFold(readableMarkdown(String(value || '')))
+    .replace(/['`]/gu, '')
+    .replace(/[^\p{L}\p{M}\p{N}_./#:+-]+/gu, ' ')
+    .replace(/(?<=[\p{L}\p{M}\p{N}])[.](?=\s|$)/gu, '')
     .trim()
 }
 
@@ -4118,9 +4578,10 @@ function normalizeCitationRecordKey(value) {
   return value.trim().toLowerCase()
 }
 
-function normalizeKnowledgeResult(source, payload) {
+function normalizeKnowledgeResult(source, payload, options = {}) {
   const graph = namespaceGraph(graphFromKnowledgePayload(payload) || emptyGraph(), source)
   const corpusMetadata = corpusMetadataFromKnowledgePayload(source, payload)
+  const retrievalGuidance = normalizeSourceRetrievalGuidance(source, payload, options)
   return {
     wikiTitle: readString(payload, 'wiki_title') || readString(payload, 'wikiTitle') || readString(payload, 'title') || source.name,
     ...corpusMetadata,
@@ -4134,7 +4595,322 @@ function normalizeKnowledgeResult(source, payload) {
     })),
     citations: normalizeCitations(source, payload),
     limitations: readStringArray(payload.limitations),
+    ...(retrievalGuidance ? { retrievalGuidance } : {}),
     graph,
+  }
+}
+
+function normalizeSourceRetrievalGuidance(source, payload, options = {}) {
+  const payloadRecord = asRecord(payload)
+  if (!payloadRecord) return null
+  const diagnostics = options.diagnostics
+  if (!Object.hasOwn(payloadRecord, 'retrieval_guidance')) {
+    if (sourceAdvertisesGuidedLexical(source, payloadRecord, options)) {
+      diagnostics?.push(retrievalGuidanceDiagnostic(source, 'absent'))
+    }
+    return null
+  }
+
+  try {
+    return mapSourceRetrievalGuidance(payloadRecord.retrieval_guidance, 'retrieval_guidance')
+  } catch {
+    diagnostics?.push(retrievalGuidanceDiagnostic(source, 'invalid'))
+    return null
+  }
+}
+
+function sourceAdvertisesGuidedLexical(source, payload, options = {}) {
+  return exactRetrievalCapabilities([
+    ...readStringArray(options.sourceBundle?.capabilities),
+    ...a2aRetrievalCapabilities(options.a2aCard),
+    ...readStringArray(payload?.[A2A_RETRIEVAL_CAPABILITIES]),
+    ...readStringArray(payload?.capabilities),
+    ...readStringArray(source?.capabilities),
+  ]).includes(GUIDED_LEXICAL_CAPABILITY_V1)
+}
+
+function retrievalGuidanceDiagnostic(source, reason) {
+  const absent = reason === 'absent'
+  return diagnostic({
+    severity: 'warning',
+    scope: 'source',
+    phase: 'retrieval',
+    protocol: source.protocol,
+    subject: source.id,
+    retryable: false,
+    redacted: true,
+    observations: [
+      ['guidance', absent ? 'absent' : 'omitted'],
+      ['reason', absent ? 'source advertised guided lexical capability but returned no guidance' : 'source guidance failed canonical schema validation'],
+      ['redaction', 'raw source guidance, source URLs, local roots, provider fields, vectors, and request body omitted'],
+    ],
+    remediation: absent
+      ? 'Upgrade or configure the Knowledge Source so it emits retrieval_guidance with llmwiki_agent_guided_lexical_v1, or continue without guidance.'
+      : 'Check that the Knowledge Source emits the exact closed llmwiki.retrieval_guidance.v1 schema.',
+    message: absent
+      ? `${safeSourceLabel(source)} advertised guided lexical retrieval but returned no retrieval guidance.`
+      : `${safeSourceLabel(source)} returned retrieval guidance that the bridge omitted.`,
+  })
+}
+
+function parsePublicRetrievalGuidance(value, fieldPath = 'retrievalGuidance') {
+  try {
+    return mapPublicRetrievalGuidance(value, fieldPath)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : `${fieldPath} is invalid.`
+    throw invalidRetrievalGuidance(message)
+  }
+}
+
+function mapSourceRetrievalGuidance(value, fieldPath) {
+  const guidance = strictRecord(value, sourceRetrievalGuidanceKeys, fieldPath)
+  strictLiteral(guidance.schema_version, RETRIEVAL_GUIDANCE_SCHEMA_VERSION, `${fieldPath}.schema_version`)
+  strictEnum(guidance.orientation_source, retrievalGuidanceOrientationSources, `${fieldPath}.orientation_source`)
+  strictLiteral(guidance.content_trust, RETRIEVAL_GUIDANCE_CONTENT_TRUST, `${fieldPath}.content_trust`)
+  strictLiteral(guidance.max_query_variants, MAX_RETRIEVAL_QUERY_VARIANTS, `${fieldPath}.max_query_variants`)
+  const characterBudget = strictInteger(guidance.character_budget, `${fieldPath}.character_budget`, {
+    min: 1,
+    max: MAX_RETRIEVAL_GUIDANCE_CHARACTER_BUDGET,
+  })
+  const budget = { count: 0 }
+  const folderCards = strictArray(guidance.folder_cards, `${fieldPath}.folder_cards`, MAX_RETRIEVAL_GUIDANCE_FOLDER_CARDS)
+    .map((card, index) => mapSourceFolderCard(card, `${fieldPath}.folder_cards[${index}]`, budget))
+  const pageCards = strictArray(guidance.page_cards, `${fieldPath}.page_cards`, MAX_RETRIEVAL_GUIDANCE_PAGE_CARDS)
+    .map((card, index) => mapSourcePageCard(card, `${fieldPath}.page_cards[${index}]`, budget))
+  const suggestedTerms = strictStringArray(guidance.suggested_terms, `${fieldPath}.suggested_terms`, {
+    maxItems: MAX_RETRIEVAL_GUIDANCE_TERMS,
+    maxChars: MAX_RETRIEVAL_GUIDANCE_TERM_CHARS,
+    budget,
+  })
+  const exactIdentifiers = strictStringArray(guidance.exact_identifiers, `${fieldPath}.exact_identifiers`, {
+    maxItems: MAX_RETRIEVAL_GUIDANCE_IDENTIFIERS,
+    maxChars: MAX_RETRIEVAL_GUIDANCE_IDENTIFIER_CHARS,
+    budget,
+  })
+  const fallbackModes = strictFallbackModes(guidance.fallback_modes, `${fieldPath}.fallback_modes`, budget)
+  assertGuidanceBudget(budget, characterBudget, fieldPath)
+  return {
+    schemaVersion: RETRIEVAL_GUIDANCE_SCHEMA_VERSION,
+    orientationSource: guidance.orientation_source,
+    contentTrust: RETRIEVAL_GUIDANCE_CONTENT_TRUST,
+    maxQueryVariants: MAX_RETRIEVAL_QUERY_VARIANTS,
+    characterBudget,
+    folderCards,
+    pageCards,
+    suggestedTerms,
+    exactIdentifiers,
+    fallbackModes,
+  }
+}
+
+function mapPublicRetrievalGuidance(value, fieldPath) {
+  const guidance = strictRecord(value, publicRetrievalGuidanceKeys, fieldPath)
+  strictLiteral(guidance.schemaVersion, RETRIEVAL_GUIDANCE_SCHEMA_VERSION, `${fieldPath}.schemaVersion`)
+  strictEnum(guidance.orientationSource, retrievalGuidanceOrientationSources, `${fieldPath}.orientationSource`)
+  strictLiteral(guidance.contentTrust, RETRIEVAL_GUIDANCE_CONTENT_TRUST, `${fieldPath}.contentTrust`)
+  strictLiteral(guidance.maxQueryVariants, MAX_RETRIEVAL_QUERY_VARIANTS, `${fieldPath}.maxQueryVariants`)
+  const characterBudget = strictInteger(guidance.characterBudget, `${fieldPath}.characterBudget`, {
+    min: 1,
+    max: MAX_RETRIEVAL_GUIDANCE_CHARACTER_BUDGET,
+  })
+  const budget = { count: 0 }
+  const folderCards = strictArray(guidance.folderCards, `${fieldPath}.folderCards`, MAX_RETRIEVAL_GUIDANCE_FOLDER_CARDS)
+    .map((card, index) => mapPublicFolderCard(card, `${fieldPath}.folderCards[${index}]`, budget))
+  const pageCards = strictArray(guidance.pageCards, `${fieldPath}.pageCards`, MAX_RETRIEVAL_GUIDANCE_PAGE_CARDS)
+    .map((card, index) => mapPublicPageCard(card, `${fieldPath}.pageCards[${index}]`, budget))
+  const suggestedTerms = strictStringArray(guidance.suggestedTerms, `${fieldPath}.suggestedTerms`, {
+    maxItems: MAX_RETRIEVAL_GUIDANCE_TERMS,
+    maxChars: MAX_RETRIEVAL_GUIDANCE_TERM_CHARS,
+    budget,
+  })
+  const exactIdentifiers = strictStringArray(guidance.exactIdentifiers, `${fieldPath}.exactIdentifiers`, {
+    maxItems: MAX_RETRIEVAL_GUIDANCE_IDENTIFIERS,
+    maxChars: MAX_RETRIEVAL_GUIDANCE_IDENTIFIER_CHARS,
+    budget,
+  })
+  const fallbackModes = strictFallbackModes(guidance.fallbackModes, `${fieldPath}.fallbackModes`, budget)
+  assertGuidanceBudget(budget, characterBudget, fieldPath)
+  return {
+    schemaVersion: RETRIEVAL_GUIDANCE_SCHEMA_VERSION,
+    orientationSource: guidance.orientationSource,
+    contentTrust: RETRIEVAL_GUIDANCE_CONTENT_TRUST,
+    maxQueryVariants: MAX_RETRIEVAL_QUERY_VARIANTS,
+    characterBudget,
+    folderCards,
+    pageCards,
+    suggestedTerms,
+    exactIdentifiers,
+    fallbackModes,
+  }
+}
+
+function mapSourceFolderCard(value, fieldPath, budget) {
+  const card = strictRecord(value, sourceRetrievalGuidanceFolderCardKeys, fieldPath)
+  return {
+    path: strictRelativePath(card.path, `${fieldPath}.path`, MAX_RETRIEVAL_GUIDANCE_PATH_CHARS, budget),
+    pageCount: strictInteger(card.page_count, `${fieldPath}.page_count`, { min: 1 }),
+    terms: strictStringArray(card.terms, `${fieldPath}.terms`, {
+      maxItems: MAX_RETRIEVAL_GUIDANCE_FOLDER_TERMS,
+      maxChars: MAX_RETRIEVAL_GUIDANCE_TERM_CHARS,
+      budget,
+    }),
+  }
+}
+
+function mapPublicFolderCard(value, fieldPath, budget) {
+  const card = strictRecord(value, publicRetrievalGuidanceFolderCardKeys, fieldPath)
+  return {
+    path: strictRelativePath(card.path, `${fieldPath}.path`, MAX_RETRIEVAL_GUIDANCE_PATH_CHARS, budget),
+    pageCount: strictInteger(card.pageCount, `${fieldPath}.pageCount`, { min: 1 }),
+    terms: strictStringArray(card.terms, `${fieldPath}.terms`, {
+      maxItems: MAX_RETRIEVAL_GUIDANCE_FOLDER_TERMS,
+      maxChars: MAX_RETRIEVAL_GUIDANCE_TERM_CHARS,
+      budget,
+    }),
+  }
+}
+
+function mapSourcePageCard(value, fieldPath, budget) {
+  const card = strictRecord(value, sourceRetrievalGuidancePageCardKeys, fieldPath)
+  return {
+    pageId: strictString(card.page_id, `${fieldPath}.page_id`, MAX_RETRIEVAL_GUIDANCE_PAGE_ID_CHARS, budget),
+    title: strictString(card.title, `${fieldPath}.title`, MAX_RETRIEVAL_GUIDANCE_TITLE_CHARS, budget),
+    path: strictRelativePath(card.path, `${fieldPath}.path`, MAX_RETRIEVAL_GUIDANCE_PATH_CHARS, budget),
+    headings: strictStringArray(card.headings, `${fieldPath}.headings`, {
+      maxItems: MAX_RETRIEVAL_GUIDANCE_PAGE_HEADINGS,
+      maxChars: MAX_RETRIEVAL_GUIDANCE_HEADING_CHARS,
+      budget,
+    }),
+    terms: strictStringArray(card.terms, `${fieldPath}.terms`, {
+      maxItems: MAX_RETRIEVAL_GUIDANCE_PAGE_TERMS,
+      maxChars: MAX_RETRIEVAL_GUIDANCE_TERM_CHARS,
+      budget,
+    }),
+    exactIdentifiers: strictStringArray(card.exact_identifiers, `${fieldPath}.exact_identifiers`, {
+      maxItems: MAX_RETRIEVAL_GUIDANCE_PAGE_IDENTIFIERS,
+      maxChars: MAX_RETRIEVAL_GUIDANCE_IDENTIFIER_CHARS,
+      budget,
+    }),
+    excerpt: strictString(card.excerpt, `${fieldPath}.excerpt`, MAX_RETRIEVAL_GUIDANCE_EXCERPT_CHARS, budget),
+  }
+}
+
+function mapPublicPageCard(value, fieldPath, budget) {
+  const card = strictRecord(value, publicRetrievalGuidancePageCardKeys, fieldPath)
+  return {
+    pageId: strictString(card.pageId, `${fieldPath}.pageId`, MAX_RETRIEVAL_GUIDANCE_PAGE_ID_CHARS, budget),
+    title: strictString(card.title, `${fieldPath}.title`, MAX_RETRIEVAL_GUIDANCE_TITLE_CHARS, budget),
+    path: strictRelativePath(card.path, `${fieldPath}.path`, MAX_RETRIEVAL_GUIDANCE_PATH_CHARS, budget),
+    headings: strictStringArray(card.headings, `${fieldPath}.headings`, {
+      maxItems: MAX_RETRIEVAL_GUIDANCE_PAGE_HEADINGS,
+      maxChars: MAX_RETRIEVAL_GUIDANCE_HEADING_CHARS,
+      budget,
+    }),
+    terms: strictStringArray(card.terms, `${fieldPath}.terms`, {
+      maxItems: MAX_RETRIEVAL_GUIDANCE_PAGE_TERMS,
+      maxChars: MAX_RETRIEVAL_GUIDANCE_TERM_CHARS,
+      budget,
+    }),
+    exactIdentifiers: strictStringArray(card.exactIdentifiers, `${fieldPath}.exactIdentifiers`, {
+      maxItems: MAX_RETRIEVAL_GUIDANCE_PAGE_IDENTIFIERS,
+      maxChars: MAX_RETRIEVAL_GUIDANCE_IDENTIFIER_CHARS,
+      budget,
+    }),
+    excerpt: strictString(card.excerpt, `${fieldPath}.excerpt`, MAX_RETRIEVAL_GUIDANCE_EXCERPT_CHARS, budget),
+  }
+}
+
+function strictRecord(value, allowedKeys, fieldPath) {
+  const record = asRecord(value)
+  if (!record) throw new Error(`${fieldPath} must be an object.`)
+  for (const key of Object.keys(record)) {
+    if (!allowedKeys.has(key)) throw new Error(`${fieldPath} contains unsupported field: ${safeRetrievalFieldName(key)}.`)
+    if (record[key] === null) throw new Error(`${fieldPath}.${safeRetrievalFieldName(key)} must not be null.`)
+  }
+  for (const key of allowedKeys) {
+    if (!Object.hasOwn(record, key)) throw new Error(`${fieldPath}.${key} is required.`)
+  }
+  return record
+}
+
+function strictLiteral(value, expected, fieldPath) {
+  if (value !== expected) throw new Error(`${fieldPath} must be ${expected}.`)
+  return value
+}
+
+function strictEnum(value, allowed, fieldPath) {
+  if (typeof value !== 'string' || !allowed.has(value)) {
+    throw new Error(`${fieldPath} must be one of: ${[...allowed].join(', ')}.`)
+  }
+  return value
+}
+
+function strictInteger(value, fieldPath, { min = Number.MIN_SAFE_INTEGER, max = Number.MAX_SAFE_INTEGER } = {}) {
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${fieldPath} must be an integer from ${min} to ${max}.`)
+  }
+  return value
+}
+
+function strictArray(value, fieldPath, maxItems) {
+  if (!Array.isArray(value)) throw new Error(`${fieldPath} must be an array.`)
+  if (value.some((item) => item === null)) throw new Error(`${fieldPath} must not contain null.`)
+  if (value.length > maxItems) throw new Error(`${fieldPath} must contain at most ${maxItems} item(s).`)
+  return value
+}
+
+function strictStringArray(value, fieldPath, { maxItems, maxChars, budget }) {
+  const items = strictArray(value, fieldPath, maxItems).map((item, index) => (
+    strictString(item, `${fieldPath}[${index}]`, maxChars, budget)
+  ))
+  const seen = new Set()
+  for (const item of items) {
+    const key = unicodeCaseFold(item)
+    if (seen.has(key)) throw new Error(`${fieldPath} must contain unique strings.`)
+    seen.add(key)
+  }
+  return items
+}
+
+function strictString(value, fieldPath, maxChars, budget) {
+  if (typeof value !== 'string') throw new Error(`${fieldPath} must be a string.`)
+  const trimmed = value.trim()
+  if (!trimmed) throw new Error(`${fieldPath} must not be empty.`)
+  if (unicodeScalarLength(trimmed) > maxChars) throw new Error(`${fieldPath} must be ${maxChars} character(s) or fewer.`)
+  if (budget) budget.count += unicodeScalarLength(trimmed)
+  return trimmed
+}
+
+function strictRelativePath(value, fieldPath, maxChars, budget) {
+  const path = strictString(value, fieldPath, maxChars, budget)
+  if (looksLikeAbsoluteLocalPath(path) || path.includes('\\')) throw new Error(`${fieldPath} must be a source-relative path.`)
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(path)) throw new Error(`${fieldPath} must be a source-relative path.`)
+  if (path.split('/').some((segment) => segment === '..')) throw new Error(`${fieldPath} must not contain .. path segments.`)
+  return path
+}
+
+function strictFallbackModes(value, fieldPath, budget) {
+  const items = strictArray(value, fieldPath, retrievalGuidanceFallbackModes.length)
+  let lastIndex = -1
+  const seen = new Set()
+  return items.map((item, index) => {
+    if (typeof item !== 'string' || !retrievalGuidanceFallbackModes.includes(item)) {
+      throw new Error(`${fieldPath}[${index}] must be one of: ${retrievalGuidanceFallbackModes.join(', ')}.`)
+    }
+    const modeIndex = retrievalGuidanceFallbackModes.indexOf(item)
+    if (modeIndex <= lastIndex || seen.has(item)) {
+      throw new Error(`${fieldPath} must be ordered and unique.`)
+    }
+    lastIndex = modeIndex
+    seen.add(item)
+    if (budget) budget.count += unicodeScalarLength(item)
+    return item
+  })
+}
+
+function assertGuidanceBudget(budget, characterBudget, fieldPath) {
+  if (budget.count > characterBudget) {
+    throw new Error(`${fieldPath} content exceeds characterBudget.`)
   }
 }
 
@@ -4676,6 +5452,403 @@ function sourceQueryRemediation(error) {
   return 'Check that the Knowledge Source is reachable, healthy, and compatible with the selected protocol, then retry the request.'
 }
 
+async function resolveRetrievalForSources(sources, retrieval, config, runContext = {}) {
+  if (!retrieval) return new Map()
+
+  const plans = await mapWithConcurrency(
+    sources,
+    DEFAULT_SOURCE_FAN_OUT_CONCURRENCY,
+    (source) => resolveRetrievalForSource(source, retrieval, config, runContext, sources),
+  )
+  const unsupported = plans.filter((plan) => !plan.requestSupported)
+  if (retrieval.fallback === 'none' && unsupported.length) {
+    throw retrievalModeUnsupportedError(retrieval, unsupported)
+  }
+  return new Map(plans.map((plan) => [plan.source, plan]))
+}
+
+async function resolveRetrievalForSingleSource(source, retrieval, config, runContext = {}) {
+  const plans = await resolveRetrievalForSources([source], retrieval, config, runContext)
+  return plans.get(source) || null
+}
+
+async function resolveRetrievalForSource(source, retrieval, config, runContext = {}, allSources = [source]) {
+  const discovery = await retrievalCapabilityDiscovery(source, config, runContext)
+  const capabilities = new Set(discovery.capabilities)
+  const modeCapability = RETRIEVAL_SEARCH_MODE_CAPABILITIES[retrieval.searchMode]
+  const retrievalV1Matched = capabilities.has(RETRIEVAL_CAPABILITY_V1)
+  const modeMatched = modeCapability ? capabilities.has(modeCapability) : false
+  const capabilityMatched = retrievalV1Matched && modeMatched
+  const guidedVariantsRequired = Boolean(retrieval.search?.queryVariants?.length)
+  const guidedLexicalMatched = !guidedVariantsRequired || capabilities.has(GUIDED_LEXICAL_CAPABILITY_V1)
+  const requestSupported = capabilityMatched && guidedLexicalMatched
+  const capabilityStatus = capabilityMatched
+    ? guidedLexicalMatched
+      ? 'matched'
+      : 'missing_guided_lexical_v1'
+    : !capabilities.size
+      ? 'unknown'
+      : !retrievalV1Matched
+        ? 'missing_retrieval_v1'
+        : 'missing_search_mode'
+  const missingCapability = !retrievalV1Matched
+    ? RETRIEVAL_CAPABILITY_V1
+    : !modeMatched
+      ? modeCapability
+      : !guidedLexicalMatched
+        ? GUIDED_LEXICAL_CAPABILITY_V1
+        : undefined
+  const plan = {
+    source,
+    retrieval,
+    sourceBundle: discovery.sourceBundle,
+    steps: discovery.steps,
+    diagnostics: [...discovery.diagnostics],
+    metadataSource: retrievalCapabilityMetadataSource(discovery),
+    capabilityMatched,
+    guidedLexicalMatched,
+    requestSupported,
+    requestedMode: retrieval.searchMode,
+    appliedMode: capabilityMatched ? retrieval.searchMode : 'lexical',
+    forwardMode: capabilityMatched ? retrieval.searchMode : undefined,
+    search: capabilityMatched ? retrievalSearchOptionsForSource(retrieval.search, source, allSources, {
+      includeQueryVariants: guidedLexicalMatched,
+    }) : undefined,
+    capabilityStatus,
+    missingCapability,
+    a2aCard: discovery.a2aCard,
+    a2aMessageUrl: discovery.a2aMessageUrl,
+  }
+
+  if (!requestSupported && retrieval.fallback === 'lexical') {
+    const diagnostic = retrievalFallbackDiagnostic(source, plan)
+    plan.diagnostics.push(diagnostic)
+    plan.traceDiagnostic = diagnostic
+  }
+
+  return plan
+}
+
+function retrievalSearchOptionsForSource(search, source, allSources, { includeQueryVariants = false } = {}) {
+  if (!search) return undefined
+  return removeUndefinedProperties({
+    limit: search.limit,
+    snippetChars: search.snippetChars,
+    fields: search.fields,
+    excludePageIds: routedExcludePageIdsForSource(search.excludePageIds, source, allSources),
+    queryVariants: includeQueryVariants ? search.queryVariants : undefined,
+  })
+}
+
+function routedExcludePageIdsForSource(excludePageIds, source, allSources) {
+  if (!excludePageIds?.length) return undefined
+  const sourcePrefixes = new Set(allSources.map((item) => `${item.id}:`))
+  const currentPrefix = `${source.id}:`
+  const routed = []
+  for (const pageId of excludePageIds) {
+    const matchingPrefix = [...sourcePrefixes].find((prefix) => pageId.startsWith(prefix))
+    if (matchingPrefix) {
+      if (matchingPrefix === currentPrefix) routed.push(pageId.slice(currentPrefix.length))
+      continue
+    }
+    if (pageId.includes(':')) {
+      throw invalidRetrievalIntent('retrieval.search.excludePageIds contains a source-prefixed page id for an unselected source.')
+    }
+    routed.push(pageId)
+  }
+  return routed.length ? uniqueNonEmptyStrings(routed) : undefined
+}
+
+async function retrievalCapabilityDiscovery(source, config, runContext = {}) {
+  const steps = []
+  const diagnostics = []
+  let sourceBundle = null
+  let a2aCard = null
+  let a2aMessageUrl = ''
+  let capabilities = []
+  let freshAvailable = false
+
+  if (source.protocol === 'llmwiki-http' || source.protocol === 'mcp') {
+    sourceBundle = await readSourceBundle(source, config, steps, `tool-${safeId(source.id)}`, diagnostics, runContext, {
+      force: source.protocol === 'mcp',
+    })
+    if (sourceBundle) {
+      freshAvailable = true
+      capabilities = exactRetrievalCapabilities(sourceBundle.capabilities)
+    }
+  } else if (source.protocol === 'a2a') {
+    const discovered = await readA2aRetrievalCapabilities(source, config, runContext)
+    if (discovered.card) {
+      freshAvailable = true
+      a2aCard = discovered.card
+      a2aMessageUrl = discovered.messageUrl
+      capabilities = exactRetrievalCapabilities(discovered.capabilities)
+    }
+  }
+
+  if (!freshAvailable) {
+    capabilities = exactRetrievalCapabilities(source.capabilities)
+  }
+
+  return {
+    sourceBundle,
+    steps,
+    diagnostics,
+    capabilities,
+    freshAvailable,
+    descriptorAvailable: !freshAvailable && capabilities.length > 0,
+    a2aCard,
+    a2aMessageUrl,
+  }
+}
+
+async function readA2aRetrievalCapabilities(source, config, runContext = {}) {
+  try {
+    const cardUrl = a2aAgentCardUrl(source.url)
+    const card = await fetchKnowledgeSourceJson(cardUrl, {}, 'a2a agent card', config, ioLogSourceContext(source, runContext, 'a2a agent-card'))
+    const messageUrl = resolveA2aMessageUrl(card, cardUrl)
+    return {
+      card,
+      messageUrl,
+      capabilities: a2aRetrievalCapabilities(card),
+    }
+  } catch (error) {
+    config.logger.warn(redactedLogLine(`source ${safeId(source.id)} A2A agent card unavailable`, error))
+    return { card: null, messageUrl: '', capabilities: [] }
+  }
+}
+
+function a2aRetrievalCapabilities(card) {
+  const metadata = asRecord(card?.metadata)
+  const llmwikiMetadata = asRecord(metadata?.llmwiki)
+  return uniqueNonEmptyStrings([
+    ...readStringArray(card?.capabilities),
+    ...readStringArray(metadata?.capabilities),
+    ...readStringArray(llmwikiMetadata?.capabilities),
+  ])
+}
+
+function exactRetrievalCapabilities(value) {
+  return uniqueNonEmptyStrings(readStringArray(value))
+    .filter((capability) => retrievalCapabilitySet.has(capability))
+}
+
+function retrievalCapabilityMetadataSource(discovery) {
+  if (discovery.freshAvailable) return 'fresh'
+  if (discovery.descriptorAvailable) return 'descriptor'
+  return 'none'
+}
+
+function retrievalFallbackDiagnostic(source, plan) {
+  const missingGuidedLexical = plan.missingCapability === GUIDED_LEXICAL_CAPABILITY_V1
+  return diagnostic({
+    severity: 'warning',
+    scope: 'source',
+    phase: 'retrieval',
+    protocol: source.protocol,
+    subject: source.id,
+    retryable: false,
+    redacted: true,
+    observations: [
+      ['requestedMode', plan.requestedMode],
+      ['appliedMode', plan.appliedMode],
+      ['fallback', plan.retrieval.fallback],
+      ['capabilityMatched', 'false'],
+      ['capabilityStatus', plan.capabilityStatus],
+      ['capabilityMetadataSource', plan.metadataSource],
+      ['missingCapability', plan.missingCapability],
+      ['redaction', 'retrieval provider fields, vectors, source URLs, and request body omitted'],
+    ],
+    remediation: missingGuidedLexical
+      ? 'Use a Knowledge Source that advertises guided lexical query-variant support, or omit queryVariants for this source.'
+      : 'Use a Knowledge Source that advertises the requested retrieval capability, or set fallback to lexical.',
+    message: missingGuidedLexical
+      ? `${safeSourceLabel(source)} does not advertise guided lexical query variants; using the primary lexical query.`
+      : `${safeSourceLabel(source)} does not advertise the requested retrieval mode; using lexical retrieval.`,
+  })
+}
+
+function retrievalModeUnsupportedError(retrieval, unsupportedPlans) {
+  const sourcesForPlans = (plans) => plans
+    .map((plan) => `${diagnosticSubject(plan.source.id)} (${plan.source.protocol})`)
+    .join(', ')
+  const guidedLexicalUnsupported = unsupportedPlans.filter((plan) => plan.missingCapability === GUIDED_LEXICAL_CAPABILITY_V1)
+  const retrievalModeUnsupported = unsupportedPlans.filter((plan) => plan.missingCapability !== GUIDED_LEXICAL_CAPABILITY_V1)
+  if (guidedLexicalUnsupported.length && !retrievalModeUnsupported.length) {
+    return new HttpError(
+      400,
+      `Retrieval queryVariants require selected source(s) to advertise exact ${GUIDED_LEXICAL_CAPABILITY_V1}: ${sourcesForPlans(guidedLexicalUnsupported)}. Omit queryVariants, set fallback to lexical, or choose sources that advertise guided lexical query-variant support.`,
+      'retrieval_mode_unsupported',
+    )
+  }
+  if (guidedLexicalUnsupported.length) {
+    return new HttpError(
+      400,
+      `Retrieval searchMode ${retrieval.searchMode} is not supported by selected source(s): ${sourcesForPlans(retrievalModeUnsupported)}. Set fallback to lexical or choose sources that advertise the requested retrieval capability. Retrieval queryVariants also require selected source(s) to advertise exact ${GUIDED_LEXICAL_CAPABILITY_V1}: ${sourcesForPlans(guidedLexicalUnsupported)}.`,
+      'retrieval_mode_unsupported',
+    )
+  }
+  return new HttpError(
+    400,
+    `Retrieval searchMode ${retrieval.searchMode} is not supported by selected source(s): ${sourcesForPlans(unsupportedPlans)}. Set fallback to lexical or choose sources that advertise the requested retrieval capability.`,
+    'retrieval_mode_unsupported',
+  )
+}
+
+function validateMessageSendRetrievalForIoLog(body) {
+  const envelope = asRecord(body)
+  const data = asRecord(envelope?.data) || envelope
+  if (!data) return
+  if (Object.hasOwn(data, 'retrieval')) {
+    parseRetrievalIntent(data.retrieval, 'data.retrieval')
+  }
+  if (Object.hasOwn(data, 'retrievalGuidance')) {
+    parsePublicRetrievalGuidance(data.retrievalGuidance, 'data.retrievalGuidance')
+  }
+}
+
+function parseRetrievalIntent(value, fieldPath = 'retrieval', options = {}) {
+  if (value === undefined) return null
+  const retrieval = asRecord(value)
+  if (!retrieval) {
+    throw invalidRetrievalIntent(`${fieldPath} must be an object.`)
+  }
+
+  for (const key of Object.keys(retrieval)) {
+    if (!retrievalIntentKeys.has(key)) {
+      throw invalidRetrievalIntent(`${fieldPath} contains unsupported field: ${safeRetrievalFieldName(key)}.`)
+    }
+  }
+
+  if (retrieval.schemaVersion !== RETRIEVAL_SCHEMA_VERSION) {
+    throw invalidRetrievalIntent(`${fieldPath}.schemaVersion must be ${RETRIEVAL_SCHEMA_VERSION}.`)
+  }
+
+  if (typeof retrieval.searchMode !== 'string' || !retrievalSearchModes.has(retrieval.searchMode)) {
+    throw invalidRetrievalIntent(`${fieldPath}.searchMode must be one of: ${[...retrievalSearchModes].join(', ')}.`)
+  }
+
+  const fallback = retrieval.fallback === undefined ? 'lexical' : retrieval.fallback
+  if (typeof fallback !== 'string' || !retrievalFallbackModes.has(fallback)) {
+    throw invalidRetrievalIntent(`${fieldPath}.fallback must be one of: ${[...retrievalFallbackModes].join(', ')}.`)
+  }
+
+  const search = parseRetrievalSearchOptions(retrieval.search, `${fieldPath}.search`, {
+    searchMode: retrieval.searchMode,
+    query: options.query,
+  })
+  return removeUndefinedProperties({
+    schemaVersion: RETRIEVAL_SCHEMA_VERSION,
+    searchMode: retrieval.searchMode,
+    fallback,
+    search: search && Object.keys(search).length ? search : undefined,
+  })
+}
+
+function parseRetrievalSearchOptions(value, fieldPath, options = {}) {
+  if (value === undefined) return undefined
+  const search = asRecord(value)
+  if (!search) {
+    throw invalidRetrievalIntent(`${fieldPath} must be an object.`)
+  }
+
+  for (const key of Object.keys(search)) {
+    if (!retrievalSearchOptionKeys.has(key)) {
+      throw invalidRetrievalIntent(`${fieldPath} contains unsupported field: ${safeRetrievalFieldName(key)}.`)
+    }
+  }
+
+  return removeUndefinedProperties({
+    limit: retrievalBoundedInteger(search.limit, `${fieldPath}.limit`, MAX_SOURCE_TOOL_LIMIT),
+    snippetChars: retrievalBoundedInteger(search.snippetChars, `${fieldPath}.snippetChars`, MAX_RETRIEVAL_SNIPPET_CHARS),
+    fields: retrievalStringArray(search.fields, `${fieldPath}.fields`, {
+      maxItems: MAX_RETRIEVAL_SEARCH_FIELDS,
+      maxChars: MAX_RETRIEVAL_SEARCH_FIELD_CHARS,
+    }),
+    excludePageIds: retrievalStringArray(search.excludePageIds, `${fieldPath}.excludePageIds`, {
+      maxItems: MAX_RETRIEVAL_EXCLUDE_PAGE_IDS,
+      maxChars: MAX_RETRIEVAL_EXCLUDE_PAGE_ID_CHARS,
+    }),
+    queryVariants: parseRetrievalQueryVariants(search.queryVariants, `${fieldPath}.queryVariants`, {
+      searchMode: options.searchMode,
+      query: options.query,
+    }),
+  })
+}
+
+function retrievalBoundedInteger(value, fieldPath, maxValue) {
+  if (value === undefined) return undefined
+  if (!Number.isInteger(value) || value < 1 || value > maxValue) {
+    throw invalidRetrievalIntent(`${fieldPath} must be an integer from 1 to ${maxValue}.`)
+  }
+  return value
+}
+
+function retrievalStringArray(value, fieldPath, { maxItems, maxChars }) {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) {
+    throw invalidRetrievalIntent(`${fieldPath} must be an array.`)
+  }
+  if (value.length > maxItems) {
+    throw invalidRetrievalIntent(`${fieldPath} must contain at most ${maxItems} item(s).`)
+  }
+  return value.map((item, index) => {
+    if (typeof item !== 'string') {
+      throw invalidRetrievalIntent(`${fieldPath}[${index}] must be a string.`)
+    }
+    const trimmed = item.trim()
+    if (!trimmed) {
+      throw invalidRetrievalIntent(`${fieldPath}[${index}] must not be empty.`)
+    }
+    if (unicodeScalarLength(trimmed) > maxChars) {
+      throw invalidRetrievalIntent(`${fieldPath}[${index}] must be ${maxChars} character(s) or fewer.`)
+    }
+    return trimmed
+  })
+}
+
+function parseRetrievalQueryVariants(value, fieldPath, { searchMode, query } = {}) {
+  const variants = retrievalStringArray(value, fieldPath, {
+    maxItems: MAX_RETRIEVAL_QUERY_VARIANTS,
+    maxChars: MAX_RETRIEVAL_QUERY_VARIANT_CHARS,
+  })
+  if (!variants?.length) return undefined
+  if (searchMode !== 'lexical') {
+    throw invalidRetrievalIntent(`${fieldPath} is valid only when retrieval.searchMode is lexical.`)
+  }
+  if (query === undefined) return variants
+  return dedupeQueryVariants(query, variants)
+}
+
+function dedupeQueryVariants(query, variants) {
+  const base = String(query || '').trim()
+  const seen = new Set()
+  const normalized = []
+  if (base) seen.add(unicodeCaseFold(base))
+  for (const variant of variants) {
+    const key = unicodeCaseFold(variant)
+    if (seen.has(key)) continue
+    seen.add(key)
+    normalized.push(variant)
+    if (normalized.length >= MAX_RETRIEVAL_QUERY_VARIANTS) break
+  }
+  return normalized.length ? normalized : undefined
+}
+
+function invalidRetrievalIntent(message) {
+  return new HttpError(400, message, 'invalid_retrieval_intent')
+}
+
+function invalidRetrievalGuidance(message) {
+  return new HttpError(400, message, 'invalid_retrieval_guidance')
+}
+
+function safeRetrievalFieldName(value) {
+  if (isUnsafeRetrievalIoKey(value) || isCredentialLikeKey(value) || isUrlLikeKey(value)) return 'sensitive'
+  const text = String(value || '').replace(/[^A-Za-z0-9_.-]+/g, '_').slice(0, 80)
+  return text || 'unknown'
+}
+
 function parseA2aRunRequest(body, config) {
   const envelope = asRecord(body)
   const data = asRecord(envelope?.data) || envelope
@@ -4685,6 +5858,10 @@ function parseA2aRunRequest(body, config) {
   const query = readString(data, 'query').trim() || readString(a2aMessage, 'text').trim()
   if (!query) throw new HttpError(400, 'A2A request data.query or message text is required.', 'bad_request')
   const orchestrationMode = requestOrchestrationMode(data, envelope)
+  const retrieval = parseRetrievalIntent(data.retrieval, 'data.retrieval', { query })
+  const retrievalGuidance = Object.hasOwn(data, 'retrievalGuidance')
+    ? parsePublicRetrievalGuidance(data.retrievalGuidance, 'data.retrievalGuidance')
+    : undefined
   const conversation = normalizeConversationPayload(data, envelope, query, a2aMessage)
 
   const sourceValue = data.knowledgeSources ?? data.knowledge_sources
@@ -4692,7 +5869,7 @@ function parseA2aRunRequest(body, config) {
   const rawSources = requestSuppliesSources ? sourceValue : config.registeredSources
   const sources = normalizeKnowledgeSourceDescriptors(rawSources)
 
-  return { query, sources, orchestrationMode, conversation }
+  return { query, sources, orchestrationMode, conversation, retrieval, retrievalGuidance }
 }
 
 function normalizeConversationPayload(data, envelope, query, a2aMessage = null) {
@@ -8815,6 +9992,19 @@ function uniqueNonEmptyStrings(values) {
     unique.push(item)
   }
   return unique
+}
+
+function unicodeCaseFold(value) {
+  const normalized = String(value || '').normalize('NFC')
+  try {
+    return normalized.toLocaleLowerCase('und')
+  } catch {
+    return normalized.toLowerCase()
+  }
+}
+
+function unicodeScalarLength(value) {
+  return [...String(value || '')].length
 }
 
 function emptyGraph() {

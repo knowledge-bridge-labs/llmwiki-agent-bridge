@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "LLMWiki Agent Bridge",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "description": "Local runtime bridge for selected LLMWiki Knowledge Sources and OpenAI-compatible chat completions runtimes."
   },
   "servers": [
@@ -937,6 +937,12 @@
             "$ref": "#/components/schemas/OrchestrationMode",
             "default": "delegated-runtime"
           },
+          "retrieval": {
+            "$ref": "#/components/schemas/RetrievalIntent"
+          },
+          "retrievalGuidance": {
+            "$ref": "#/components/schemas/RetrievalGuidance"
+          },
           "knowledgeSources": {
             "type": "array",
             "items": {
@@ -1326,6 +1332,253 @@
           "evidence-only",
           "delegated-runtime",
           "hybrid"
+        ]
+      },
+      "RetrievalIntent": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schemaVersion": {
+            "const": "llmwiki.retrieval.v1"
+          },
+          "searchMode": {
+            "enum": [
+              "lexical",
+              "literal",
+              "vector",
+              "hybrid"
+            ]
+          },
+          "fallback": {
+            "enum": [
+              "lexical",
+              "none"
+            ],
+            "default": "lexical"
+          },
+          "search": {
+            "$ref": "#/components/schemas/RetrievalSearchOptions"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "searchMode"
+        ]
+      },
+      "RetrievalSearchOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "snippetChars": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20000
+          },
+          "fields": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            }
+          },
+          "excludePageIds": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          },
+          "queryVariants": {
+            "type": "array",
+            "maxItems": 2,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000
+            }
+          }
+        }
+      },
+      "RetrievalGuidance": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schemaVersion": {
+            "const": "llmwiki.retrieval_guidance.v1"
+          },
+          "orientationSource": {
+            "enum": [
+              "authored",
+              "projection_extractive",
+              "none"
+            ]
+          },
+          "contentTrust": {
+            "const": "untrusted_source_evidence"
+          },
+          "maxQueryVariants": {
+            "const": 2
+          },
+          "characterBudget": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 6000
+          },
+          "folderCards": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "$ref": "#/components/schemas/RetrievalGuidanceFolderCard"
+            }
+          },
+          "pageCards": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "$ref": "#/components/schemas/RetrievalGuidancePageCard"
+            }
+          },
+          "suggestedTerms": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            }
+          },
+          "exactIdentifiers": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            }
+          },
+          "fallbackModes": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+              "enum": [
+                "literal",
+                "hybrid",
+                "vector"
+              ]
+            }
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "orientationSource",
+          "contentTrust",
+          "maxQueryVariants",
+          "characterBudget",
+          "folderCards",
+          "pageCards",
+          "suggestedTerms",
+          "exactIdentifiers",
+          "fallbackModes"
+        ]
+      },
+      "RetrievalGuidanceFolderCard": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "pageCount": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "terms": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            }
+          }
+        },
+        "required": [
+          "path",
+          "pageCount",
+          "terms"
+        ]
+      },
+      "RetrievalGuidancePageCard": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "headings": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            }
+          },
+          "terms": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            }
+          },
+          "exactIdentifiers": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            }
+          },
+          "excerpt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          }
+        },
+        "required": [
+          "pageId",
+          "title",
+          "path",
+          "headings",
+          "terms",
+          "exactIdentifiers",
+          "excerpt"
         ]
       },
       "SettingsResponse": {
