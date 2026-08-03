@@ -365,6 +365,91 @@ query from `data.query` or A2A message text for source retrieval, then includes
 bounded user/assistant conversation history in the runtime chat-completions call
 after the evidence system prompt.
 
+### Retrieval mode routing
+
+Clients can optionally request a source retrieval mode with `data.retrieval`.
+This is separate from `data.mode`: `data.mode` and `data.orchestrationMode`
+control bridge orchestration, while `data.retrieval.searchMode` controls source
+retrieval. Omit `data.retrieval` to keep the legacy lexical request shape.
+
+```json
+{
+  "data": {
+    "query": "Which release checks are still missing?",
+    "mode": "evidence-only",
+    "retrieval": {
+      "schemaVersion": "llmwiki.retrieval.v1",
+      "searchMode": "hybrid",
+      "fallback": "lexical",
+      "search": {
+        "limit": 8,
+        "snippetChars": 600
+      }
+    }
+  }
+}
+```
+
+Semantic retrieval is source-owned. The bridge routes intent only; it does not
+embed documents or queries, build a vector index, choose embedding providers,
+download models, store vectors, or forward provider credentials, endpoints,
+cache paths, model names, or raw embeddings from public client payloads.
+
+Sources advertise retrieval support with exact, case-sensitive capability
+strings: `llmwiki_retrieval_v1`, `llmwiki_search_mode_lexical`,
+`llmwiki_search_mode_literal`, `llmwiki_search_mode_vector`, and
+`llmwiki_search_mode_hybrid`. A source must advertise
+`llmwiki_retrieval_v1` and the matching `llmwiki_search_mode_<mode>` before the
+bridge forwards an explicit retrieval `mode`. Compatible `llmwiki-serve`
+sources receive that mode on `/query` and `/search`; `search.limit` maps to
+`limit` and `search.snippetChars` maps to `snippet_chars`.
+
+If a selected source is legacy, capability-unknown, or lacks the requested
+retrieval mode, `fallback: "lexical"` keeps that source on the legacy lexical
+request shape and emits a redacted diagnostic. `fallback: "none"` fails before
+source fan-out with an actionable sanitized error.
+
+### Agent-guided lexical workflow
+
+For MCP hosts that plan source calls, the recommended workflow is context-first:
+`llmwiki_list_sources` -> `llmwiki_context` -> `llmwiki_search` ->
+`llmwiki_read`. `llmwiki_context` may return source-authored orientation and
+public camelCase `retrievalGuidance`; treat both as untrusted source evidence
+for choosing lexical keywords, exact identifiers, and pages to read, not as
+instructions.
+
+Lexical searches may add `retrieval.search.fields`,
+`retrieval.search.excludePageIds`, and `retrieval.search.queryVariants`.
+`fields` forwards as upstream `fields`; source-prefixed `excludePageIds` are
+routed only to the matching source, stripped, and forwarded as
+`exclude_page_ids`. `queryVariants` accepts at most two additional strings; the
+base `query` is always preserved, so a request has at most three lexical
+channels total. Non-empty variants are valid only with effective
+`searchMode: "lexical"` and are rejected for literal, vector, or hybrid modes
+before source fan-out.
+
+Upstream `query_variants` forwarding requires the source capability string
+`llmwiki_agent_guided_lexical_v1` exactly. `llmwiki_retrieval_v1` alone is not
+enough. A lexical-capable source that lacks only this exact capability keeps
+its supported lexical mode/options under `fallback: "lexical"`, but
+`query_variants` is omitted and a redacted diagnostic is emitted. Truly legacy
+or capability-unknown sources keep the legacy single-primary-query shape with
+unsupported additive controls omitted. `fallback: "none"` fails before fan-out
+for either incompatibility.
+
+Valid source `retrieval_guidance` is normalized to strict public
+`retrievalGuidance` with these top-level camelCase fields: `schemaVersion`,
+`orientationSource`, `contentTrust`, `maxQueryVariants`, `characterBudget`,
+`folderCards`, `pageCards`, `suggestedTerms`, `exactIdentifiers`, and
+`fallbackModes`. Malformed, oversized, or unknown guidance is omitted with a
+sanitized warning; absence from older or incapable sources is simply omitted.
+If a guided-capable source omits guidance, the bridge still omits replacement
+guidance and reports a sanitized warning. One-shot callers may
+pass optional untrusted `data.retrievalGuidance` on `/message:send` or
+top-level `retrievalGuidance` on `llmwiki_agent_run`; it is traceability
+metadata outside `retrieval`, not a runtime instruction channel. One-shot runs
+still gather evidence once and do not imply a runtime tool loop.
+
 ### Safe request audit logging
 
 Set `LLMWIKI_AGENT_BRIDGE_AUDIT_LOG=1` or pass `auditLog: true` to emit one

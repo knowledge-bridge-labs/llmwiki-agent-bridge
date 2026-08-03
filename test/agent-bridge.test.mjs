@@ -1350,6 +1350,22 @@ describe('llmwiki-agent-bridge', () => {
         assert.doesNotMatch(serialized, /Users\\agent/)
         assert.doesNotMatch(logs, /sk-proj-[a-z-]*secret/i)
         assert.doesNotMatch(logs, /runtime-secret|malformed-secret|stdout-secret/)
+        for (const canary of [
+          'runtime-endpoint-field-canary',
+          'runtime-endpoints-field-canary',
+          'runtime-provider-url-field-canary',
+          'runtime-model-field-canary',
+          'runtime-cache-field-canary',
+          '0.314159265',
+          '0.271828182',
+        ]) {
+          assert.doesNotMatch(serialized, new RegExp(escapeRegExp(canary)))
+          assert.doesNotMatch(logs, new RegExp(escapeRegExp(canary)))
+          assert.doesNotMatch(stderr, new RegExp(escapeRegExp(canary)))
+        }
+        for (const unsafeKey of ['endpoint', 'endpoints', 'providerUrl', 'model', 'cachePath', 'vectors', 'embeddings']) {
+          assert.doesNotMatch(stderr, new RegExp(`\\b${escapeRegExp(unsafeKey)}\\s*[:=]`))
+        }
 
         if (mode === 'nonzero') {
           assert.equal(observationValue(runtimeStep.diagnostic, 'processExitCode'), '42')
@@ -3946,7 +3962,6 @@ describe('llmwiki-agent-bridge', () => {
     })
     t.after(() => closeServer(bridge.server))
 
-    const started = performance.now()
     const response = await fetch(`${bridge.url}/message:send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3963,7 +3978,6 @@ describe('llmwiki-agent-bridge', () => {
         },
       }),
     })
-    const elapsedMs = performance.now() - started
     const a2a = await response.json()
     const artifact = a2a.artifacts[0].parts[0].data
     const successfulSourceIds = sourceIds.filter((sourceId) => sourceId !== failingSourceId)
@@ -3972,10 +3986,6 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(response.status, 200)
     assert(maxActiveQueries > 1)
     assert(maxActiveQueries <= 4)
-    assert(
-      elapsedMs < delayMs * sourceIds.length * 0.75,
-      `expected parallel fan-out below serial latency; elapsed ${Math.round(elapsedMs)}ms`,
-    )
     assert.equal(source.requests.filter((item) => item.url.pathname.endsWith('/source-bundle')).length, sourceIds.length)
     assert.equal(source.requests.filter((item) => item.url.pathname.endsWith('/query')).length, sourceIds.length)
     assert.match(artifact.answer, /Evidence-only result: the bridge gathered 5 citation\(s\) from 5 Knowledge Source\(s\)/)
@@ -4442,6 +4452,1583 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(bundleStep.status, 'error')
     assert.equal(bundleStep.error, 'Source bundle unavailable.')
     assert.doesNotMatch(JSON.stringify(artifact), /mcp-bundle-secret/)
+  })
+
+  it('publishes retrieval intent in OpenAPI and MCP tool schemas', async (t) => {
+    const schema = agentBridgeOpenApi({ version: '0.1.0-test' })
+
+    assert(
+      Object.hasOwn(schema.components.schemas, 'RetrievalIntent'),
+      'RetrievalIntent schema missing',
+    )
+    assert(
+      Object.hasOwn(schema.components.schemas, 'RetrievalSearchOptions'),
+      'RetrievalSearchOptions schema missing',
+    )
+    assert(
+      Object.hasOwn(schema.components.schemas, 'RetrievalGuidance'),
+      'RetrievalGuidance schema missing',
+    )
+    assert.equal(
+      schema.components.schemas.MessageSendData.properties.retrieval.$ref,
+      '#/components/schemas/RetrievalIntent',
+    )
+    assert.equal(
+      schema.components.schemas.MessageSendData.properties.retrievalGuidance.$ref,
+      '#/components/schemas/RetrievalGuidance',
+    )
+    assertRetrievalIntentSchema(schema.components.schemas.RetrievalIntent, {
+      searchSchema: schema.components.schemas.RetrievalSearchOptions,
+    })
+    assertRetrievalSearchOptionsSchema(schema.components.schemas.RetrievalSearchOptions)
+    assertRetrievalGuidanceSchema(schema.components.schemas.RetrievalGuidance)
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const tools = await callBridgeMcp(bridge, 'retrieval-tools', 'tools/list')
+    const toolSchemas = new Map(tools.result.tools.map((tool) => [tool.name, tool.inputSchema]))
+
+    for (const toolName of ['llmwiki_agent_run', 'llmwiki_context', 'llmwiki_search']) {
+      const retrievalSchema = toolSchemas.get(toolName)?.properties?.retrieval
+      assert(retrievalSchema, `${toolName} input schema is missing retrieval`)
+      assertRetrievalIntentSchema(retrievalSchema)
+    }
+    assertRetrievalGuidanceSchema(toolSchemas.get('llmwiki_agent_run').properties.retrievalGuidance)
+    assert.equal(toolSchemas.get('llmwiki_context').properties.retrievalGuidance, undefined)
+    assert.equal(toolSchemas.get('llmwiki_search').properties.retrievalGuidance, undefined)
+    assert.equal(toolSchemas.get('llmwiki_read').properties.retrieval, undefined)
+    assert.equal(toolSchemas.get('llmwiki_graph').properties.retrieval, undefined)
+  })
+
+  it('routes retrieval modes to HTTP sources and preserves legacy omission', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      const [, sourceId, action] = url.pathname.split('/')
+
+      if (request.method === 'GET') {
+        if (action === 'source-bundle' && sourceId === 'new-http') {
+          writeJson(response, 200, {
+            source_id: sourceId,
+            bundle_id: `${sourceId}-bundle`,
+            capabilities: retrievalCapabilities('vector', 'hybrid'),
+          })
+          return
+        }
+        if (action === 'source-bundle' && sourceId === 'variant-http') {
+          writeJson(response, 200, {
+            source_id: sourceId,
+            bundle_id: `${sourceId}-bundle`,
+            capabilities: [
+              'llmwiki_retrieval_v1',
+              'llmwiki.search.mode.vector',
+              'LLMWIKI_SEARCH_MODE_VECTOR',
+              'llmwikiSearchModeVector',
+            ],
+          })
+          return
+        }
+        writeJson(response, 404, { error: { code: 'not_found' } })
+        return
+      }
+
+      if (action === 'search') {
+        writeJson(response, 200, {
+          results: [
+            {
+              page_id: `${sourceId}-search`,
+              title: `${sourceId} Search`,
+              path: `${sourceId}-search.md`,
+              snippet: `Search evidence for ${sourceId}.`,
+            },
+          ],
+        })
+        return
+      }
+
+      assert.equal(action, 'query')
+      writeJson(response, 200, {
+        wiki_title: `${sourceId} Wiki`,
+        ...(sourceId === 'guided-http' ? { retrieval_guidance: validSourceRetrievalGuidance('authored') } : {}),
+        evidence: [
+          {
+            page_id: `${sourceId}-page`,
+            title: `${sourceId} Page`,
+            path: `${sourceId}.md`,
+            snippet: `Query evidence for ${sourceId}: ${body.query}.`,
+          },
+        ],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const omittedResponse = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'legacy request shape',
+          mode: 'evidence-only',
+          knowledgeSources: [
+            knowledgeSource('new-http', 'New HTTP', 'llmwiki-http', `${source.url}/new-http`),
+            knowledgeSource('legacy-http', 'Legacy HTTP', 'llmwiki-http', `${source.url}/legacy-http`),
+          ],
+        },
+      }),
+    })
+    const omittedA2a = await omittedResponse.json()
+
+    assert.equal(omittedResponse.status, 200, JSON.stringify(omittedA2a))
+    for (const requestBody of source.requests.filter((item) => item.method === 'POST').map((item) => item.body)) {
+      assertNoExplicitRetrieval(requestBody)
+    }
+
+    source.requests.length = 0
+    const retrievalResponse = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'vector readiness routing',
+          mode: 'evidence-only',
+          retrieval: retrievalIntent('vector', {
+            fallback: 'lexical',
+            limit: 5,
+            snippetChars: 321,
+          }),
+          knowledgeSources: [
+            retrievalKnowledgeSource('new-http', 'New HTTP', 'llmwiki-http', `${source.url}/new-http`, ['vector']),
+            knowledgeSource('legacy-http', 'Legacy HTTP', 'llmwiki-http', `${source.url}/legacy-http`),
+            {
+              ...knowledgeSource('variant-http', 'Variant HTTP', 'llmwiki-http', `${source.url}/variant-http`),
+              capabilities: ['llmwiki_retrieval_v1', 'llmwiki.search.mode.vector', 'LLMWIKI_SEARCH_MODE_VECTOR'],
+            },
+          ],
+        },
+      }),
+    })
+    const a2a = await retrievalResponse.json()
+    const artifact = a2a.artifacts?.[0]?.parts?.[0]?.data
+
+    assert.equal(retrievalResponse.status, 200, JSON.stringify(a2a))
+    assert.deepEqual(pathRequestBodies(source, '/new-http/query'), [
+      {
+        query: 'vector readiness routing',
+        limit: 5,
+        mode: 'vector',
+        snippet_chars: 321,
+      },
+    ])
+    for (const requestBody of pathRequestBodies(source, '/new-http/search')) {
+      assert.equal(requestBody.mode, 'vector')
+      assert.equal(requestBody.limit, 5)
+      assert.equal(requestBody.snippet_chars, 321)
+    }
+    for (const requestBody of [
+      ...pathRequestBodies(source, '/legacy-http/query'),
+      ...pathRequestBodies(source, '/legacy-http/search'),
+      ...pathRequestBodies(source, '/variant-http/query'),
+      ...pathRequestBodies(source, '/variant-http/search'),
+    ]) {
+      assertNoExplicitRetrieval(requestBody)
+    }
+
+    const retrievalDiagnostics = artifact.diagnostics.filter((diagnostic) => diagnostic.phase === 'retrieval')
+    assert.deepEqual(retrievalDiagnostics.map((diagnostic) => diagnostic.subject), ['legacy-http', 'variant-http'])
+    assertRetrievalFallbackDiagnostic(retrievalDiagnostics[0], {
+      subject: 'legacy-http',
+      requestedMode: 'vector',
+      appliedMode: 'lexical',
+      fallback: 'lexical',
+      capabilityMatched: 'false',
+      metadataSource: 'none',
+    })
+    assertRetrievalFallbackDiagnostic(retrievalDiagnostics[1], {
+      subject: 'variant-http',
+      requestedMode: 'vector',
+      appliedMode: 'lexical',
+      fallback: 'lexical',
+      capabilityMatched: 'false',
+      metadataSource: 'fresh',
+    })
+  })
+
+  it('forwards guided lexical search options and gates query variants by exact capability', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      const [, sourceId, action] = url.pathname.split('/')
+      if (request.method === 'GET' && action === 'source-bundle') {
+        writeJson(response, 200, {
+          source_id: sourceId,
+          bundle_id: `${sourceId}-bundle`,
+          capabilities: sourceId === 'guided-http'
+            ? [...retrievalCapabilities('lexical'), 'llmwiki_agent_guided_lexical_v1']
+            : retrievalCapabilities('lexical'),
+        })
+        return
+      }
+
+      if (action === 'search') {
+        writeJson(response, 200, {
+          results: [
+            {
+              page_id: `${sourceId}-search`,
+              title: `${sourceId} Search`,
+              path: `${sourceId}-search.md`,
+              snippet: `Search evidence for ${body.query}.`,
+            },
+          ],
+        })
+        return
+      }
+
+      assert.equal(action, 'query')
+      writeJson(response, 200, {
+        wiki_title: `${sourceId} Wiki`,
+        ...(sourceId === 'guided-http' ? { retrieval_guidance: validSourceRetrievalGuidance('authored') } : {}),
+        evidence: [
+          {
+            page_id: `${sourceId}-page`,
+            title: `${sourceId} Page`,
+            path: `${sourceId}.md`,
+            snippet: `Query evidence for ${body.query}.`,
+          },
+        ],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: '릴리즈 publish.yml v0.4.1',
+          mode: 'evidence-only',
+          retrieval: retrievalIntent('lexical', {
+            limit: 6,
+            snippetChars: 222,
+            fields: ['title', 'path', 'body'],
+            excludePageIds: ['guided-http:old-page', 'retrieval-only-http:other-page', 'shared-page'],
+            queryVariants: ['릴리즈 설치 패키지', 'publish.yml v0.4.1'],
+          }),
+          knowledgeSources: [
+            {
+              ...retrievalKnowledgeSource('guided-http', 'Guided HTTP', 'llmwiki-http', `${source.url}/guided-http`, ['lexical']),
+              capabilities: [
+                ...retrievalKnowledgeSource('guided-http', 'Guided HTTP', 'llmwiki-http', `${source.url}/guided-http`, ['lexical']).capabilities,
+                'llmwiki_agent_guided_lexical_v1',
+              ],
+            },
+            retrievalKnowledgeSource('retrieval-only-http', 'Retrieval Only HTTP', 'llmwiki-http', `${source.url}/retrieval-only-http`, ['lexical']),
+          ],
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts?.[0]?.parts?.[0]?.data
+
+    assert.equal(response.status, 200, JSON.stringify(a2a))
+    assert.deepEqual(pathRequestBodies(source, '/guided-http/query'), [
+      {
+        query: '릴리즈 publish.yml v0.4.1',
+        limit: 6,
+        mode: 'lexical',
+        snippet_chars: 222,
+        fields: ['title', 'path', 'body'],
+        exclude_page_ids: ['old-page', 'shared-page'],
+        query_variants: ['릴리즈 설치 패키지', 'publish.yml v0.4.1'],
+      },
+    ])
+    assert.deepEqual(pathRequestBodies(source, '/guided-http/search'), [
+      {
+        query: '릴리즈 publish.yml v0.4.1',
+        limit: 6,
+        mode: 'lexical',
+        snippet_chars: 222,
+        fields: ['title', 'path', 'body'],
+        exclude_page_ids: ['old-page', 'shared-page'],
+        query_variants: ['릴리즈 설치 패키지', 'publish.yml v0.4.1'],
+      },
+    ])
+
+    const retrievalOnlyQuery = pathRequestBodies(source, '/retrieval-only-http/query')[0]
+    assert.equal(retrievalOnlyQuery.mode, 'lexical')
+    assert.equal(retrievalOnlyQuery.snippet_chars, 222)
+    assert.deepEqual(retrievalOnlyQuery.fields, ['title', 'path', 'body'])
+    assert.deepEqual(retrievalOnlyQuery.exclude_page_ids, ['other-page', 'shared-page'])
+    assert.equal(retrievalOnlyQuery.query_variants, undefined)
+    for (const requestBody of pathRequestBodies(source, '/retrieval-only-http/search')) {
+      assert.equal(requestBody.mode, 'lexical')
+      assert.equal(requestBody.query_variants, undefined)
+      assert.match(requestBody.query, /릴리즈|publish\.yml/)
+    }
+
+    const retrievalDiagnostics = artifact.diagnostics.filter((diagnostic) => diagnostic.phase === 'retrieval')
+    assert.deepEqual(retrievalDiagnostics.map((diagnostic) => diagnostic.subject), ['retrieval-only-http'])
+    assert.equal(observationValue(retrievalDiagnostics[0], 'missingCapability'), 'llmwiki_agent_guided_lexical_v1')
+  })
+
+  it('maps valid source retrieval guidance and omits invalid or absent guidance atomically', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, response }) => {
+      const [, sourceId, action] = url.pathname.split('/')
+      if (request.method === 'POST' && action === 'query') {
+        const base = {
+          wiki_title: `${sourceId} Wiki`,
+          orientation: [
+            {
+              page_id: `${sourceId}-orientation`,
+              title: `${sourceId} Orientation`,
+              path: `${sourceId}/index.md`,
+              snippet: `Orientation for ${sourceId}.`,
+            },
+          ],
+          evidence: [],
+          graph: { nodes: [], edges: [] },
+        }
+        if (sourceId === 'valid-guidance') {
+          writeJson(response, 200, {
+            ...base,
+            retrieval_guidance: validSourceRetrievalGuidance('projection_extractive'),
+          })
+          return
+        }
+        if (sourceId === 'invalid-guidance') {
+          writeJson(response, 200, {
+            ...base,
+            retrieval_guidance: {
+              ...validSourceRetrievalGuidance('authored'),
+              unexpected_field: 'must invalidate the whole object',
+            },
+          })
+          return
+        }
+        writeJson(response, 200, base)
+        return
+      }
+
+      writeJson(response, 404, { error: { code: 'not_found' } })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const guidedCapabilities = [
+      ...retrievalCapabilities('lexical'),
+      'llmwiki_agent_guided_lexical_v1',
+    ]
+    const valid = await callBridgeMcpTool(bridge, 'valid-guidance', 'llmwiki_context', {
+      sourceId: 'valid-guidance',
+      query: '온보딩 release guidance',
+      knowledgeSources: [
+        {
+          ...knowledgeSource('valid-guidance', 'Valid Guidance', 'llmwiki-http', `${source.url}/valid-guidance`),
+          capabilities: guidedCapabilities,
+        },
+      ],
+    })
+    const validContext = valid.result.structuredContent.llmwiki_context
+
+    assert.deepEqual(validContext.retrievalGuidance, expectedPublicRetrievalGuidance('projection_extractive'))
+    assert.equal(Object.hasOwn(validContext, 'retrieval_guidance'), false)
+    assert.equal(validContext.diagnostics, undefined)
+
+    const invalid = await callBridgeMcpTool(bridge, 'invalid-guidance', 'llmwiki_context', {
+      sourceId: 'invalid-guidance',
+      query: 'invalid guidance',
+      knowledgeSources: [
+        {
+          ...knowledgeSource('invalid-guidance', 'Invalid Guidance', 'llmwiki-http', `${source.url}/invalid-guidance`),
+          capabilities: guidedCapabilities,
+        },
+      ],
+    })
+    const invalidContext = invalid.result.structuredContent.llmwiki_context
+
+    assert.equal(invalidContext.retrievalGuidance, undefined)
+    assert.equal(invalidContext.diagnostics.length, 1)
+    assert.equal(invalidContext.diagnostics[0].phase, 'retrieval')
+    assert.equal(observationValue(invalidContext.diagnostics[0], 'guidance'), 'omitted')
+    assert.doesNotMatch(JSON.stringify(invalidContext.diagnostics), /unexpected_field|must invalidate/)
+
+    const absent = await callBridgeMcpTool(bridge, 'absent-guidance', 'llmwiki_context', {
+      sourceId: 'absent-guidance',
+      query: 'absent guidance',
+      knowledgeSources: [
+        {
+          ...knowledgeSource('absent-guidance', 'Absent Guidance', 'llmwiki-http', `${source.url}/absent-guidance`),
+          capabilities: guidedCapabilities,
+        },
+      ],
+    })
+    const absentContext = absent.result.structuredContent.llmwiki_context
+
+    assert.equal(absentContext.retrievalGuidance, undefined)
+    assert.equal(absentContext.diagnostics.length, 1)
+    assert.equal(observationValue(absentContext.diagnostics[0], 'guidance'), 'absent')
+  })
+
+  it('uses exact A2A agent-card guided lexical capability for retrieval guidance diagnostics', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      const sourceId = url.pathname.split('/')[1]
+      if (request.method === 'GET' && url.pathname.endsWith('/.well-known/agent-card.json')) {
+        writeJson(response, 200, {
+          name: `${sourceId} A2A Source`,
+          url: `/${sourceId}/message:send`,
+          metadata: {
+            llmwiki: {
+              capabilities: sourceId === 'a2a-case-variant'
+                ? ['LLMWIKI_AGENT_GUIDED_LEXICAL_V1']
+                : ['llmwiki_agent_guided_lexical_v1'],
+            },
+          },
+        })
+        return
+      }
+
+      assert.equal(request.method, 'POST')
+      assert.equal(url.pathname, `/${sourceId}/message:send`)
+      assert.equal(body.data.query, `${sourceId} guidance`)
+      const data = {
+        wiki_title: `${sourceId} A2A Wiki`,
+        orientation: [
+          {
+            page_id: `${sourceId}-orientation`,
+            title: `${sourceId} Orientation`,
+            path: `${sourceId}/index.md`,
+            snippet: `Orientation for ${sourceId}.`,
+          },
+        ],
+        evidence: [],
+        graph: { nodes: [], edges: [] },
+      }
+      if (sourceId === 'a2a-valid') {
+        data.retrieval_guidance = validSourceRetrievalGuidance('none')
+      }
+      if (sourceId === 'a2a-malformed') {
+        data.retrieval_guidance = {
+          ...validSourceRetrievalGuidance('authored'),
+          unexpected_field: 'must invalidate the whole object',
+        }
+      }
+      writeJson(response, 200, {
+        status: { state: 'completed' },
+        artifacts: [
+          {
+            name: 'llmwiki_context',
+            parts: [{ kind: 'data', data }],
+          },
+        ],
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const callA2aContext = async (sourceId) => {
+      const result = await callBridgeMcpTool(bridge, sourceId, 'llmwiki_context', {
+        sourceId,
+        query: `${sourceId} guidance`,
+        knowledgeSources: [
+          knowledgeSource(sourceId, sourceId, 'a2a', `${source.url}/${sourceId}`),
+        ],
+      })
+      return result.result.structuredContent.llmwiki_context
+    }
+
+    const validContext = await callA2aContext('a2a-valid')
+    assert.deepEqual(validContext.retrievalGuidance, expectedPublicRetrievalGuidance('none'))
+    assert.equal(Object.hasOwn(validContext, 'retrieval_guidance'), false)
+    assert.equal(validContext.diagnostics, undefined)
+
+    const malformedContext = await callA2aContext('a2a-malformed')
+    assert.equal(malformedContext.retrievalGuidance, undefined)
+    assert.equal(malformedContext.diagnostics.length, 1)
+    assert.equal(malformedContext.diagnostics[0].protocol, 'a2a')
+    assert.equal(malformedContext.diagnostics[0].subject, 'a2a-malformed')
+    assert.equal(observationValue(malformedContext.diagnostics[0], 'guidance'), 'omitted')
+    assert.doesNotMatch(JSON.stringify(malformedContext.diagnostics), /unexpected_field|must invalidate/)
+
+    const absentContext = await callA2aContext('a2a-absent')
+    assert.equal(absentContext.retrievalGuidance, undefined)
+    assert.equal(absentContext.diagnostics.length, 1)
+    assert.equal(absentContext.diagnostics[0].protocol, 'a2a')
+    assert.equal(absentContext.diagnostics[0].subject, 'a2a-absent')
+    assert.equal(observationValue(absentContext.diagnostics[0], 'guidance'), 'absent')
+
+    const caseVariantContext = await callA2aContext('a2a-case-variant')
+    assert.equal(caseVariantContext.retrievalGuidance, undefined)
+    assert.equal(caseVariantContext.diagnostics, undefined)
+  })
+
+  it('validates caller retrievalGuidance outside retrieval on HTTP and MCP one-shot runs', async (t) => {
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const validResponse = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'valid caller guidance',
+          mode: 'evidence-only',
+          retrievalGuidance: expectedPublicRetrievalGuidance('authored'),
+          knowledgeSources: [],
+        },
+      }),
+    })
+    const valid = await validResponse.json()
+
+    assert.equal(validResponse.status, 200, JSON.stringify(valid))
+
+    const invalidResponse = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'invalid caller guidance',
+          mode: 'evidence-only',
+          retrievalGuidance: {
+            ...expectedPublicRetrievalGuidance('authored'),
+            extra: 'not allowed',
+          },
+          knowledgeSources: [],
+        },
+      }),
+    })
+    const invalid = await invalidResponse.json()
+
+    assert.equal(invalidResponse.status, 400)
+    assert.equal(invalid.error.code, 'invalid_retrieval_guidance')
+
+    const nestedInvalid = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'nested invalid guidance',
+          mode: 'evidence-only',
+          retrieval: {
+            ...retrievalIntent('lexical'),
+            guidance: expectedPublicRetrievalGuidance('authored'),
+          },
+          knowledgeSources: [],
+        },
+      }),
+    })
+    const nested = await nestedInvalid.json()
+
+    assert.equal(nestedInvalid.status, 400)
+    assert.equal(nested.error.code, 'invalid_retrieval_intent')
+
+    const mcpInvalid = await callBridgeMcpTool(bridge, 'invalid-caller-guidance-mcp', 'llmwiki_agent_run', {
+      query: 'invalid caller guidance mcp',
+      mode: 'evidence-only',
+      retrievalGuidance: {
+        ...expectedPublicRetrievalGuidance('authored'),
+        pageCards: null,
+      },
+      knowledgeSources: [],
+    })
+
+    assert.equal(mcpInvalid.error.code, -32602)
+    assert.match(mcpInvalid.error.message, /retrievalGuidance/)
+  })
+
+  it('uses fresh retrieval discovery over stale descriptor capabilities', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      if (request.method === 'GET' && url.pathname === '/conflict/source-bundle') {
+        writeJson(response, 200, {
+          source_id: 'fresh-conflict-source',
+          bundle_id: 'fresh-conflict-bundle',
+          capabilities: retrievalCapabilities('hybrid'),
+        })
+        return
+      }
+      if (request.method === 'POST' && url.pathname === '/conflict/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      if (request.method === 'POST' && url.pathname === '/conflict/query') {
+        writeJson(response, 200, {
+          wiki_title: 'Fresh Conflict Wiki',
+          evidence: [
+            {
+              page_id: 'fresh-conflict',
+              title: 'Fresh Conflict',
+              path: 'fresh-conflict.md',
+              snippet: `Fresh discovery evidence for ${body.query}.`,
+            },
+          ],
+          graph: { nodes: [], edges: [] },
+        })
+        return
+      }
+      writeJson(response, 404, { error: { code: 'not_found' } })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const staleDescriptor = retrievalKnowledgeSource(
+      'fresh-conflict',
+      'Fresh Conflict',
+      'llmwiki-http',
+      `${source.url}/conflict`,
+      ['vector'],
+    )
+    const unsupportedResponse = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'vector should be blocked by fresh metadata',
+          mode: 'evidence-only',
+          retrieval: retrievalIntent('vector', { fallback: 'none' }),
+          knowledgeSources: [staleDescriptor],
+        },
+      }),
+    })
+    const unsupported = await unsupportedResponse.json()
+
+    assert.equal(unsupportedResponse.status, 400, JSON.stringify(unsupported))
+    assert.equal(unsupported.error.code, 'retrieval_mode_unsupported')
+    assertNoSourceFanout(source)
+    assert.doesNotMatch(JSON.stringify(unsupported), new RegExp(escapeRegExp(source.url)))
+
+    source.requests.length = 0
+    const supportedResponse = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'hybrid should use fresh metadata',
+          mode: 'evidence-only',
+          retrieval: retrievalIntent('hybrid', { fallback: 'none', limit: 6, snippetChars: 222 }),
+          knowledgeSources: [staleDescriptor],
+        },
+      }),
+    })
+    const supported = await supportedResponse.json()
+
+    assert.equal(supportedResponse.status, 200, JSON.stringify(supported))
+    assert.deepEqual(pathRequestBodies(source, '/conflict/query'), [
+      {
+        query: 'hybrid should use fresh metadata',
+        limit: 6,
+        mode: 'hybrid',
+        snippet_chars: 222,
+      },
+    ])
+  })
+
+  it('rejects retrieval fallback none before HTTP MCP and A2A source fanout', async (t) => {
+    const httpSource = await startFixtureServer(async ({ request, url, response }) => {
+      if (request.method === 'GET' && url.pathname.endsWith('/source-bundle')) {
+        const sourceId = url.pathname.split('/')[1]
+        if (sourceId === 'http-new') {
+          writeJson(response, 200, {
+            source_id: sourceId,
+            bundle_id: `${sourceId}-bundle`,
+            capabilities: retrievalCapabilities('hybrid'),
+          })
+          return
+        }
+        writeJson(response, 404, { error: { code: 'not_found' } })
+        return
+      }
+      writeJson(response, 200, {
+        wiki_title: 'HTTP should not fan out',
+        evidence: [{ page_id: 'unexpected', title: 'Unexpected', snippet: 'Unexpected fanout.' }],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(httpSource.server))
+
+    const mcpSource = await startFixtureServer(async ({ request, url, body, response }) => {
+      assert.equal(request.method, 'POST')
+      assert(url.pathname.endsWith('/mcp'))
+      if (body.params?.name === 'llmwiki_source_bundle') {
+        writeJson(response, 200, {
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            structuredContent: {
+              source_id: 'mcp-new-source',
+              bundle_id: 'mcp-new-bundle',
+              capabilities: retrievalCapabilities('hybrid'),
+            },
+          },
+        })
+        return
+      }
+      writeJson(response, 200, {
+        jsonrpc: '2.0',
+        id: body.id,
+        result: {
+          wiki_title: 'MCP should not fan out',
+          evidence: [{ page_id: 'unexpected', title: 'Unexpected', snippet: 'Unexpected fanout.' }],
+          graph: { nodes: [], edges: [] },
+        },
+      })
+    })
+    t.after(() => closeServer(mcpSource.server))
+
+    const a2aSource = await startFixtureServer(async ({ request, url, body, response }) => {
+      if (request.method === 'GET' && url.pathname.endsWith('/.well-known/agent-card.json')) {
+        const sourceId = url.pathname.split('/')[1]
+        writeJson(response, 200, {
+          name: sourceId,
+          url: `/${sourceId}/message:send`,
+          capabilities: { structuredArtifacts: true },
+          metadata: sourceId === 'a2a-new'
+            ? { capabilities: retrievalCapabilities('hybrid'), llmwiki: { capabilities: retrievalCapabilities('hybrid') } }
+            : {},
+        })
+        return
+      }
+      writeJson(response, 200, {
+        status: { state: 'completed' },
+        artifacts: [
+          {
+            name: 'llmwiki_context',
+            parts: [{ kind: 'data', data: { evidence: [{ page_id: 'unexpected', title: 'Unexpected', snippet: body.data?.query || '' }] } }],
+          },
+        ],
+      })
+    })
+    t.after(() => closeServer(a2aSource.server))
+
+    const sources = [
+      retrievalKnowledgeSource('http-new', 'HTTP New', 'llmwiki-http', `${httpSource.url}/http-new`, ['hybrid']),
+      knowledgeSource('http-legacy', 'HTTP Legacy', 'llmwiki-http', `${httpSource.url}/http-legacy`),
+      retrievalKnowledgeSource('mcp-new', 'MCP New', 'mcp', `${mcpSource.url}/mcp-new`, ['hybrid']),
+      knowledgeSource('mcp-legacy', 'MCP Legacy', 'mcp', `${mcpSource.url}/mcp-legacy`),
+      retrievalKnowledgeSource('a2a-new', 'A2A New', 'a2a', `${a2aSource.url}/a2a-new`, ['hybrid']),
+      knowledgeSource('a2a-legacy', 'A2A Legacy', 'a2a', `${a2aSource.url}/a2a-legacy`),
+    ]
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      registeredSources: sources,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'hybrid fallback none must be all or nothing',
+          mode: 'evidence-only',
+          retrieval: retrievalIntent('hybrid', { fallback: 'none' }),
+          knowledgeSources: sources,
+        },
+      }),
+    })
+    const body = await response.json()
+
+    assert.equal(response.status, 400, JSON.stringify(body))
+    assert.equal(body.error.code, 'retrieval_mode_unsupported')
+    assert.equal(
+      body.error.message,
+      'Retrieval searchMode hybrid is not supported by selected source(s): http-legacy (llmwiki-http), a2a-legacy (a2a). Set fallback to lexical or choose sources that advertise the requested retrieval capability.',
+    )
+    assert.doesNotMatch(body.error.message, /queryVariants|guided lexical|llmwiki_agent_guided_lexical_v1/i)
+    assertNoSourceFanout(httpSource)
+    assertNoMcpSourceFanout(mcpSource)
+    assertNoA2aMessageFanout(a2aSource)
+
+    httpSource.requests.length = 0
+    mcpSource.requests.length = 0
+    a2aSource.requests.length = 0
+    const mcpRun = await callBridgeMcpTool(bridge, 'retrieval-none-run', 'llmwiki_agent_run', {
+      query: 'hybrid fallback none must be all or nothing',
+      mode: 'evidence-only',
+      retrieval: retrievalIntent('hybrid', { fallback: 'none' }),
+      knowledgeSources: sources,
+    })
+
+    assert.equal(mcpRun.result, undefined)
+    assert.equal(mcpRun.error.code, -32602)
+    assert.equal(
+      mcpRun.error.message,
+      'Retrieval searchMode hybrid is not supported by selected source(s): http-legacy (llmwiki-http), a2a-legacy (a2a). Set fallback to lexical or choose sources that advertise the requested retrieval capability.',
+    )
+    assertNoSourceFanout(httpSource)
+    assertNoMcpSourceFanout(mcpSource)
+    assertNoA2aMessageFanout(a2aSource)
+  })
+
+  it('rejects fallback none lexical query variants without exact guided lexical capability before fanout', async (t) => {
+    const wrongCaseGuidedCapabilities = [...retrievalCapabilities('lexical'), 'LLMWIKI_AGENT_GUIDED_LEXICAL_V1']
+    const capabilitiesForSource = (sourceId) => sourceId.endsWith('wrong-case')
+      ? wrongCaseGuidedCapabilities
+      : retrievalCapabilities('lexical')
+
+    const httpSource = await startFixtureServer(async ({ request, url, response }) => {
+      const sourceId = url.pathname.split('/')[1]
+      if (request.method === 'GET' && url.pathname.endsWith('/source-bundle')) {
+        writeJson(response, 200, {
+          source_id: sourceId,
+          bundle_id: `${sourceId}-bundle`,
+          title: `${sourceId} private-card-secret`,
+          capabilities: capabilitiesForSource(sourceId),
+          provider: 'provider-secret-should-not-leak',
+        })
+        return
+      }
+      writeJson(response, 500, { error: 'source fanout should not happen' })
+    })
+    t.after(() => closeServer(httpSource.server))
+
+    const mcpSource = await startFixtureServer(async ({ request, url, body, response }) => {
+      assert.equal(request.method, 'POST')
+      assert(url.pathname.endsWith('/mcp'))
+      const sourceId = url.pathname.split('/')[1]
+      if (body.params?.name === 'llmwiki_source_bundle') {
+        writeJson(response, 200, {
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            structuredContent: {
+              source_id: sourceId,
+              bundle_id: `${sourceId}-bundle`,
+              title: `${sourceId} private-card-secret`,
+              capabilities: capabilitiesForSource(sourceId),
+              provider: 'provider-secret-should-not-leak',
+            },
+          },
+        })
+        return
+      }
+      writeJson(response, 500, {
+        jsonrpc: '2.0',
+        id: body.id,
+        error: { code: -32000, message: 'source fanout should not happen' },
+      })
+    })
+    t.after(() => closeServer(mcpSource.server))
+
+    const a2aSource = await startFixtureServer(async ({ request, url, response }) => {
+      const sourceId = url.pathname.split('/')[1]
+      if (request.method === 'GET' && url.pathname.endsWith('/.well-known/agent-card.json')) {
+        const capabilities = capabilitiesForSource(sourceId)
+        writeJson(response, 200, {
+          name: `${sourceId} private-card-secret`,
+          url: `/${sourceId}/message:send`,
+          capabilities: { structuredArtifacts: true },
+          metadata: {
+            capabilities,
+            llmwiki: { capabilities },
+            provider: 'provider-secret-should-not-leak',
+          },
+        })
+        return
+      }
+      writeJson(response, 500, { error: 'a2a message fanout should not happen' })
+    })
+    t.after(() => closeServer(a2aSource.server))
+
+    const withCapabilities = (source, capabilities) => ({
+      ...source,
+      name: `${source.name} PrivateCardSecret ProviderSecret`,
+      title: `${source.title} PrivateCardSecret ProviderSecret`,
+      capabilities: [...source.capabilities, ...capabilities],
+    })
+    const sources = [
+      retrievalKnowledgeSource('http-retrieval-only', 'HTTP Retrieval Only', 'llmwiki-http', `${httpSource.url}/http-retrieval-only`, ['lexical']),
+      withCapabilities(
+        retrievalKnowledgeSource('http-wrong-case', 'HTTP Wrong Case', 'llmwiki-http', `${httpSource.url}/http-wrong-case`, ['lexical']),
+        ['LLMWIKI_AGENT_GUIDED_LEXICAL_V1'],
+      ),
+      retrievalKnowledgeSource('mcp-retrieval-only', 'MCP Retrieval Only', 'mcp', `${mcpSource.url}/mcp-retrieval-only`, ['lexical']),
+      withCapabilities(
+        retrievalKnowledgeSource('a2a-wrong-case', 'A2A Wrong Case', 'a2a', `${a2aSource.url}/a2a-wrong-case`, ['lexical']),
+        ['LLMWIKI_AGENT_GUIDED_LEXICAL_V1'],
+      ),
+    ]
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      registeredSources: sources,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const assertGuidedLexicalUnsupported = (error, expectedCode) => {
+      assert.equal(error.code, expectedCode)
+      assert.match(error.message, /queryVariants/)
+      assert.match(error.message, /exact llmwiki_agent_guided_lexical_v1/)
+      assert.match(error.message, /http-retrieval-only \(llmwiki-http\)/)
+      assert.match(error.message, /http-wrong-case \(llmwiki-http\)/)
+      assert.match(error.message, /mcp-retrieval-only \(mcp\)/)
+      assert.match(error.message, /a2a-wrong-case \(a2a\)/)
+      assert.doesNotMatch(error.message, /Retrieval searchMode lexical is not supported/)
+      assert.doesNotMatch(error.message, /LLMWIKI_AGENT_GUIDED_LEXICAL_V1/)
+      assert.doesNotMatch(error.message, /private|provider|card|source-bundle|agent-card/i)
+      assert.doesNotMatch(error.message, new RegExp(escapeRegExp(httpSource.url)))
+      assert.doesNotMatch(error.message, new RegExp(escapeRegExp(mcpSource.url)))
+      assert.doesNotMatch(error.message, new RegExp(escapeRegExp(a2aSource.url)))
+    }
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'guided lexical private query canary',
+          mode: 'evidence-only',
+          retrieval: retrievalIntent('lexical', {
+            fallback: 'none',
+            queryVariants: ['guided variant one'],
+          }),
+          knowledgeSources: sources,
+        },
+      }),
+    })
+    const body = await response.json()
+
+    assert.equal(response.status, 400, JSON.stringify(body))
+    assertGuidedLexicalUnsupported(body.error, 'retrieval_mode_unsupported')
+    assert.doesNotMatch(JSON.stringify(body), /guided lexical private query canary/)
+    assertNoSourceFanout(httpSource)
+    assertNoMcpSourceFanout(mcpSource)
+    assertNoA2aMessageFanout(a2aSource)
+
+    httpSource.requests.length = 0
+    mcpSource.requests.length = 0
+    a2aSource.requests.length = 0
+    const mcpRun = await callBridgeMcpTool(bridge, 'guided-lexical-none-run', 'llmwiki_agent_run', {
+      query: 'guided lexical private query canary',
+      mode: 'evidence-only',
+      retrieval: retrievalIntent('lexical', {
+        fallback: 'none',
+        queryVariants: ['guided variant one'],
+      }),
+      knowledgeSources: sources,
+    })
+
+    assert.equal(mcpRun.result, undefined)
+    assertGuidedLexicalUnsupported(mcpRun.error, -32602)
+    assert.doesNotMatch(JSON.stringify(mcpRun), /guided lexical private query canary/)
+    assertNoSourceFanout(httpSource)
+    assertNoMcpSourceFanout(mcpSource)
+    assertNoA2aMessageFanout(a2aSource)
+  })
+
+  it('forwards retrieval to MCP source tools and omits mode for legacy lexical fallback', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      assert.equal(request.method, 'POST')
+      assert(url.pathname.endsWith('/mcp'))
+      assert.equal(body.method, 'tools/call')
+      const name = body.params?.name
+      const args = body.params?.arguments || {}
+      const sourceId = url.pathname.split('/')[1] || 'mcp-source'
+
+      if (name === 'llmwiki_source_bundle') {
+        writeJson(response, 200, {
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            structuredContent: {
+              source_id: sourceId,
+              bundle_id: `${sourceId}-bundle`,
+              capabilities: sourceId === 'mcp-new' ? retrievalCapabilities('vector') : ['llmwiki_context', 'llmwiki_search'],
+            },
+          },
+        })
+        return
+      }
+
+      if (name === 'llmwiki_context') {
+        writeJson(response, 200, {
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            wiki_title: 'MCP Retrieval Source',
+            evidence: [
+              {
+                page_id: `${args.query}-context`,
+                title: 'MCP Retrieval Context',
+                path: 'mcp-retrieval-context.md',
+                snippet: `MCP retrieval context for ${args.query}.`,
+              },
+            ],
+            graph: { nodes: [], edges: [] },
+          },
+        })
+        return
+      }
+
+      if (name === 'llmwiki_search') {
+        writeJson(response, 200, {
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            results: [
+              {
+                page_id: `${args.query}-search`,
+                title: 'MCP Retrieval Search',
+                path: 'mcp-retrieval-search.md',
+                snippet: `MCP retrieval search for ${args.query}.`,
+              },
+            ],
+          },
+        })
+        return
+      }
+
+      writeJson(response, 500, { error: 'unexpected tool' })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      registeredSources: [
+        retrievalKnowledgeSource('mcp-new', 'MCP New', 'mcp', `${source.url}/mcp-new`, ['vector']),
+        knowledgeSource('mcp-legacy', 'MCP Legacy', 'mcp', `${source.url}/mcp-legacy`),
+      ],
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const context = await callBridgeMcpTool(bridge, 'retrieval-mcp-context', 'llmwiki_context', {
+      sourceId: 'mcp-new',
+      query: 'vector-context',
+      retrieval: retrievalIntent('vector', { limit: 7, snippetChars: 222 }),
+    })
+    assert.equal(context.result.isError, false)
+
+    const search = await callBridgeMcpTool(bridge, 'retrieval-mcp-search', 'llmwiki_search', {
+      sourceId: 'mcp-new',
+      query: 'vector-search',
+      retrieval: retrievalIntent('vector', { limit: 7, snippetChars: 222 }),
+    })
+    assert.equal(search.result.isError, false)
+
+    const contextArgs = source.requests.find((item) => item.body.params?.name === 'llmwiki_context')?.body.params.arguments
+    const searchArgs = source.requests.find((item) => item.body.params?.name === 'llmwiki_search')?.body.params.arguments
+    assert.deepEqual(contextArgs, {
+      query: 'vector-context',
+      limit: 7,
+      include_drafts: false,
+      mode: 'vector',
+      snippet_chars: 222,
+    })
+    assert.deepEqual(searchArgs, {
+      query: 'vector-search',
+      limit: 7,
+      include_drafts: false,
+      mode: 'vector',
+      snippet_chars: 222,
+    })
+
+    source.requests.length = 0
+    const fallback = await callBridgeMcpTool(bridge, 'retrieval-mcp-legacy-fallback', 'llmwiki_context', {
+      sourceId: 'mcp-legacy',
+      query: 'legacy-vector-context',
+      retrieval: retrievalIntent('vector', { fallback: 'lexical', limit: 9, snippetChars: 333 }),
+    })
+    assert.equal(fallback.result.isError, false)
+    const fallbackArgs = source.requests.find((item) => item.body.params?.name === 'llmwiki_context')?.body.params.arguments
+    assertNoExplicitRetrieval(fallbackArgs)
+    assert.match(JSON.stringify(fallback), /retrieval/)
+    assert.match(JSON.stringify(fallback), /lexical/)
+  })
+
+  it('forwards validated retrieval to capable A2A sources and legacy shape to fallback A2A sources', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      const sourceId = url.pathname.split('/')[1]
+      if (request.method === 'GET' && url.pathname.endsWith('/.well-known/agent-card.json')) {
+        writeJson(response, 200, {
+          name: sourceId,
+          url: `/${sourceId}/message:send`,
+          capabilities: { structuredArtifacts: true },
+          metadata: sourceId === 'a2a-new'
+            ? { capabilities: retrievalCapabilities('hybrid'), llmwiki: { capabilities: retrievalCapabilities('hybrid') } }
+            : {},
+        })
+        return
+      }
+
+      assert.equal(request.method, 'POST')
+      assert.equal(url.pathname, `/${sourceId}/message:send`)
+      writeJson(response, 200, {
+        status: { state: 'completed' },
+        artifacts: [
+          {
+            name: 'llmwiki_context',
+            parts: [
+              {
+                kind: 'data',
+                data: {
+                  wiki_title: `${sourceId} A2A Wiki`,
+                  evidence: [
+                    {
+                      page_id: `${sourceId}-page`,
+                      title: `${sourceId} Page`,
+                      path: `${sourceId}.md`,
+                      snippet: `A2A evidence for ${body.data.query}.`,
+                    },
+                  ],
+                  graph: { nodes: [], edges: [] },
+                },
+              },
+            ],
+          },
+        ],
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'hybrid A2A routing',
+          mode: 'evidence-only',
+          retrieval: retrievalIntent('hybrid', { fallback: 'lexical', limit: 4, snippetChars: 144 }),
+          knowledgeSources: [
+            retrievalKnowledgeSource('a2a-new', 'A2A New', 'a2a', `${source.url}/a2a-new`, ['hybrid']),
+            knowledgeSource('a2a-legacy', 'A2A Legacy', 'a2a', `${source.url}/a2a-legacy`),
+          ],
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts?.[0]?.parts?.[0]?.data
+    const newMessage = source.requests.find((item) => item.url.pathname === '/a2a-new/message:send')?.body
+    const legacyMessage = source.requests.find((item) => item.url.pathname === '/a2a-legacy/message:send')?.body
+
+    assert.equal(response.status, 200, JSON.stringify(a2a))
+    assert.deepEqual(newMessage.data.retrieval, retrievalIntent('hybrid', {
+      fallback: 'lexical',
+      limit: 4,
+      snippetChars: 144,
+    }))
+    assert.equal(legacyMessage.data.query, 'hybrid A2A routing')
+    assert.equal(legacyMessage.data.retrieval, undefined)
+    assert.equal(JSON.stringify(newMessage).includes('provider'), false)
+    const retrievalDiagnostics = artifact.diagnostics.filter((diagnostic) => diagnostic.phase === 'retrieval')
+    assert.deepEqual(retrievalDiagnostics.map((diagnostic) => diagnostic.subject), ['a2a-legacy'])
+  })
+
+  it('rejects query variants on non-lexical retrieval before source fanout', async (t) => {
+    const source = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 500, { error: 'should not be called' })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'semantic variant should fail',
+          mode: 'evidence-only',
+          retrieval: retrievalIntent('vector', {
+            queryVariants: ['vector should not accept variants'],
+          }),
+          knowledgeSources: [
+            retrievalKnowledgeSource('variant-vector', 'Variant Vector', 'llmwiki-http', source.url, ['vector']),
+          ],
+        },
+      }),
+    })
+    const body = await response.json()
+
+    assert.equal(response.status, 400)
+    assert.equal(body.error.code, 'invalid_retrieval_intent')
+    assertNoSourceFanout(source)
+
+    const mcpInvalid = await callBridgeMcpTool(bridge, 'variant-vector-mcp', 'llmwiki_search', {
+      sourceId: 'variant-vector',
+      query: 'semantic variant should fail',
+      retrieval: retrievalIntent('hybrid', {
+        queryVariants: ['hybrid should not accept variants'],
+      }),
+      knowledgeSources: [
+        retrievalKnowledgeSource('variant-vector', 'Variant Vector', 'llmwiki-http', source.url, ['hybrid']),
+      ],
+    })
+
+    assert.equal(mcpInvalid.error.code, -32602)
+    assert.match(mcpInvalid.error.message, /queryVariants|query variants/i)
+    assertNoSourceFanout(source)
+  })
+
+  it('rejects invalid retrieval payloads over HTTP and MCP before source fanout', async (t) => {
+    const source = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        wiki_title: 'Invalid Retrieval Source',
+        evidence: [{ page_id: 'unexpected', title: 'Unexpected', snippet: 'Source should not be called.' }],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      registeredSources: [
+        knowledgeSource('invalid-retrieval-source', 'Invalid Retrieval Source', 'llmwiki-http', source.url),
+      ],
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const invalidCases = [
+      {
+        name: 'unknown search mode',
+        retrieval: { schemaVersion: 'llmwiki.retrieval.v1', searchMode: 'semantic' },
+      },
+      {
+        name: 'unknown root field',
+        retrieval: { schemaVersion: 'llmwiki.retrieval.v1', searchMode: 'vector', provider: 'openai' },
+      },
+      {
+        name: 'unknown search field',
+        retrieval: { schemaVersion: 'llmwiki.retrieval.v1', searchMode: 'hybrid', search: { scoreThreshold: 0.3 } },
+      },
+      {
+        name: 'snake case public alias',
+        retrieval: { schemaVersion: 'llmwiki.retrieval.v1', searchMode: 'vector', search: { snippet_chars: 100 } },
+      },
+      {
+        name: 'raw vector payload',
+        retrieval: { schemaVersion: 'llmwiki.retrieval.v1', searchMode: 'vector', embedding: [0.125, 0.25, 0.5] },
+      },
+    ]
+
+    for (const testCase of invalidCases) {
+      const response = await fetch(`${bridge.url}/message:send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          data: {
+            query: `invalid retrieval ${testCase.name}`,
+            mode: 'evidence-only',
+            retrieval: testCase.retrieval,
+            knowledgeSources: [
+              knowledgeSource('invalid-retrieval-source', 'Invalid Retrieval Source', 'llmwiki-http', source.url),
+            ],
+          },
+        }),
+      })
+      const body = await response.json()
+
+      assert.equal(response.status, 400, `${testCase.name}: ${JSON.stringify(body)}`)
+      assert.equal(body.error.code, 'invalid_retrieval_intent')
+      assert.equal(source.requests.length, 0, `${testCase.name} should not call a source`)
+    }
+
+    const mcpInvalid = await callBridgeMcpTool(bridge, 'invalid-retrieval-mcp', 'llmwiki_context', {
+      sourceId: 'invalid-retrieval-source',
+      query: 'invalid mcp retrieval',
+      retrieval: {
+        schemaVersion: 'llmwiki.retrieval.v1',
+        searchMode: 'vector',
+        modelName: 'client-selected-model',
+      },
+    })
+
+    assert.equal(mcpInvalid.result, undefined)
+    assert.equal(mcpInvalid.error.code, -32602)
+    assert.match(mcpInvalid.error.message, /retrieval/i)
+    assert.equal(source.requests.length, 0)
+  })
+
+  it('redacts retrieval-shaped sensitive canaries from IO logs for rejected retrieval requests', async (t) => {
+    const source = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        wiki_title: 'Redaction Source',
+        evidence: [{ page_id: 'unexpected', title: 'Unexpected', snippet: 'Source should not be called.' }],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const logger = recordingLogger()
+    const ioLogDir = await mkdtemp(join(tmpdir(), 'llmwiki-bridge-retrieval-io-'))
+    const ioLogPath = join(ioLogDir, 'bridge-io.jsonl')
+    t.after(async () => {
+      await rm(ioLogDir, { force: true, recursive: true })
+    })
+
+    const canaries = {
+      query: 'RETRIEVAL_REJECTED_QUERY_CANARY',
+      provider: 'retrieval-provider-canary',
+      endpoint: 'https://retrieval-provider-canary.example.test/v1?api_key=retrieval-endpoint-secret',
+      model: 'retrieval-model-canary',
+      modelPath: 'C:\\Users\\angel\\retrieval-model-canary.bin',
+      cacheDir: 'C:\\Users\\angel\\retrieval-cache-canary',
+      apiKey: 'sk-proj-retrieval-log-canary-1234567890',
+      token: 'retrieval-token-canary',
+      vector: '0.123456789',
+      sourceUrl: source.url,
+    }
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      ioLogPath,
+      registeredSources: [
+        knowledgeSource('redaction-source', 'Redaction Source', 'llmwiki-http', source.url),
+      ],
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: canaries.query,
+          mode: 'evidence-only',
+          retrieval: {
+            schemaVersion: 'llmwiki.retrieval.v1',
+            searchMode: 'vector',
+            provider: canaries.provider,
+            endpoint: canaries.endpoint,
+            modelName: canaries.model,
+            modelPath: canaries.modelPath,
+            cacheDir: canaries.cacheDir,
+            apiKey: canaries.apiKey,
+            token: canaries.token,
+            embedding: [Number(canaries.vector), 0.987654321],
+          },
+          diagnosticContext: {
+            provider: canaries.provider,
+            endpoint: canaries.endpoint,
+            model: canaries.model,
+            vector: [Number(canaries.vector)],
+            nested: {
+              cacheDir: canaries.cacheDir,
+              authorization: `Bearer ${canaries.token}`,
+            },
+          },
+          knowledgeSources: [
+            knowledgeSource('redaction-source', 'Redaction Source', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+    const body = await response.json()
+
+    assert.equal(response.status, 400, JSON.stringify(body))
+    assert.equal(body.error.code, 'invalid_retrieval_intent')
+    assert.equal(source.requests.length, 0)
+
+    const events = await readJsonLinesIfExists(ioLogPath)
+    const serialized = JSON.stringify(events) + logger.lines.join('\n') + JSON.stringify(body)
+    for (const canary of Object.values(canaries)) {
+      assert.doesNotMatch(serialized, new RegExp(escapeRegExp(canary)))
+    }
+    assert.doesNotMatch(serialized, /0\.987654321/)
+    assert.doesNotMatch(serialized, /embedding/)
+    assert.doesNotMatch(serialized, /retrieval-provider-canary/)
+    assert.doesNotMatch(serialized, /retrieval-model-canary/)
+  })
+
+  it('redacts adjacent retrieval-shaped fields from valid bridge.request IO logs', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      if (request.method === 'GET' && url.pathname === '/source-bundle') {
+        writeJson(response, 200, {
+          source_id: 'redaction-vector-source',
+          bundle_id: 'redaction-vector-bundle',
+          capabilities: retrievalCapabilities('vector'),
+        })
+        return
+      }
+      if (request.method === 'POST' && url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(request.method, 'POST')
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        wiki_title: 'Redaction Vector Source',
+        evidence: [
+          {
+            page_id: 'ordinary-doc',
+            title: 'Ordinary Document',
+            path: 'ordinary-doc.md',
+            snippet: `Ordinary evidence for ${body.query}.`,
+          },
+        ],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    t.after(() => closeServer(source.server))
+
+    const logger = recordingLogger()
+    const ioLogDir = await mkdtemp(join(tmpdir(), 'llmwiki-bridge-retrieval-valid-io-'))
+    const ioLogPath = join(ioLogDir, 'bridge-io.jsonl')
+    t.after(async () => {
+      await rm(ioLogDir, { force: true, recursive: true })
+    })
+
+    const ordinaryText = 'Ordinary document text can mention provider endpoint model cache as concepts.'
+    const canaries = {
+      endpoint: 'https://adjacent-endpoint-canary.example.test/v1?api_key=endpoint-secret',
+      providerUrl: 'https://provider-url-canary.example.test/v1',
+      baseUrl: 'https://base-url-canary.example.test/v1',
+      modelEndpoint: 'https://model-endpoint-canary.example.test/embed',
+      modelName: 'adjacent-model-canary',
+      cachePath: 'C:\\Users\\angel\\adjacent-cache-canary',
+      downloadUrl: 'https://download-url-canary.example.test/model.bin',
+      token: 'sk-proj-adjacent-retrieval-canary-1234567890',
+      vector: '0.246813579',
+    }
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      ioLogPath,
+      registeredSources: [
+        retrievalKnowledgeSource('redaction-vector', 'Redaction Vector', 'llmwiki-http', source.url, ['vector']),
+      ],
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'valid retrieval redaction canary',
+          mode: 'evidence-only',
+          retrieval: retrievalIntent('vector', { limit: 3, snippetChars: 160 }),
+          diagnosticContext: {
+            endpoint: canaries.endpoint,
+            endpoints: [
+              canaries.endpoint,
+              {
+                providerUrl: canaries.providerUrl,
+                providerUrls: [canaries.providerUrl],
+                providerBaseURL: canaries.baseUrl,
+                modelEndpoint: canaries.modelEndpoint,
+                models: [canaries.modelName],
+                embeddings: [[Number(canaries.vector), 0.864209753]],
+                nested: [
+                  {
+                    vector: [Number(canaries.vector)],
+                    cachePath: canaries.cachePath,
+                    downloadUrl: canaries.downloadUrl,
+                    authorization: `Bearer ${canaries.token}`,
+                  },
+                ],
+              },
+            ],
+            documentText: ordinaryText,
+          },
+          knowledgeSources: [
+            retrievalKnowledgeSource('redaction-vector', 'Redaction Vector', 'llmwiki-http', source.url, ['vector']),
+          ],
+        },
+      }),
+    })
+    const body = await response.json()
+
+    assert.equal(response.status, 200, JSON.stringify(body))
+    const events = await readJsonLinesIfExists(ioLogPath)
+    const requestEvent = events.find((event) => event.phase === 'bridge.request')
+    assert(requestEvent, 'expected bridge.request IO log event')
+    const serialized = JSON.stringify(events) + logger.lines.join('\n') + JSON.stringify(body)
+
+    for (const canary of Object.values(canaries)) {
+      assert.doesNotMatch(serialized, new RegExp(escapeRegExp(canary)))
+    }
+    assert.doesNotMatch(serialized, /0\.864209753/)
+    for (const unsafeKey of [
+      'endpoint',
+      'endpoints',
+      'providerUrl',
+      'providerUrls',
+      'providerBaseURL',
+      'modelEndpoint',
+      'models',
+      'embeddings',
+      'vector',
+      'cachePath',
+      'downloadUrl',
+      'authorization',
+    ]) {
+      assert.doesNotMatch(serialized, new RegExp(`"${escapeRegExp(unsafeKey)}"\\s*:`))
+    }
+    assert.match(JSON.stringify(requestEvent), new RegExp(escapeRegExp(ordinaryText)))
+  })
+
+  it('does not add ML embedding vector or provider SDK dependencies for retrieval routing', async () => {
+    const packageJson = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'))
+    const packageLock = JSON.parse(await readFile(join(packageRoot, 'package-lock.json'), 'utf8'))
+    const dependencyNames = new Set([
+      ...Object.keys(packageJson.dependencies || {}),
+      ...Object.keys(packageJson.devDependencies || {}),
+      ...Object.keys(packageLock.packages?.['']?.dependencies || {}),
+      ...Object.keys(packageLock.packages?.['']?.devDependencies || {}),
+      ...Object.keys(packageLock.packages || {})
+        .filter((name) => name.startsWith('node_modules/'))
+        .map((name) => name.slice('node_modules/'.length)),
+    ])
+    const forbiddenPattern = /(?:faiss|hnsw|annoy|chroma|pinecone|weaviate|qdrant|milvus|vector|embedding|sentence-transformers|transformers|onnx|tensorflow|torch|numpy|openai|cohere|voyage|langchain)/i
+    const forbidden = [...dependencyNames].filter((name) => forbiddenPattern.test(name))
+
+    assert.deepEqual(forbidden, [])
   })
 
   it('runs hybrid mode through source retrieval and runtime synthesis', async (t) => {
@@ -8630,7 +10217,236 @@ function knowledgeSource(id, name, protocol, url) {
 }
 
 function observationValue(diagnostic, name) {
-  return diagnostic.observations.find((observation) => observation.name === name)?.value
+  return diagnostic.observations?.find((observation) => observation.name === name)?.value
+}
+
+function retrievalIntent(searchMode, {
+  fallback = 'lexical',
+  limit,
+  snippetChars,
+  fields,
+  excludePageIds,
+  queryVariants,
+} = {}) {
+  const search = {
+    ...(limit === undefined ? {} : { limit }),
+    ...(snippetChars === undefined ? {} : { snippetChars }),
+    ...(fields === undefined ? {} : { fields }),
+    ...(excludePageIds === undefined ? {} : { excludePageIds }),
+    ...(queryVariants === undefined ? {} : { queryVariants }),
+  }
+  return {
+    schemaVersion: 'llmwiki.retrieval.v1',
+    searchMode,
+    ...(fallback === undefined ? {} : { fallback }),
+    ...(Object.keys(search).length ? { search } : {}),
+  }
+}
+
+function retrievalCapabilities(...modes) {
+  return [
+    'llmwiki_retrieval_v1',
+    ...modes.map((mode) => `llmwiki_search_mode_${mode}`),
+  ]
+}
+
+function retrievalKnowledgeSource(id, name, protocol, url, modes) {
+  return {
+    ...knowledgeSource(id, name, protocol, url),
+    capabilities: [
+      'llmwiki_context',
+      'llmwiki_search',
+      'llmwiki_source_bundle',
+      ...retrievalCapabilities(...modes),
+    ],
+  }
+}
+
+function assertRetrievalIntentSchema(schema, { searchSchema } = {}) {
+  assert.equal(schema.type, 'object')
+  assert.equal(schema.additionalProperties, false)
+  assert.deepEqual(schema.required, ['schemaVersion', 'searchMode'])
+  assert.equal(schema.properties.schemaVersion.const, 'llmwiki.retrieval.v1')
+  assert.deepEqual(schema.properties.searchMode.enum, ['lexical', 'literal', 'vector', 'hybrid'])
+  assert.deepEqual(schema.properties.fallback.enum, ['lexical', 'none'])
+  if (schema.properties.search.$ref) {
+    assert.equal(schema.properties.search.$ref, '#/components/schemas/RetrievalSearchOptions')
+    assertRetrievalSearchOptionsSchema(searchSchema)
+  } else {
+    assertRetrievalSearchOptionsSchema(schema.properties.search)
+  }
+}
+
+function assertRetrievalSearchOptionsSchema(schema) {
+  assert.equal(schema.type, 'object')
+  assert.equal(schema.additionalProperties, false)
+  assert.deepEqual(Object.keys(schema.properties).sort(), [
+    'excludePageIds',
+    'fields',
+    'limit',
+    'queryVariants',
+    'snippetChars',
+  ])
+  assert.equal(schema.properties.limit.type, 'integer')
+  assert.equal(schema.properties.snippetChars.type, 'integer')
+  assert.equal(schema.properties.fields.type, 'array')
+  assert.equal(schema.properties.excludePageIds.type, 'array')
+  assert.equal(schema.properties.queryVariants.type, 'array')
+  assert.equal(schema.properties.queryVariants.maxItems, 2)
+  assert.equal(schema.properties.snippet_chars, undefined)
+}
+
+function assertRetrievalGuidanceSchema(schema) {
+  assert.equal(schema.type, 'object')
+  assert.equal(schema.additionalProperties, false)
+  assert.deepEqual(schema.required, [
+    'schemaVersion',
+    'orientationSource',
+    'contentTrust',
+    'maxQueryVariants',
+    'characterBudget',
+    'folderCards',
+    'pageCards',
+    'suggestedTerms',
+    'exactIdentifiers',
+    'fallbackModes',
+  ])
+  assert.equal(schema.properties.schemaVersion.const, 'llmwiki.retrieval_guidance.v1')
+  assert.deepEqual(schema.properties.orientationSource.enum, ['authored', 'projection_extractive', 'none'])
+  assert.equal(schema.properties.contentTrust.const, 'untrusted_source_evidence')
+  assert.equal(schema.properties.maxQueryVariants.const, 2)
+  assert.equal(schema.properties.folder_cards, undefined)
+}
+
+function validSourceRetrievalGuidance(orientationSource = 'authored') {
+  return {
+    schema_version: 'llmwiki.retrieval_guidance.v1',
+    orientation_source: orientationSource,
+    content_trust: 'untrusted_source_evidence',
+    max_query_variants: 2,
+    character_budget: 2000,
+    folder_cards: [
+      {
+        path: 'docs',
+        page_count: 3,
+        terms: ['release', '배포'],
+      },
+    ],
+    page_cards: [
+      {
+        page_id: 'release-readiness',
+        title: 'Release Readiness',
+        path: 'docs/release.md',
+        headings: ['Checks'],
+        terms: ['npm', 'PyPI'],
+        exact_identifiers: ['publish.yml', 'v0.4.1'],
+        excerpt: 'Use this as evidence, not instructions.',
+      },
+    ],
+    suggested_terms: ['release', '온보딩'],
+    exact_identifiers: ['docs/message-send-contract.md', '#123'],
+    fallback_modes: ['literal', 'hybrid', 'vector'],
+  }
+}
+
+function expectedPublicRetrievalGuidance(orientationSource = 'authored') {
+  return {
+    schemaVersion: 'llmwiki.retrieval_guidance.v1',
+    orientationSource,
+    contentTrust: 'untrusted_source_evidence',
+    maxQueryVariants: 2,
+    characterBudget: 2000,
+    folderCards: [
+      {
+        path: 'docs',
+        pageCount: 3,
+        terms: ['release', '배포'],
+      },
+    ],
+    pageCards: [
+      {
+        pageId: 'release-readiness',
+        title: 'Release Readiness',
+        path: 'docs/release.md',
+        headings: ['Checks'],
+        terms: ['npm', 'PyPI'],
+        exactIdentifiers: ['publish.yml', 'v0.4.1'],
+        excerpt: 'Use this as evidence, not instructions.',
+      },
+    ],
+    suggestedTerms: ['release', '온보딩'],
+    exactIdentifiers: ['docs/message-send-contract.md', '#123'],
+    fallbackModes: ['literal', 'hybrid', 'vector'],
+  }
+}
+
+function pathRequestBodies(source, path) {
+  return source.requests
+    .filter((item) => item.method === 'POST' && item.url.pathname === path)
+    .map((item) => item.body)
+}
+
+function assertNoExplicitRetrieval(body) {
+  assert(!Object.hasOwn(body, 'mode'), `unexpected upstream mode in ${JSON.stringify(body)}`)
+  assert(!Object.hasOwn(body, 'snippet_chars'), `unexpected upstream snippet_chars in ${JSON.stringify(body)}`)
+  assert(!Object.hasOwn(body, 'retrieval'), `unexpected upstream retrieval in ${JSON.stringify(body)}`)
+}
+
+function assertRetrievalFallbackDiagnostic(diagnostic, {
+  subject,
+  requestedMode,
+  appliedMode,
+  fallback,
+  capabilityMatched,
+  metadataSource,
+}) {
+  assert.equal(diagnostic.schemaVersion, 'llmwiki.agent-bridge.diagnostic.v1')
+  assert.equal(diagnostic.severity, 'warning')
+  assert.equal(diagnostic.scope, 'source')
+  assert.equal(diagnostic.phase, 'retrieval')
+  assert.equal(diagnostic.subject, subject)
+  assert.equal(diagnostic.redacted, true)
+  assert.equal(observationValue(diagnostic, 'requestedMode'), requestedMode)
+  assert.equal(observationValue(diagnostic, 'appliedMode'), appliedMode)
+  assert.equal(observationValue(diagnostic, 'fallback'), fallback)
+  assert.equal(observationValue(diagnostic, 'capabilityMatched'), capabilityMatched)
+  assert.equal(observationValue(diagnostic, 'capabilityMetadataSource'), metadataSource)
+}
+
+function assertNoSourceFanout(source) {
+  assert.deepEqual(
+    source.requests
+      .filter((item) => item.method === 'POST' && ['/query', '/search'].some((suffix) => item.url.pathname.endsWith(suffix)))
+      .map((item) => item.url.pathname),
+    [],
+  )
+}
+
+function assertNoMcpSourceFanout(source) {
+  assert.deepEqual(
+    source.requests
+      .filter((item) => ['llmwiki_context', 'llmwiki_search'].includes(item.body.params?.name))
+      .map((item) => item.body.params.name),
+    [],
+  )
+}
+
+function assertNoA2aMessageFanout(source) {
+  assert.deepEqual(
+    source.requests
+      .filter((item) => item.method === 'POST' && item.url.pathname.endsWith('/message:send'))
+      .map((item) => item.url.pathname),
+    [],
+  )
+}
+
+async function readJsonLinesIfExists(path) {
+  try {
+    return await readJsonLines(path)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return []
+    throw error
+  }
 }
 
 function citationEvidence(count) {

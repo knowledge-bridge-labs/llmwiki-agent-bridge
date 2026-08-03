@@ -8,6 +8,26 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 No unreleased changes.
 
+## [0.4.0] - 2026-08-01
+
+### Added
+
+- Additive retrieval-mode forwarding for `/message:send` and MCP tools,
+  including `data.retrieval`, exact source capability strings, lexical fallback
+  diagnostics, and vector/hybrid routing to capable HTTP, MCP, and A2A sources.
+- Agent-guided lexical controls for source tools and one-shot runs, including
+  strict Serve `retrieval_guidance` to public `retrievalGuidance` mapping,
+  Korean and non-Latin Unicode-preserving `queryVariants`, exact
+  `llmwiki_agent_guided_lexical_v1` gating for upstream `query_variants`, and
+  old-source fallback distinctions that keep unsupported fields out of legacy
+  request bodies.
+
+### Changed
+
+- Bumped package metadata for the retrieval forwarding public contract while
+  keeping the bridge free of ML, embedding, vector-store, ANN, numeric, and
+  provider SDK dependency additions.
+
 ## [0.3.0] - 2026-07-28
 
 ### Added

@@ -13,13 +13,13 @@ const capturePath = process.argv[3] || ''
 
 async function main() {
   if (mode === 'nonzero') {
-    process.stderr.write('fatal sk-proj-secret-for-test https://runtime-secret.example.test C:\\Users\\agent\\secret.txt\n')
+    process.stderr.write('fatal sk-proj-secret-for-test https://runtime-secret.example.test C:\\Users\\agent\\secret.txt endpoint=https://runtime-endpoint-field-canary.example.test/v1 model=runtime-model-field-canary cachePath=C:\\Users\\agent\\runtime-cache-field-canary vectors=[0.314159265]\n')
     await capture({ event: 'nonzero-start' })
     process.exit(42)
   }
 
   if (mode === 'malformed') {
-    process.stderr.write('malformed sk-proj-malformed-secret https://malformed-secret.example.test C:\\Users\\agent\\malformed.txt\n')
+    process.stderr.write('malformed sk-proj-malformed-secret https://malformed-secret.example.test C:\\Users\\agent\\malformed.txt endpoints=["https://runtime-endpoints-field-canary.example.test/v1"] providerUrl=https://runtime-provider-url-field-canary.example.test/v1 embeddings=[[0.271828182]]\n')
     await capture({ event: 'malformed-start' })
     process.stdout.write('this is not json and mentions sk-proj-stdout-secret https://stdout-secret.example.test\n')
     setTimeout(() => process.exit(0), 20)
