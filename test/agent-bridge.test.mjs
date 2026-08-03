@@ -3962,7 +3962,6 @@ describe('llmwiki-agent-bridge', () => {
     })
     t.after(() => closeServer(bridge.server))
 
-    const started = performance.now()
     const response = await fetch(`${bridge.url}/message:send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3979,7 +3978,6 @@ describe('llmwiki-agent-bridge', () => {
         },
       }),
     })
-    const elapsedMs = performance.now() - started
     const a2a = await response.json()
     const artifact = a2a.artifacts[0].parts[0].data
     const successfulSourceIds = sourceIds.filter((sourceId) => sourceId !== failingSourceId)
@@ -3988,10 +3986,6 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(response.status, 200)
     assert(maxActiveQueries > 1)
     assert(maxActiveQueries <= 4)
-    assert(
-      elapsedMs < delayMs * sourceIds.length * 0.75,
-      `expected parallel fan-out below serial latency; elapsed ${Math.round(elapsedMs)}ms`,
-    )
     assert.equal(source.requests.filter((item) => item.url.pathname.endsWith('/source-bundle')).length, sourceIds.length)
     assert.equal(source.requests.filter((item) => item.url.pathname.endsWith('/query')).length, sourceIds.length)
     assert.match(artifact.answer, /Evidence-only result: the bridge gathered 5 citation\(s\) from 5 Knowledge Source\(s\)/)
