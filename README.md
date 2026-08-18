@@ -394,6 +394,9 @@ Semantic retrieval is source-owned. The bridge routes intent only; it does not
 embed documents or queries, build a vector index, choose embedding providers,
 download models, store vectors, or forward provider credentials, endpoints,
 cache paths, model names, or raw embeddings from public client payloads.
+SQLite GraphStore is configured on `llmwiki-serve`: version `0.2.10` and newer
+include it in the base serve package, it remains off by default, and no bridge
+or chat extra is required.
 
 Sources advertise retrieval support with exact, case-sensitive capability
 strings: `llmwiki_retrieval_v1`, `llmwiki_search_mode_lexical`,
