@@ -1,6 +1,14 @@
-# Direct Client Path vs Bridge Path
+# Direct Client Path vs Knowledge Gateway Path
 
-LLMWiki clients do not always need `llmwiki-agent-bridge`. Choose the simplest path that matches the client and deployment boundary.
+LLMWiki clients do not always need `llmwiki-agent-bridge`. Choose the simplest
+path that matches the client and deployment boundary.
+
+`llmwiki-agent-bridge` is the optional LLMWiki Knowledge Gateway: a
+gateway-compatible bridge for source fan-out, evidence bundling, citations,
+graph context, source registry use, and runtime synthesis artifacts. The term is
+scoped to LLMWiki evidence assembly. It does not make the bridge a replacement
+for Docker, agentgateway, AWS AgentCore, API gateways, runtime hosts, or
+deployment platforms.
 
 ## Direct Client Path
 
@@ -25,7 +33,8 @@ Tradeoff:
 
 ## Bridge Path
 
-Use the bridge path when a client wants one companion runtime service that:
+Use the bridge path when a client wants one Knowledge Gateway companion service
+that:
 
 - Accepts an A2A-style `message:send` request.
 - Accepts an MCP-style `llmwiki_agent_run` tool call at `POST /mcp`.
@@ -35,7 +44,8 @@ Use the bridge path when a client wants one companion runtime service that:
   relationship traversal.
 - Calls selected `llmwiki-serve` Knowledge Sources over `llmwiki-http`, MCP-style JSON-RPC, or A2A-style HTTP.
 - Sends the evidence bundle to Hermes, DeepAgents, or a generic OpenAI-compatible runtime.
-- Returns one structured answer artifact with citations, graph data, and trace steps.
+- Returns one structured runtime synthesis artifact with citations, graph data,
+  source metadata, diagnostics, and trace steps.
 
 The detailed request, response, artifact, and failure shapes are documented in
 [Message Send Contract](./message-send-contract.md).
@@ -59,6 +69,28 @@ Benefits:
 Tradeoff:
 
 - The bridge becomes part of the local trust boundary and must be configured with the right bind host, bearer auth, CORS, and source policy.
+
+## Gateway-Compatible Placement
+
+An external agent gateway, API gateway, managed agent platform, reverse proxy,
+or deployment system can sit in front of `llmwiki-agent-bridge` when that
+system already owns ingress, identity, authorization policy, network exposure,
+tenant controls, deployment, or scaling. In that placement, the bridge is the
+target or companion that performs LLMWiki-specific evidence assembly and returns
+the normalized `llmwiki_agent_result` artifact.
+
+Do not treat the bridge as a general gateway platform. It does not schedule
+containers, host arbitrary agents, manage cloud ingress, enforce tenancy, or
+replace the external gateway's security and deployment controls.
+
+## Component Boundaries
+
+| Component | Boundary |
+| --- | --- |
+| `llmwiki-serve` | Source projection layer. It reads approved Markdown or LLMWiki-style folders and exposes read-only context, search, graph, retrieval guidance, and source-bundle metadata. Source-side projections, indexes, and retrieval capabilities live here. |
+| `llmwiki-agent-bridge` | LLMWiki Knowledge Gateway layer. It owns source registry use, bounded source fan-out, evidence bundling, citations, graph context, diagnostics, optional runtime delegation, and the normalized answer artifact. It does not mutate wiki content or own source projections. |
+| `llmwiki-chat` | UI/workbench for source selection, runtime settings, traces, citations, and graph context. It is a consumer of bridge/source surfaces, not the evidence gateway itself. |
+| `llmwiki-bridge-start` | Setup/start harness for local workflow assembly. It can help launch or hand off source, bridge, and chat processes; it does not own source projection or runtime synthesis semantics. |
 
 ## Source URL Policy
 
@@ -155,4 +187,10 @@ the local settings screen without hard-coding the path.
 
 ## Rule of Thumb
 
-If Codex, Claude Code, Copilot, or another agent can already use `llmwiki-serve` directly through a trusted tool path, start there. Use `llmwiki-agent-bridge` when the runtime needs a companion protocol layer that performs source fan-out, evidence bundling, runtime synthesis, and structured result assembly.
+If Codex, Claude Code, Copilot, or another agent can already use
+`llmwiki-serve` directly through a trusted tool path, start there. Use
+`llmwiki-agent-bridge` when the runtime needs a Knowledge Gateway companion
+layer that performs source fan-out, evidence bundling, runtime synthesis, and
+structured result assembly. When another gateway is already present, keep it in
+front of the bridge and let the bridge stay focused on LLMWiki evidence and
+artifacts.

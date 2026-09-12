@@ -4,18 +4,28 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 [![Node.js >=22.12](https://img.shields.io/badge/node-%3E%3D22.12-339933.svg)](https://nodejs.org/)
 
-`llmwiki-agent-bridge` is the optional source fan-out and runtime-synthesis
-layer for the LLMWiki toolchain. It runs as a local HTTP service, gathers
-evidence from one or more `llmwiki-serve` Knowledge Sources, and returns one
-normalized answer artifact with citations, optional graph context, and trace
-steps. It can run evidence-only for a first smoke test, or call a configured
-runtime adapter for synthesized answers. The default adapter targets
-OpenAI-compatible chat completions.
+`llmwiki-agent-bridge` is the optional LLMWiki Knowledge Gateway: a
+gateway-compatible bridge for source fan-out, evidence bundling, and
+runtime-synthesis artifacts in the LLMWiki toolchain. It runs as a local HTTP
+service, gathers evidence from one or more `llmwiki-serve` Knowledge Sources,
+and returns one normalized answer artifact with citations, optional graph
+context, source metadata, and trace steps. It can run evidence-only for a first
+smoke test, or call a configured runtime adapter for synthesized answers. The
+default adapter targets OpenAI-compatible chat completions.
+
+Gateway-compatible means the bridge can be called directly by local clients or
+placed behind an external agent/API gateway as a target or companion for
+LLMWiki evidence assembly. External gateways still own ingress, identity,
+policy, tenancy, deployment, scaling, network exposure, and operator controls.
+This package does not replace Docker, agentgateway, AWS AgentCore, API
+gateways, runtime hosts, or deployment platforms.
 
 Use it when:
 
-- A client wants one endpoint instead of managing source fan-out, prompting,
-  runtime calls, citations, and trace shaping itself.
+- A client wants one Knowledge Gateway endpoint instead of managing source
+  fan-out, prompting, runtime calls, citations, and trace shaping itself.
+- An external gateway or local runtime needs a target/companion that normalizes
+  LLMWiki evidence and answer artifacts.
 - You are connecting Hermes, DeepAgents, or a generic local runtime to LLMWiki
   evidence.
 - `llmwiki-chat` or another UI needs Agent Bridge A2A or MCP endpoints backed
@@ -48,18 +58,30 @@ Karpathy or any upstream producer named in compatibility examples.
 ## Choose a Path
 
 Start with the direct path whenever your client can call `llmwiki-serve`
-itself. Add the bridge when you need fan-out, runtime synthesis, or a single
-normalized result behind one local service.
+itself. Add the bridge when you need the Knowledge Gateway path: fan-out,
+evidence bundling, runtime synthesis, or a single normalized result behind one
+local service. Put the bridge behind an external gateway only when that gateway
+already owns ingress and policy and needs a LLMWiki evidence target.
 
 | Path | Use when | Flow |
 | --- | --- | --- |
 | Direct to `llmwiki-serve` | Codex, Claude Code, Copilot, an IDE agent, or a script can safely call the Knowledge Source and handle its own prompting or synthesis. | `client -> llmwiki-serve` |
-| Through `llmwiki-agent-bridge` | The client wants source fan-out, evidence bundling, runtime synthesis, citations, graph context, and trace steps returned as one artifact. | `client -> bridge -> sources -> runtime -> artifact` |
+| Through `llmwiki-agent-bridge` Knowledge Gateway | The client wants source fan-out, evidence bundling, runtime synthesis, citations, graph context, source registry use, and trace steps returned as one artifact. | `client -> bridge -> sources -> runtime -> artifact` |
+| External gateway to bridge | An existing gateway handles ingress, identity, policy, tenancy, deployment, or network controls and needs the bridge as a target/companion for LLMWiki evidence assembly. | `client -> external gateway -> bridge -> sources -> runtime -> artifact` |
 
 Direct-client templates live in [integrations](./integrations/README.md). The
 bridge request and artifact contract is documented in
 [docs/message-send-contract.md](./docs/message-send-contract.md) and generated
 as [docs/openapi.json](./docs/openapi.json).
+
+## Component Boundaries
+
+| Component | Boundary |
+| --- | --- |
+| `llmwiki-serve` | Source projection layer. It reads approved source folders and exposes read-only context, search, graph, retrieval guidance, and source-bundle metadata. Source-side projections, indexes, and retrieval capabilities live here. |
+| `llmwiki-agent-bridge` | Knowledge Gateway layer. It owns source registry use, bounded source fan-out, evidence bundling, citations, graph context, diagnostics, optional runtime delegation, and the normalized answer artifact. It does not mutate source content or own source projections. |
+| `llmwiki-chat` | Browser UI/workbench for source selection, runtime settings, traces, citations, and graph context. It consumes bridge and source surfaces rather than replacing them. |
+| `llmwiki-bridge-start` | Setup/start harness for local workflow assembly. It can help launch or hand off source, bridge, and chat processes; it is not the gateway runtime and does not own source projection. |
 
 ## Quick Start
 
@@ -304,7 +326,8 @@ the [message contract](./docs/message-send-contract.md), and
 
 ## What It Does
 
-The bridge exposes one small local HTTP surface:
+As the LLMWiki Knowledge Gateway layer, the bridge exposes one small local HTTP
+surface:
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -576,9 +599,12 @@ node ./bin/llmwiki-agent-bridge.mjs
 ## Integration Paths
 
 Direct-client integrations are the best first choice when the agent can safely
-retrieve context from `llmwiki-serve` itself. Bridge integrations are a better
-fit when a client wants one local service to gather evidence, call a runtime,
-and return a normalized result.
+retrieve context from `llmwiki-serve` itself. Bridge integrations are the
+Knowledge Gateway path and are a better fit when a client wants one local
+service to gather evidence, call a runtime, and return a normalized result.
+When an external gateway is already in the deployment, keep that gateway
+responsible for ingress and policy and use `llmwiki-agent-bridge` as the
+LLMWiki evidence target behind it.
 
 - [Client path guide](./docs/client-paths.md)
 - [Integrations overview](./integrations/README.md)
@@ -595,7 +621,7 @@ export LLMWIKI_SERVE_URL=http://127.0.0.1:8765
 ```
 
 Use `llmwiki-agent-bridge` when the workflow also needs source fan-out,
-runtime synthesis, and one normalized answer artifact.
+evidence bundling, runtime synthesis, and one normalized answer artifact.
 
 ## Configuration
 
