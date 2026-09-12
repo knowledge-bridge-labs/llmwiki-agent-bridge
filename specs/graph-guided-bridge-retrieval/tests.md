@@ -20,4 +20,3 @@
   canaries.
 - Inspect diagnostics and trace steps for bounded source id, protocol, status,
   counts, and redaction observations only.
-

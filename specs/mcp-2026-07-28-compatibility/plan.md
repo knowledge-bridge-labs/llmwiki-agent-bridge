@@ -12,4 +12,3 @@
 6. Update `docs/message-send-contract.md` to document the compatibility slice.
 7. Run focused tests, full `npm test`, `npm run lint`, and contract generation
    or check as needed.
-

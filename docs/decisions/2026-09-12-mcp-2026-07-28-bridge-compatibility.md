@@ -54,4 +54,3 @@ Implement a small dual-era compatibility slice:
 
 - Spec: `specs/mcp-2026-07-28-compatibility/`
 - Contract docs: `docs/message-send-contract.md`
-

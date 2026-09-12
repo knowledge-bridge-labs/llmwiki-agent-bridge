@@ -53,4 +53,3 @@ curl -s http://127.0.0.1:8788/mcp \
 Then repeat the same calls through Docker MCP Gateway. Keep bridge bearer auth,
 source-origin policy, TLS termination, and logging policy aligned with the
 gateway deployment.
-
