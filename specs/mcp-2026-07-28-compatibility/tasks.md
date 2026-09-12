@@ -11,6 +11,8 @@
   structured content.
 - [x] Preserve explicit `/mcp/stream` MCP source endpoints and send modern MCP
   headers plus `params._meta` to source tool calls.
+- [x] Add opt-in progressive gateway tool exposure for compact catalog,
+  one-tool detail, and source-tool dispatch.
 - [x] Preserve audit redaction for request `_meta`.
 - [x] Update MCP contract documentation.
 - [x] Regenerate OpenAPI if the generated contract changes.

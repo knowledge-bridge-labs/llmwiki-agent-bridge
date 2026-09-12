@@ -17,6 +17,17 @@
 - `tools/list` and `tools/call` work without prior initialization.
 - `tools/list` returns `resultType: "complete"`, `ttlMs`, and
   `cacheScope: "private"`.
+- Default `direct` tool exposure preserves the existing direct `tools/list`
+  entries and omits gateway meta-tools.
+- `LLMWIKI_AGENT_BRIDGE_MCP_TOOL_EXPOSURE=gateway` makes `tools/list` return
+  only `llmwiki_gateway_search_tools`,
+  `llmwiki_gateway_get_tool_details`, and `llmwiki_gateway_call_tool`.
+- Gateway `tools/list` is smaller than the default direct built-in tool-list
+  payload for this bridge.
+- Gateway search returns compact catalog entries without `inputSchema`;
+  gateway detail returns one selected full `inputSchema`; gateway call
+  dispatches to the intended source tool and redacts URL, local path, and
+  secret canaries from the wrapper result.
 - `tools/call` returns `resultType: "complete"` while preserving existing
   `content`, `structuredContent`, and `isError` fields.
 - Registered MCP Knowledge Source URLs that end in `/mcp/stream` are not
@@ -30,6 +41,7 @@
 
 ```sh
 npm test -- --test-name-pattern "MCP 2026-07-28"
+npm test -- --test-name-pattern "compact MCP gateway tool discovery"
 npm test
 npm run lint
 npm run contracts:check

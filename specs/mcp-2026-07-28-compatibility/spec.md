@@ -29,6 +29,8 @@ path without regressing existing initialized clients.
 - Keep `tools/list` and `tools/call` usable without session state.
 - Preserve existing request logging and diagnostic redaction boundaries when
   requests include modern `_meta`.
+- Add opt-in progressive gateway tool exposure so hosts can list only compact
+  catalog/detail/call meta-tools instead of all direct source-tool schemas.
 
 ## Non-Goals
 
@@ -41,6 +43,8 @@ path without regressing existing initialized clients.
 - Do not replace the MCP source client with a full MCP SDK client; this slice
   only preserves explicitly registered `/mcp/stream` endpoints and sends modern
   request metadata headers on existing JSON-RPC tool calls.
+- Do not make gateway exposure the default until existing direct-listing MCP
+  clients have an explicit migration path.
 
 ## Requirements
 
@@ -72,6 +76,21 @@ path without regressing existing initialized clients.
   `Accept: application/json, text/event-stream`, `MCP-Protocol-Version:
   2026-07-28`, `Mcp-Method: tools/call`, `Mcp-Name` for the selected source
   tool, and protocol/client metadata under `params._meta`.
+- `REQ-011`: `mcpToolExposure` and
+  `LLMWIKI_AGENT_BRIDGE_MCP_TOOL_EXPOSURE` accept `direct`, `gateway`, and
+  `both`; `progressive` is accepted as an alias for `gateway`.
+- `REQ-012`: Default `direct` exposure preserves the existing `tools/list`
+  order and does not list gateway meta-tools.
+- `REQ-013`: `gateway` exposure lists only
+  `llmwiki_gateway_search_tools`, `llmwiki_gateway_get_tool_details`, and
+  `llmwiki_gateway_call_tool`. It must produce a smaller `tools/list` payload
+  than default direct exposure for the built-in bridge tools.
+- `REQ-014`: Gateway search returns compact catalog entries without
+  `inputSchema`; gateway detail returns one selected tool with its full
+  `inputSchema`; gateway call dispatches through the same read-only source-tool
+  handlers.
+- `REQ-015`: Gateway wrapper outputs redact URL-like, credential-like, and
+  local-path fields before returning structured downstream source-tool results.
 
 ## Compatibility
 
@@ -80,3 +99,7 @@ the current initialized-client behavior. Modern requests can use per-request
 `params._meta` and call `server/discover`, `tools/list`, or `tools/call`
 directly. The bridge does not persist client capabilities or identity between
 modern requests.
+
+MCP tool exposure defaults to `direct` to preserve existing tool-listing
+clients. Operators choose `gateway` when their MCP host can use a compact
+catalog-first flow and should avoid injecting every source-tool schema up front.

@@ -45,6 +45,9 @@ bridge endpoint:
   `2024-11-05`
 - sessionless `tools/list`
 - sessionless `tools/call` for `llmwiki_agent_run` and read-only source tools
+- opt-in `LLMWIKI_AGENT_BRIDGE_MCP_TOOL_EXPOSURE=gateway`, where `tools/list`
+  returns only compact catalog, detail, and call meta-tools for progressive
+  discovery
 
 The public docs intentionally avoid broader conformance claims. Modern MCP
 operators should validate their gateway's expected request metadata,
@@ -106,6 +109,9 @@ Before treating an external placement as ready:
 - verify the bridge is healthy through `/health`
 - verify `POST /mcp` `server/discover` when using MCP
 - verify `POST /mcp` `tools/list` includes the expected bridge and source tools
+- if using progressive gateway exposure, verify `tools/list` returns only
+  `llmwiki_gateway_search_tools`, `llmwiki_gateway_get_tool_details`, and
+  `llmwiki_gateway_call_tool`
 - verify `POST /mcp` `tools/call` can run `llmwiki_agent_run` in
   `evidence-only` mode
 - verify `/message:send` only if the external gateway intentionally fronts the

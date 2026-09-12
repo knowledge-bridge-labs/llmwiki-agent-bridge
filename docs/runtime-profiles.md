@@ -209,6 +209,7 @@ runtime is Hermes or DeepAgents.
 | `LLMWIKI_AGENT_BRIDGE_API_KEY` | unset | Optional runtime API key. When set, the bridge sends it to the runtime as bearer auth. |
 | `LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE` | `hermes` | Runtime profile: `hermes`, `deepagents`, or `generic`. |
 | `LLMWIKI_AGENT_BRIDGE_RUNTIME_ADAPTER` | `chat-completions` | Runtime invocation adapter. Set `deepagents-acp` to use the opt-in DeepAgents ACP subprocess adapter. |
+| `LLMWIKI_AGENT_BRIDGE_MCP_TOOL_EXPOSURE` | `direct` | MCP `tools/list` exposure: `direct` lists the existing source tools, `gateway` lists only compact progressive-discovery meta-tools, and `both` intentionally lists both. |
 | `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_COMMAND` | `npx`; Windows uses `node` plus npm's `npx-cli.js` when available, then falls back to `npx.cmd` | Command spawned for `deepagents-acp`; executed without a shell. |
 | `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_ARGS` | `--yes deepagents-acp` | Arguments for the ACP command. May be a JSON string array or whitespace-separated list. |
 | `LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_CWD` | current working directory | Working directory for the ACP subprocess and ACP session. |

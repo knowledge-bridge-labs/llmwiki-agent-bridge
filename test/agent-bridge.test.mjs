@@ -2104,6 +2104,30 @@ describe('llmwiki-agent-bridge', () => {
       schema.components.schemas.McpToolCallResult.properties.structuredContent.properties.llmwiki_sources.$ref,
       '#/components/schemas/McpSourcesResult',
     )
+    assert(
+      schema.components.schemas.McpToolDescriptor.properties.name.enum.includes('llmwiki_gateway_search_tools'),
+      'gateway search tool descriptor enum missing',
+    )
+    assert(
+      schema.components.schemas.McpToolDescriptor.properties.name.enum.includes('llmwiki_gateway_get_tool_details'),
+      'gateway detail tool descriptor enum missing',
+    )
+    assert(
+      schema.components.schemas.McpToolDescriptor.properties.name.enum.includes('llmwiki_gateway_call_tool'),
+      'gateway call tool descriptor enum missing',
+    )
+    assert(
+      Object.hasOwn(schema.components.schemas.McpToolCallResult.properties.structuredContent.properties, 'llmwiki_gateway_tool_search'),
+      'gateway search structured content schema missing',
+    )
+    assert(
+      Object.hasOwn(schema.components.schemas.McpToolCallResult.properties.structuredContent.properties, 'llmwiki_gateway_tool_details'),
+      'gateway details structured content schema missing',
+    )
+    assert(
+      Object.hasOwn(schema.components.schemas.McpToolCallResult.properties.structuredContent.properties, 'llmwiki_gateway_tool_call'),
+      'gateway call structured content schema missing',
+    )
     assert.deepEqual(
       schema.components.schemas.McpSourcesResult.required,
       ['sources', 'totalSourceCount', 'selectedSourceCount', 'readySourceCount', 'unavailableSourceCount'],
@@ -3816,18 +3840,19 @@ describe('llmwiki-agent-bridge', () => {
     t.after(() => closeServer(bridge.server))
 
     const tools = await callBridgeMcp(bridge, 1, 'tools/list')
+    const directToolNames = [
+      'llmwiki_agent_run',
+      'llmwiki_list_sources',
+      'llmwiki_context',
+      'llmwiki_search',
+      'llmwiki_read',
+      'llmwiki_graph',
+      'llmwiki_graph_neighbors',
+      'llmwiki_source_bundle',
+    ]
     assert.deepEqual(
       tools.result.tools.map((tool) => tool.name),
-      [
-        'llmwiki_agent_run',
-        'llmwiki_list_sources',
-        'llmwiki_context',
-        'llmwiki_search',
-        'llmwiki_read',
-        'llmwiki_graph',
-        'llmwiki_graph_neighbors',
-        'llmwiki_source_bundle',
-      ],
+      directToolNames,
     )
 
     const listed = await callBridgeMcpTool(bridge, 'list', 'llmwiki_list_sources', {})
@@ -3935,6 +3960,148 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(source.requests.filter((item) => item.url.pathname === '/query').length, 1)
     assert.equal(source.requests.filter((item) => item.url.pathname === '/search').length, 1)
     assert.equal(source.requests.filter((item) => item.url.pathname === '/graph/neighborhood').length, 1)
+  })
+
+  it('supports compact MCP gateway tool discovery, details, and source dispatch', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      assert.equal(request.method, 'POST')
+
+      if (url.pathname === '/private-root/search') {
+        assert.equal(body.query, 'release readiness')
+        assert.equal(body.limit, 2)
+        writeJson(response, 200, {
+          results: [
+            {
+              page_id: 'release-runbook',
+              title: 'Release Runbook',
+              path: 'C:\\Users\\angel\\vault\\release-runbook.md',
+              snippet: 'Private checklist uses sk-proj-redactme and http://127.0.0.1/private/path.',
+            },
+          ],
+        })
+        return
+      }
+
+      writeJson(response, 404, { error: 'not found' })
+    })
+    t.after(() => closeServer(source.server))
+
+    const registeredSources = [
+      knowledgeSource('gateway-source', 'Gateway Source', 'llmwiki-http', `${source.url}/private-root`),
+      {
+        ...knowledgeSource('warming-gateway-source', 'Warming Gateway Source', 'llmwiki-http', `${source.url}/warming-private-root`),
+        status: 'warming',
+      },
+    ]
+    const directToolNames = [
+      'llmwiki_agent_run',
+      'llmwiki_list_sources',
+      'llmwiki_context',
+      'llmwiki_search',
+      'llmwiki_read',
+      'llmwiki_graph',
+      'llmwiki_graph_neighbors',
+      'llmwiki_source_bundle',
+    ]
+    const gatewayToolNames = [
+      'llmwiki_gateway_search_tools',
+      'llmwiki_gateway_get_tool_details',
+      'llmwiki_gateway_call_tool',
+    ]
+
+    const directBridge = await startAgentBridge({
+      port: 0,
+      registeredSources,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(directBridge.server))
+
+    assert.equal(directBridge.config.mcpToolExposure, 'direct')
+    const directListedTools = await callBridgeMcp(directBridge, 'direct-gateway-tools-list', 'tools/list')
+    assert.deepEqual(
+      directListedTools.result.tools.map((tool) => tool.name),
+      directToolNames,
+    )
+    assert.equal(directListedTools.result.tools.some((tool) => gatewayToolNames.includes(tool.name)), false)
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      env: { LLMWIKI_AGENT_BRIDGE_MCP_TOOL_EXPOSURE: 'gateway' },
+      registeredSources,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    assert.equal(bridge.config.mcpToolExposure, 'gateway')
+    const listedTools = await callBridgeMcp(bridge, 'gateway-tools-list', 'tools/list')
+    assert.deepEqual(
+      listedTools.result.tools.map((tool) => tool.name),
+      gatewayToolNames,
+    )
+    assert.equal(listedTools.result.tools.some((tool) => directToolNames.includes(tool.name)), false)
+    assert(JSON.stringify(listedTools.result.tools).length < JSON.stringify(directListedTools.result.tools).length)
+
+    const directCallInGatewayMode = await callBridgeMcpTool(bridge, 'gateway-mode-direct-call', 'llmwiki_list_sources', {})
+    assert.equal(directCallInGatewayMode.result.isError, false)
+    assert.equal(directCallInGatewayMode.result.structuredContent.llmwiki_sources.totalSourceCount, 2)
+
+    const search = await callBridgeMcpTool(bridge, 'gateway-search', 'llmwiki_gateway_search_tools', {
+      query: 'gateway search',
+      limit: 10,
+    })
+    const catalog = search.result.structuredContent.llmwiki_gateway_tool_search
+    const searchEntry = catalog.tools.find((tool) => (
+      tool.name === 'gateway-source/llmwiki_search'
+      && tool.toolName === 'llmwiki_search'
+      && tool.sourceId === 'gateway-source'
+    ))
+
+    assert.equal(search.result.isError, false)
+    assert.equal(catalog.schemasIncluded, false)
+    assert.equal(catalog.returnedToolCount, catalog.tools.length)
+    assert(searchEntry)
+    assert.equal(Object.hasOwn(searchEntry, 'inputSchema'), false)
+    assert.deepEqual(searchEntry.required, ['query'])
+    assert.equal(searchEntry.sourceReadiness.ready, true)
+    assert.doesNotMatch(JSON.stringify(catalog), /private-root|127\.0\.0\.1|sk-proj/)
+
+    const detail = await callBridgeMcpTool(bridge, 'gateway-detail', 'llmwiki_gateway_get_tool_details', {
+      name: searchEntry.name,
+    })
+    const details = detail.result.structuredContent.llmwiki_gateway_tool_details
+
+    assert.equal(detail.result.isError, false)
+    assert.equal(details.schemasIncluded, true)
+    assert.equal(Object.hasOwn(details, 'tools'), false)
+    assert.equal(details.tool.name, 'gateway-source/llmwiki_search')
+    assert.equal(details.tool.inputSchema.type, 'object')
+    assert.equal(details.tool.inputSchema.properties.query.type, 'string')
+    assert.equal(Object.hasOwn(details.tool.inputSchema, 'properties'), true)
+    assert.doesNotMatch(JSON.stringify(details), /private-root|127\.0\.0\.1|sk-proj/)
+
+    const call = await callBridgeMcpTool(bridge, 'gateway-call', 'llmwiki_gateway_call_tool', {
+      name: searchEntry.name,
+      arguments: {
+        query: 'release readiness',
+        limit: 2,
+      },
+    })
+    const gatewayCall = call.result.structuredContent.llmwiki_gateway_tool_call
+    const calledSearch = gatewayCall.result.llmwiki_search
+    const serializedCall = JSON.stringify(call)
+
+    assert.equal(call.result.isError, false)
+    assert.equal(gatewayCall.tool.name, 'gateway-source/llmwiki_search')
+    assert.equal(gatewayCall.downstreamToolName, 'llmwiki_search')
+    assert.equal(gatewayCall.structuredKey, 'llmwiki_search')
+    assert.equal(gatewayCall.redacted, true)
+    assert.deepEqual(calledSearch.results.map((item) => item.id), ['gateway-source:release-runbook'])
+    assert.equal(calledSearch.source.url, '[redacted-url]')
+    assert.equal(calledSearch.results[0].path, '[redacted-path]')
+    assert.match(calledSearch.results[0].snippet, /\[redacted-key\]/)
+    assert.match(calledSearch.results[0].snippet, /\[redacted-url\]/)
+    assert.doesNotMatch(serializedCall, /private-root|sk-proj|C:\\\\Users|127\.0\.0\.1\/private/)
+    assert.equal(source.requests.filter((item) => item.url.pathname === '/private-root/search').length, 1)
   })
 
   it('resolves source-prefixed llmwiki_read ids before upstream reads', async (t) => {

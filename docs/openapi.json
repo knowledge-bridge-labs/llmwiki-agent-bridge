@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "LLMWiki Agent Bridge",
-    "version": "0.5.0",
+    "version": "0.6.0",
     "description": "Local runtime bridge for selected LLMWiki Knowledge Sources and OpenAI-compatible chat completions runtimes."
   },
   "servers": [
@@ -4512,7 +4512,10 @@
               "llmwiki_read",
               "llmwiki_graph",
               "llmwiki_graph_neighbors",
-              "llmwiki_source_bundle"
+              "llmwiki_source_bundle",
+              "llmwiki_gateway_search_tools",
+              "llmwiki_gateway_get_tool_details",
+              "llmwiki_gateway_call_tool"
             ]
           },
           "description": {
@@ -4573,6 +4576,22 @@
                 "additionalProperties": true
               },
               "llmwiki_source_bundle": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "llmwiki_gateway_tool_search": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "llmwiki_gateway_tool_details": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "llmwiki_gateway_tool_call": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "llmwiki_gateway_tool_error": {
                 "type": "object",
                 "additionalProperties": true
               },

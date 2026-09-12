@@ -16,6 +16,9 @@
 7. Preserve explicitly registered MCP source endpoints ending in `/mcp/stream`
    and send modern MCP headers plus `params._meta` on upstream source tool
    calls.
-8. Update `docs/message-send-contract.md` to document the compatibility slice.
-9. Run focused tests, full `npm test`, `npm run lint`, and contract generation
+8. Add opt-in progressive gateway exposure for compact catalog, single-tool
+   detail, and source-tool dispatch.
+9. Update `docs/message-send-contract.md` and gateway docs to document the
+   compatibility slice.
+10. Run focused tests, full `npm test`, `npm run lint`, and contract generation
    or check as needed.

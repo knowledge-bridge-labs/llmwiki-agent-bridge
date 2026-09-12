@@ -289,6 +289,20 @@ curl -s http://127.0.0.1:8788/mcp \
   -d '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"llmwiki_graph_neighbors","arguments":{"sourceId":"sample-wiki","nodeId":"sample-wiki:overview","direction":"out","relation":"supports","limit":20}}}'
 ```
 
+For hosts that support tool search or want a smaller initial `tools/list`
+payload, start the bridge with progressive gateway exposure:
+
+```sh
+LLMWIKI_AGENT_BRIDGE_MCP_TOOL_EXPOSURE=gateway llmwiki-agent-bridge
+```
+
+In `gateway` mode, `tools/list` returns only
+`llmwiki_gateway_search_tools`, `llmwiki_gateway_get_tool_details`, and
+`llmwiki_gateway_call_tool`. The model can search a compact catalog first,
+inspect one selected source tool schema, then call that tool by source/tool
+name. The default remains `direct` for existing MCP clients; `both` is accepted
+only when an operator intentionally wants both direct and gateway tools listed.
+
 Omit `knowledgeSources` to use sources registered through `/settings`. Passing
 `knowledgeSources: []` means "run with no sources" and is useful only for
 negative tests.
@@ -381,6 +395,11 @@ call the configured runtime; they let a host agent list sources, read
 orientation-first context, search, open a page, inspect graph data, traverse a
 bounded neighborhood, or read safe source-bundle metadata before deciding
 whether more source exploration or a full answer run is needed.
+
+Set `LLMWIKI_AGENT_BRIDGE_MCP_TOOL_EXPOSURE=gateway` when the MCP host should
+avoid loading every direct source-tool schema up front. Gateway exposure keeps
+the listed tool surface to compact catalog, detail, and call meta-tools while
+still routing execution through the same read-only source-tool handlers.
 
 For local operator checks without starting the HTTP service, use
 `llmwiki-agent-bridge sources --json`, `llmwiki-agent-bridge ls`, or

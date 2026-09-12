@@ -555,6 +555,15 @@ and `tools/list` include `resultType: "complete"` plus private cache hints
 invalidation semantics, prompts, resources, and extension negotiation are not
 part of this bridge slice.
 
+MCP tool listing defaults to `direct` exposure for compatibility. Operators can
+set `LLMWIKI_AGENT_BRIDGE_MCP_TOOL_EXPOSURE=gateway` to make `tools/list`
+return only progressive-discovery meta-tools:
+`llmwiki_gateway_search_tools`, `llmwiki_gateway_get_tool_details`, and
+`llmwiki_gateway_call_tool`. `gateway` mode lets a host search compact catalog
+entries without full schemas, inspect one selected source-tool schema, and call
+that source tool by `sourceId/toolName`. `tools/call` still accepts direct
+source tools for clients that already know the direct names.
+
 It supports:
 
 | Method | Behavior |
@@ -562,8 +571,8 @@ It supports:
 | `initialize` | Returns bridge server info and tools capability for legacy clients. The bridge accepts `2026-07-28`, `2025-11-25`, `2025-06-18`, and `2024-11-05`; omitted or unsupported versions fall back to the legacy default `2025-06-18`. |
 | `server/discover` | Returns `resultType: "complete"`, private cache hints, supported protocol versions, tools capability, and bridge server info under `_meta["io.modelcontextprotocol/serverInfo"]`. |
 | `ping` | Returns an empty success object. |
-| `tools/list` | Returns `resultType: "complete"`, private cache hints, `llmwiki_agent_run`, and read-only source exploration tools. |
-| `tools/call` | Runs a named tool and returns `resultType: "complete"`. `llmwiki_agent_run` uses the `/message:send` run path; source tools query registered or request-supplied Knowledge Sources directly. |
+| `tools/list` | Returns `resultType: "complete"` and private cache hints. Default `direct` exposure lists `llmwiki_agent_run` and read-only source exploration tools. `gateway` exposure lists only compact progressive-discovery meta-tools. |
+| `tools/call` | Runs a named tool and returns `resultType: "complete"`. `llmwiki_agent_run` uses the `/message:send` run path; source tools query registered or request-supplied Knowledge Sources directly; gateway meta-tools search, inspect, or dispatch to those same source tools. |
 
 Example call:
 
@@ -604,6 +613,19 @@ bridge uses sources registered through `/settings`. When more than one ready
 selected source is available, source-specific tools require `sourceId`. Source
 tools do not call the configured Hermes, DeepAgents, or OpenAI-compatible
 runtime and do not mutate bridge settings or wiki content.
+
+Gateway meta-tools are intended for MCP hosts that do not want every direct
+source-tool schema in the model context at conversation start:
+
+| Tool | Required args | Structured result |
+| --- | --- | --- |
+| `llmwiki_gateway_search_tools` | none | `structuredContent.llmwiki_gateway_tool_search` compact catalog entries without full schemas |
+| `llmwiki_gateway_get_tool_details` | `name` or `toolName` | `structuredContent.llmwiki_gateway_tool_details` for one selected schema |
+| `llmwiki_gateway_call_tool` | `name` or `toolName` | `structuredContent.llmwiki_gateway_tool_call` with the redacted downstream source-tool result |
+
+Gateway wrapper results redact URL-like, credential-like, and local-path fields
+more aggressively than the legacy direct source-tool result shape because they
+are meant to be passed back through model context after catalog selection.
 
 `llmwiki_agent_run`, `llmwiki_context`, and `llmwiki_search` accept the same
 optional `retrieval` object described above. Unsupported retrieval payloads and

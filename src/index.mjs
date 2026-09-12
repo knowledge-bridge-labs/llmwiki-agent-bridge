@@ -94,6 +94,7 @@ const CONFIG_PATH_ENV = 'LLMWIKI_AGENT_BRIDGE_CONFIG_PATH'
 const AUDIT_LOG_ENV = 'LLMWIKI_AGENT_BRIDGE_AUDIT_LOG'
 const IO_LOG_ENV = 'LLMWIKI_AGENT_BRIDGE_IO_LOG'
 const IO_LOG_PATH_ENV = 'LLMWIKI_AGENT_BRIDGE_IO_LOG_PATH'
+const MCP_TOOL_EXPOSURE_ENV = 'LLMWIKI_AGENT_BRIDGE_MCP_TOOL_EXPOSURE'
 const DEEPAGENTS_ACP_COMMAND_ENV = 'LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_COMMAND'
 const DEEPAGENTS_ACP_ARGS_ENV = 'LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_ARGS'
 const DEEPAGENTS_ACP_CWD_ENV = 'LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_CWD'
@@ -151,6 +152,8 @@ const SUPPORTED_MCP_PROTOCOL_VERSION_LIST = [
 const SUPPORTED_MCP_PROTOCOL_VERSIONS = new Set(SUPPORTED_MCP_PROTOCOL_VERSION_LIST)
 const MCP_CACHE_TTL_MS = 60_000
 const MCP_CACHE_SCOPE = 'private'
+const DEFAULT_MCP_TOOL_EXPOSURE = 'direct'
+const MAX_GATEWAY_TOOL_SEARCH_RESULTS = 50
 const MAX_IO_LOG_DEPTH = 8
 const MAX_IO_LOG_ARRAY_ITEMS = 50
 const MAX_IO_LOG_STRING_CHARS = 20_000
@@ -268,6 +271,13 @@ const runtimeAdapterAliases = new Map([
   ['openaicompatible', 'chat-completions'],
   ['deepagentsacp', 'deepagents-acp'],
   ['acp', 'deepagents-acp'],
+])
+const mcpToolExposureAliases = new Map([
+  ['direct', 'direct'],
+  ['gateway', 'gateway'],
+  ['progressive', 'gateway'],
+  ['progressivediscovery', 'gateway'],
+  ['both', 'both'],
 ])
 const orchestrationModes = new Set(['evidence-only', 'delegated-runtime', 'hybrid'])
 const RETRIEVAL_SCHEMA_VERSION = 'llmwiki.retrieval.v1'
@@ -1660,6 +1670,9 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
               'llmwiki_graph',
               'llmwiki_graph_neighbors',
               'llmwiki_source_bundle',
+              'llmwiki_gateway_search_tools',
+              'llmwiki_gateway_get_tool_details',
+              'llmwiki_gateway_call_tool',
             ],
           },
           description: { type: 'string' },
@@ -1683,6 +1696,10 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
               llmwiki_graph: { type: 'object', additionalProperties: true },
               llmwiki_graph_neighbors: { type: 'object', additionalProperties: true },
               llmwiki_source_bundle: { type: 'object', additionalProperties: true },
+              llmwiki_gateway_tool_search: { type: 'object', additionalProperties: true },
+              llmwiki_gateway_tool_details: { type: 'object', additionalProperties: true },
+              llmwiki_gateway_tool_call: { type: 'object', additionalProperties: true },
+              llmwiki_gateway_tool_error: { type: 'object', additionalProperties: true },
               llmwiki_source_error: { type: 'object', additionalProperties: true },
             },
           },
@@ -2633,6 +2650,7 @@ function auditedMcpMethod(value) {
 function auditedMcpToolName(value) {
   if (!value) return undefined
   if (value === 'llmwiki_agent_run') return value
+  if (mcpGatewayToolNames().includes(value)) return value
   if (mcpSourceToolNames().includes(value)) return value
   return '[unknown]'
 }
@@ -3600,7 +3618,7 @@ async function handleMcpJsonRpc(body, config, runContextInput = {}, auditDetails
       _meta: {
         'io.modelcontextprotocol/serverInfo': mcpServerInfo(),
       },
-      tools: mcpToolDescriptors(),
+      tools: mcpToolDescriptors(config),
     })
   }
 
@@ -3671,6 +3689,10 @@ async function handleMcpToolsCall(request, id, config, runContextInput = {}, aud
     return handleMcpAgentRunToolCall(params, id, config, runContextInput, auditDetails)
   }
 
+  if (mcpGatewayToolNames().includes(name)) {
+    return handleMcpGatewayToolCall(name, params, id, config)
+  }
+
   if (mcpSourceToolNames().includes(name)) {
     return handleMcpSourceToolCall(name, params, id, config)
   }
@@ -3724,7 +3746,324 @@ async function handleMcpSourceToolCall(name, params, id, config) {
   }
 }
 
-function mcpToolDescriptors() {
+async function handleMcpGatewayToolCall(name, params, id, config) {
+  const args = asRecord(params.arguments) || {}
+  try {
+    if (name === 'llmwiki_gateway_search_tools') {
+      const result = runMcpGatewaySearchTools(args, config)
+      return mcpToolCallSuccess(id, result.summary, result.structuredKey, result.structuredValue)
+    }
+
+    if (name === 'llmwiki_gateway_get_tool_details') {
+      const result = runMcpGatewayGetToolDetails(args, config)
+      return mcpToolCallSuccess(id, result.summary, result.structuredKey, result.structuredValue)
+    }
+
+    if (name === 'llmwiki_gateway_call_tool') {
+      const result = await runMcpGatewayCallTool(args, config)
+      return mcpToolCallSuccess(id, result.summary, result.structuredKey, result.structuredValue)
+    }
+
+    return mcpJsonRpcError(id, -32602, `Unknown MCP gateway tool: ${name}.`)
+  } catch (error) {
+    if (error instanceof HttpError && error.status < 500) {
+      return mcpJsonRpcError(id, -32602, error.message)
+    }
+    const message = redactGatewayErrorMessage(error)
+    return mcpToolCallSuccess(id, message, 'llmwiki_gateway_tool_error', {
+      tool: name,
+      message,
+    }, true)
+  }
+}
+
+function runMcpGatewaySearchTools(args, config) {
+  const query = readString(args, 'query').trim()
+  const toolName = gatewayRequestedToolName(args)
+  const sourceId = gatewayRequestedSourceId(args)
+  const catalog = gatewayToolCatalog(config, {
+    includeUnavailable: gatewayIncludeUnavailable(args),
+    sourceId,
+  })
+  const filtered = catalog.filter((entry) => (
+    (!toolName || entry.toolName === toolName)
+    && gatewayCatalogEntryMatches(entry, query)
+  ))
+  const limit = gatewayToolSearchLimit(args)
+  const tools = filtered.slice(0, limit).map((entry) => ({ ...entry }))
+  const result = removeUndefinedProperties({
+    schemaVersion: 'llmwiki.agent-bridge.gateway-tools.v1',
+    query: query || undefined,
+    toolName: toolName || undefined,
+    sourceId: sourceId || undefined,
+    schemasIncluded: false,
+    tools,
+    totalToolCount: catalog.length,
+    matchedToolCount: filtered.length,
+    returnedToolCount: tools.length,
+  })
+
+  return {
+    summary: gatewayToolSearchSummary(result),
+    structuredKey: 'llmwiki_gateway_tool_search',
+    structuredValue: result,
+  }
+}
+
+function runMcpGatewayGetToolDetails(args, config) {
+  const entry = resolveGatewaySelectedTool(args, config)
+  const descriptor = gatewaySourceToolDescriptor(entry.toolName)
+  const result = {
+    schemaVersion: 'llmwiki.agent-bridge.gateway-tools.v1',
+    schemasIncluded: true,
+    tool: {
+      ...entry,
+      inputSchema: cloneJsonValue(descriptor.inputSchema),
+    },
+  }
+
+  return {
+    summary: `Gateway tool details: ${entry.name}.`,
+    structuredKey: 'llmwiki_gateway_tool_details',
+    structuredValue: result,
+  }
+}
+
+async function runMcpGatewayCallTool(args, config) {
+  const entry = resolveGatewaySelectedTool(args, config)
+  const downstreamArgs = gatewayDownstreamToolArguments(args, entry)
+  const result = await runMcpSourceTool(entry.toolName, downstreamArgs, config)
+  const redactedStructuredValue = redactForIoLog(result.structuredValue)
+  return {
+    summary: redactIoString(`Gateway called ${entry.name}. ${result.summary}`),
+    structuredKey: 'llmwiki_gateway_tool_call',
+    structuredValue: {
+      schemaVersion: 'llmwiki.agent-bridge.gateway-tools.v1',
+      tool: { ...entry },
+      downstreamToolName: entry.toolName,
+      structuredKey: result.structuredKey,
+      result: {
+        [result.structuredKey]: redactedStructuredValue,
+      },
+      isError: false,
+      redacted: true,
+    },
+  }
+}
+
+function gatewayToolCatalog(config, { includeUnavailable = false, sourceId = '' } = {}) {
+  const sources = normalizeKnowledgeSourceDescriptors(config.registeredSources)
+  const descriptors = new Map(mcpSourceToolNames().map((toolName) => [
+    toolName,
+    gatewaySourceToolDescriptor(toolName),
+  ]))
+  const entries = []
+
+  if (!sourceId) {
+    entries.push(gatewayCatalogEntry(descriptors.get('llmwiki_list_sources')))
+  }
+
+  for (const source of sources) {
+    if (sourceId && source.id !== sourceId) continue
+    const readiness = knowledgeSourceReadiness(source, config)
+    if (!includeUnavailable && !readiness.ready) continue
+
+    for (const toolName of mcpSourceToolNames()) {
+      if (toolName === 'llmwiki_list_sources') continue
+      if (!sourceToolSupportsProtocol(toolName, source.protocol)) continue
+      entries.push(gatewayCatalogEntry(descriptors.get(toolName), source, readiness))
+    }
+  }
+
+  return entries
+}
+
+function gatewayCatalogEntry(descriptor, source = null, readiness = undefined) {
+  const sourceBound = Boolean(source)
+  return removeUndefinedProperties({
+    name: sourceBound ? `${source.id}/${descriptor.name}` : `bridge/${descriptor.name}`,
+    toolName: descriptor.name,
+    description: redactGatewayText(descriptor.description),
+    sourceId: source?.id,
+    sourceName: source ? redactGatewayText(source.name) : undefined,
+    sourceProtocol: source?.protocol,
+    sourceReadiness: readiness,
+    selected: source ? source.selected !== false : undefined,
+    resultKey: structuredKeyForMcpSourceTool(descriptor.name),
+    readOnly: true,
+    sourceBound,
+    ...gatewayToolRequirementSummary(descriptor.inputSchema),
+  })
+}
+
+function gatewaySourceToolDescriptor(toolName) {
+  const descriptor = mcpDirectToolDescriptors().find((tool) => tool.name === toolName)
+  if (!descriptor || !mcpSourceToolNames().includes(toolName)) {
+    throw new HttpError(400, 'Unknown gateway source tool.', 'bad_request')
+  }
+  return descriptor
+}
+
+function gatewayToolRequirementSummary(inputSchema) {
+  const schema = asRecord(inputSchema) || {}
+  const required = readStringArray(schema.required).filter(Boolean)
+  const requiredAnyOf = readRecordArray(schema.anyOf)
+    .map((item) => readStringArray(item.required).filter(Boolean))
+    .filter((item) => item.length)
+  return removeUndefinedProperties({
+    required: required.length ? required : undefined,
+    requiredAnyOf: requiredAnyOf.length ? requiredAnyOf : undefined,
+  })
+}
+
+function gatewayCatalogEntryMatches(entry, query) {
+  const normalizedQuery = normalizeGatewaySearchText(query)
+  if (!normalizedQuery) return true
+  const terms = normalizedQuery.split(/\s+/).filter(Boolean)
+  const haystack = normalizeGatewaySearchText([
+    entry.name,
+    entry.toolName,
+    entry.description,
+    entry.sourceId,
+    entry.sourceName,
+    entry.sourceProtocol,
+    entry.resultKey,
+  ].filter(Boolean).join(' '))
+  return haystack.includes(normalizedQuery) || terms.every((term) => haystack.includes(term))
+}
+
+function resolveGatewaySelectedTool(args, config) {
+  const reference = gatewayToolReference(args)
+  if (!reference.toolName) {
+    throw new HttpError(400, 'Gateway tool selection requires name, toolName, or tool_name.', 'bad_request')
+  }
+  if (!mcpSourceToolNames().includes(reference.toolName)) {
+    throw new HttpError(400, 'Gateway tool selection must target a source tool.', 'bad_request')
+  }
+
+  const catalog = gatewayToolCatalog(config, {
+    includeUnavailable: gatewayIncludeUnavailable(args),
+    sourceId: reference.sourceId && reference.sourceId !== 'bridge' ? reference.sourceId : '',
+  })
+  const matches = catalog.filter((entry) => gatewayToolReferenceMatches(entry, reference))
+
+  if (!matches.length) {
+    throw new HttpError(400, 'No gateway catalog tool matched the requested source/tool name.', 'bad_request')
+  }
+  if (matches.length > 1) {
+    throw new HttpError(400, 'Gateway tool selection matched more than one tool; pass sourceId or a source/tool name from llmwiki_gateway_search_tools.', 'bad_request')
+  }
+  return matches[0]
+}
+
+function gatewayToolReference(args) {
+  const rawName = readString(args, 'name').trim()
+  const explicitToolName = gatewayRequestedToolName(args)
+  const explicitSourceId = gatewayRequestedSourceId(args)
+  const parsed = parseGatewayToolName(rawName)
+
+  if (explicitToolName && parsed.toolName && explicitToolName !== parsed.toolName) {
+    throw new HttpError(400, 'Gateway tool name and toolName refer to different tools.', 'bad_request')
+  }
+  if (explicitSourceId && parsed.sourceId && explicitSourceId !== parsed.sourceId) {
+    throw new HttpError(400, 'Gateway tool name and sourceId refer to different sources.', 'bad_request')
+  }
+
+  return {
+    rawName,
+    sourceId: explicitSourceId || parsed.sourceId,
+    toolName: explicitToolName || parsed.toolName || rawName,
+  }
+}
+
+function parseGatewayToolName(value) {
+  const name = String(value || '').trim()
+  const slashIndex = name.indexOf('/')
+  if (slashIndex <= 0 || slashIndex >= name.length - 1) return { sourceId: '', toolName: '' }
+  return {
+    sourceId: name.slice(0, slashIndex).trim(),
+    toolName: name.slice(slashIndex + 1).trim(),
+  }
+}
+
+function gatewayToolReferenceMatches(entry, reference) {
+  if (reference.rawName && entry.name === reference.rawName) return true
+  if (entry.toolName !== reference.toolName) return false
+  if (!reference.sourceId) return true
+  if (!entry.sourceBound) return reference.sourceId === 'bridge'
+  return entry.sourceId === reference.sourceId
+}
+
+function gatewayDownstreamToolArguments(args, entry) {
+  const supplied = asRecord(args.arguments) || {}
+  const clean = { ...supplied }
+  delete clean.knowledgeSources
+  delete clean.knowledge_sources
+
+  if (entry.sourceBound) {
+    clean.sourceId = entry.sourceId
+    delete clean.source_id
+  } else {
+    delete clean.sourceId
+    delete clean.source_id
+  }
+
+  return clean
+}
+
+function gatewayRequestedToolName(args) {
+  return readString(args, 'toolName').trim() || readString(args, 'tool_name').trim()
+}
+
+function gatewayRequestedSourceId(args) {
+  return readString(args, 'sourceId').trim() || readString(args, 'source_id').trim()
+}
+
+function gatewayIncludeUnavailable(args) {
+  return readBoolean(args, 'includeUnavailable') ?? readBoolean(args, 'include_unavailable') ?? false
+}
+
+function gatewayToolSearchLimit(args) {
+  const value = readNumber(args, 'limit')
+  if (value === undefined) return 20
+  if (!Number.isFinite(value)) return 20
+  return Math.max(1, Math.min(MAX_GATEWAY_TOOL_SEARCH_RESULTS, Math.floor(value)))
+}
+
+function structuredKeyForMcpSourceTool(toolName) {
+  return toolName === 'llmwiki_list_sources' ? 'llmwiki_sources' : toolName
+}
+
+function gatewayToolSearchSummary(result) {
+  return `Gateway tool catalog: ${result.returnedToolCount} compact result(s) from ${result.matchedToolCount} match(es). Full schemas omitted.`
+}
+
+function normalizeGatewaySearchText(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9_:/.-]+/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function redactGatewayText(value) {
+  const text = readStringValue(value).trim()
+  return text ? redactIoString(text).slice(0, 500) : undefined
+}
+
+function redactGatewayErrorMessage(error) {
+  const message = error instanceof Error ? error.message : String(error)
+  return redactIoString(message).slice(0, 240)
+}
+
+function cloneJsonValue(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value))
+}
+
+function mcpToolDescriptors(config = null) {
+  const exposure = config?.mcpToolExposure || DEFAULT_MCP_TOOL_EXPOSURE
+  if (exposure === 'gateway') return mcpGatewayToolDescriptors()
+  if (exposure === 'both') return [...mcpDirectToolDescriptors(), ...mcpGatewayToolDescriptors()]
+  return mcpDirectToolDescriptors()
+}
+
+function mcpDirectToolDescriptors() {
   return [
     llmwikiAgentRunToolDescriptor(),
     llmwikiListSourcesToolDescriptor(),
@@ -3737,6 +4076,14 @@ function mcpToolDescriptors() {
   ]
 }
 
+function mcpGatewayToolDescriptors() {
+  return [
+    llmwikiGatewaySearchToolsToolDescriptor(),
+    llmwikiGatewayGetToolDetailsToolDescriptor(),
+    llmwikiGatewayCallToolDescriptor(),
+  ]
+}
+
 function mcpSourceToolNames() {
   return [
     'llmwiki_list_sources',
@@ -3746,6 +4093,14 @@ function mcpSourceToolNames() {
     'llmwiki_graph',
     'llmwiki_graph_neighbors',
     'llmwiki_source_bundle',
+  ]
+}
+
+function mcpGatewayToolNames() {
+  return [
+    'llmwiki_gateway_search_tools',
+    'llmwiki_gateway_get_tool_details',
+    'llmwiki_gateway_call_tool',
   ]
 }
 
@@ -3922,6 +4277,81 @@ function llmwikiSourceBundleToolDescriptor() {
         include_drafts: { type: 'boolean' },
       },
     },
+  }
+}
+
+function llmwikiGatewaySearchToolsToolDescriptor() {
+  return {
+    name: 'llmwiki_gateway_search_tools',
+    description: 'Search the bridge gateway catalog for compact source-tool entries without returning full input schemas.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        query: { type: 'string', minLength: 1, description: 'Optional text to match against source ids, source names, tool names, and descriptions.' },
+        toolName: { enum: mcpSourceToolNames(), description: 'Optional downstream source tool name filter.' },
+        tool_name: { enum: mcpSourceToolNames(), description: 'Alias for toolName.' },
+        sourceId: { type: 'string', description: 'Optional registered Knowledge Source id filter.' },
+        source_id: { type: 'string', description: 'Alias for sourceId.' },
+        includeUnavailable: { type: 'boolean', default: false },
+        include_unavailable: { type: 'boolean', default: false },
+        limit: { type: 'integer', minimum: 1, maximum: MAX_GATEWAY_TOOL_SEARCH_RESULTS, default: 20 },
+      },
+    },
+  }
+}
+
+function llmwikiGatewayGetToolDetailsToolDescriptor() {
+  return {
+    name: 'llmwiki_gateway_get_tool_details',
+    description: 'Inspect exactly one compact gateway catalog entry and return its full downstream input schema.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      anyOf: [
+        { required: ['name'] },
+        { required: ['toolName'] },
+        { required: ['tool_name'] },
+      ],
+      properties: gatewayToolReferenceInputProperties(),
+    },
+  }
+}
+
+function llmwikiGatewayCallToolDescriptor() {
+  return {
+    name: 'llmwiki_gateway_call_tool',
+    description: 'Call one registered source tool selected by source/tool name through the bridge and return a redacted result.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      anyOf: [
+        { required: ['name'] },
+        { required: ['toolName'] },
+        { required: ['tool_name'] },
+      ],
+      properties: {
+        ...gatewayToolReferenceInputProperties(),
+        arguments: {
+          type: 'object',
+          additionalProperties: true,
+          default: {},
+          description: 'Arguments for the selected downstream source tool.',
+        },
+      },
+    },
+  }
+}
+
+function gatewayToolReferenceInputProperties() {
+  return {
+    name: { type: 'string', minLength: 1, description: 'Catalog entry name from search results, usually sourceId/toolName.' },
+    toolName: { enum: mcpSourceToolNames(), description: 'Downstream source tool name.' },
+    tool_name: { enum: mcpSourceToolNames(), description: 'Alias for toolName.' },
+    sourceId: { type: 'string', description: 'Registered Knowledge Source id when name is not source-qualified.' },
+    source_id: { type: 'string', description: 'Alias for sourceId.' },
+    includeUnavailable: { type: 'boolean', default: false },
+    include_unavailable: { type: 'boolean', default: false },
   }
 }
 
@@ -11147,6 +11577,10 @@ function bridgeConfig(env, options = {}) {
     ?? runtimeAdapterOption(env.HERMES_A2A_BRIDGE_RUNTIME_ADAPTER)
     ?? runtimeAdapterOption(persistentConfig.runtimeAdapter)
     ?? DEFAULT_RUNTIME_ADAPTER
+  const mcpToolExposure = mcpToolExposureOption(options.mcpToolExposure)
+    ?? mcpToolExposureOption(env[MCP_TOOL_EXPOSURE_ENV])
+    ?? mcpToolExposureOption(persistentConfig.mcpToolExposure)
+    ?? DEFAULT_MCP_TOOL_EXPOSURE
   const deepagentsAcpDefaults = defaultDeepAgentsAcpLauncher()
   const deepagentsAcpCommandOverride = stringOption(options.deepagentsAcpCommand)
     || stringOption(env[DEEPAGENTS_ACP_COMMAND_ENV])
@@ -11227,6 +11661,7 @@ function bridgeConfig(env, options = {}) {
     ioLogPath,
     runtimeProfile,
     runtimeAdapter,
+    mcpToolExposure,
     deepagentsAcpCommand,
     deepagentsAcpArgs,
     deepagentsAcpCwd,
@@ -11419,6 +11854,15 @@ function runtimeAdapterOption(value) {
   const adapter = runtimeAdapterAliases.get(normalized)
   if (adapter) return adapter
   throw new Error(`Unsupported LLMWiki Agent Bridge runtime adapter: ${value}.`)
+}
+
+function mcpToolExposureOption(value) {
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, '')
+  if (!normalized) return undefined
+  const exposure = mcpToolExposureAliases.get(normalized)
+  if (exposure) return exposure
+  throw new Error(`Unsupported LLMWiki Agent Bridge MCP tool exposure: ${value}.`)
 }
 
 function ioLogModeOption(value) {
