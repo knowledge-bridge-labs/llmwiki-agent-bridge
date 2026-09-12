@@ -2478,6 +2478,7 @@
               "initialize",
               "notifications/initialized",
               "ping",
+              "server/discover",
               "tools/list",
               "tools/call"
             ]
@@ -2516,6 +2517,9 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/McpInitializeResult"
+              },
+              {
+                "$ref": "#/components/schemas/McpServerDiscoverResult"
               },
               {
                 "$ref": "#/components/schemas/McpPingResult"
@@ -2630,6 +2634,73 @@
           "protocolVersion",
           "capabilities",
           "serverInfo"
+        ]
+      },
+      "McpServerDiscoverResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "resultType": {
+            "const": "complete"
+          },
+          "supportedVersions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "capabilities": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "tools": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "listChanged": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "listChanged"
+                ]
+              }
+            },
+            "required": [
+              "tools"
+            ]
+          },
+          "_meta": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "io.modelcontextprotocol/serverInfo": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "version"
+                ]
+              }
+            },
+            "required": [
+              "io.modelcontextprotocol/serverInfo"
+            ]
+          }
+        },
+        "required": [
+          "resultType",
+          "supportedVersions",
+          "capabilities",
+          "_meta"
         ]
       },
       "McpPingResult": {
