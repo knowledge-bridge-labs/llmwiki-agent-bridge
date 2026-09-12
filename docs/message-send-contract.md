@@ -394,10 +394,24 @@ logs only route patterns, counts, status, and redaction flags.
 ## MCP Tool Compatibility
 
 The bridge also exposes `POST /mcp` as an MCP-style JSON-RPC compatibility
-surface for tool-oriented clients. It supports:
+surface for tool-oriented clients.
+
+This surface is dual-era compatible for the bridge's tool use case. Existing
+initialization-based clients can continue to use `2025-06-18` or `2024-11-05`
+with `initialize`. Modern clients can use the small `2026-07-28` stateless
+slice by sending per-request `params._meta` and calling `server/discover`,
+`tools/list`, or `tools/call` without a prior MCP session. This is not a claim
+of complete MCP 2026-07-28 conformance: MRTR, full transport header validation,
+caching controls, prompts, resources, and extension negotiation are not part of
+this bridge slice.
+
+It supports:
 
 | Method | Behavior |
 | --- | --- |
+| `initialize` | Returns bridge server info and tools capability for legacy clients. The bridge accepts `2026-07-28`, `2025-06-18`, and `2024-11-05`; omitted or unsupported versions fall back to the legacy default `2025-06-18`. |
+| `server/discover` | Returns `resultType: "complete"`, supported protocol versions, tools capability, and bridge server info under `_meta["io.modelcontextprotocol/serverInfo"]`. |
+| `ping` | Returns an empty success object. |
 | `tools/list` | Returns `llmwiki_agent_run` plus read-only source exploration tools. |
 | `tools/call` | Runs a named tool. `llmwiki_agent_run` uses the `/message:send` run path; source tools query registered or request-supplied Knowledge Sources directly. |
 

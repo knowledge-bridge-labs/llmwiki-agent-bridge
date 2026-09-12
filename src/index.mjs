@@ -84,7 +84,9 @@ const OFF_IO_LOG_MODE = 'off'
 const DEFAULT_IO_LOG_MODE = FILE_IO_LOG_MODE
 const DEFAULT_IO_LOG_FILE_PATH = join('.runtime-logs', 'llmwiki-agent-bridge-io.jsonl')
 const MCP_PROTOCOL_VERSION = '2025-06-18'
-const SUPPORTED_MCP_PROTOCOL_VERSIONS = new Set(['2025-06-18', '2024-11-05'])
+const MODERN_MCP_PROTOCOL_VERSION = '2026-07-28'
+const SUPPORTED_MCP_PROTOCOL_VERSION_LIST = [MODERN_MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION, '2024-11-05']
+const SUPPORTED_MCP_PROTOCOL_VERSIONS = new Set(SUPPORTED_MCP_PROTOCOL_VERSION_LIST)
 const MAX_IO_LOG_DEPTH = 8
 const MAX_IO_LOG_ARRAY_ITEMS = 50
 const MAX_IO_LOG_STRING_CHARS = 20_000
@@ -312,7 +314,7 @@ const auditedBridgeRoutes = new Set([
   AGENT_CARD_ROUTE,
   '/health',
 ])
-const auditedMcpMethods = new Set(['initialize', 'notifications/initialized', 'ping', 'tools/list', 'tools/call'])
+const auditedMcpMethods = new Set(['initialize', 'notifications/initialized', 'ping', 'server/discover', 'tools/list', 'tools/call'])
 const conversationMessageRoles = new Set(['user', 'assistant', 'system'])
 const conversationRuntimeRoles = new Set(['user', 'assistant'])
 
@@ -985,7 +987,7 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
         McpJsonRpcRequest: objectSchema({
           jsonrpc: { const: '2.0' },
           id: { $ref: '#/components/schemas/JsonRpcId' },
-          method: { enum: ['initialize', 'notifications/initialized', 'ping', 'tools/list', 'tools/call'] },
+          method: { enum: ['initialize', 'notifications/initialized', 'ping', 'server/discover', 'tools/list', 'tools/call'] },
           params: { type: 'object', additionalProperties: true },
         }, ['jsonrpc', 'method']),
         McpJsonRpcResponse: {
@@ -1000,6 +1002,7 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
           result: {
             oneOf: [
               { $ref: '#/components/schemas/McpInitializeResult' },
+              { $ref: '#/components/schemas/McpServerDiscoverResult' },
               { $ref: '#/components/schemas/McpPingResult' },
               { $ref: '#/components/schemas/McpToolListResult' },
               { $ref: '#/components/schemas/McpToolCallResult' },
@@ -1033,6 +1036,24 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
             version: { type: 'string' },
           }, ['name', 'version']),
         }, ['protocolVersion', 'capabilities', 'serverInfo']),
+        McpServerDiscoverResult: objectSchema({
+          resultType: { const: 'complete' },
+          supportedVersions: {
+            type: 'array',
+            items: { type: 'string' },
+          },
+          capabilities: objectSchema({
+            tools: objectSchema({
+              listChanged: { type: 'boolean' },
+            }, ['listChanged']),
+          }, ['tools']),
+          _meta: objectSchema({
+            'io.modelcontextprotocol/serverInfo': objectSchema({
+              name: { type: 'string' },
+              version: { type: 'string' },
+            }, ['name', 'version']),
+          }, ['io.modelcontextprotocol/serverInfo']),
+        }, ['resultType', 'supportedVersions', 'capabilities', '_meta']),
         McpPingResult: objectSchema({}),
         McpToolListResult: objectSchema({
           serverInfo: objectSchema({
@@ -2357,6 +2378,10 @@ async function handleMcpJsonRpc(body, config, runContextInput = {}, auditDetails
     return mcpJsonRpcError(id, -32600, 'Invalid JSON-RPC request.')
   }
 
+  if (request.method === 'server/discover') {
+    return mcpJsonRpcSuccess(id, mcpServerDiscoverResult())
+  }
+
   if (request.method === 'initialize') {
     return mcpJsonRpcSuccess(id, mcpInitializeResult(request.params))
   }
@@ -2393,15 +2418,34 @@ function mcpInitializeResult(params) {
     : MCP_PROTOCOL_VERSION
   return {
     protocolVersion,
-    capabilities: {
-      tools: {
-        listChanged: false,
-      },
+    capabilities: mcpServerCapabilities(),
+    serverInfo: mcpServerInfo(),
+  }
+}
+
+function mcpServerDiscoverResult() {
+  return {
+    resultType: 'complete',
+    supportedVersions: [...SUPPORTED_MCP_PROTOCOL_VERSION_LIST],
+    capabilities: mcpServerCapabilities(),
+    _meta: {
+      'io.modelcontextprotocol/serverInfo': mcpServerInfo(),
     },
-    serverInfo: {
-      name: PACKAGE_NAME,
-      version: PACKAGE_VERSION,
+  }
+}
+
+function mcpServerCapabilities() {
+  return {
+    tools: {
+      listChanged: false,
     },
+  }
+}
+
+function mcpServerInfo() {
+  return {
+    name: PACKAGE_NAME,
+    version: PACKAGE_VERSION,
   }
 }
 

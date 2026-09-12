@@ -1498,11 +1498,23 @@ describe('llmwiki-agent-bridge', () => {
     )
     assert.deepEqual(
       schema.components.schemas.McpJsonRpcRequest.properties.method.enum,
-      ['initialize', 'notifications/initialized', 'ping', 'tools/list', 'tools/call'],
+      ['initialize', 'notifications/initialized', 'ping', 'server/discover', 'tools/list', 'tools/call'],
     )
     assert(
       Object.hasOwn(schema.components.schemas, 'McpInitializeResult'),
       'McpInitializeResult schema missing',
+    )
+    assert(
+      Object.hasOwn(schema.components.schemas, 'McpServerDiscoverResult'),
+      'McpServerDiscoverResult schema missing',
+    )
+    assert.equal(
+      schema.components.schemas.McpServerDiscoverResult.properties.resultType.const,
+      'complete',
+    )
+    assert.equal(
+      schema.components.schemas.McpServerDiscoverResult.properties._meta.properties['io.modelcontextprotocol/serverInfo'].required.includes('name'),
+      true,
     )
     assert(
       Object.hasOwn(schema.components.schemas, 'McpPingResult'),
@@ -2330,6 +2342,17 @@ describe('llmwiki-agent-bridge', () => {
       tools: { listChanged: false },
     })
 
+    const legacyInitialized = await callBridgeMcp(bridge, 'legacy-2024', 'initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'legacy-probe', version: '1' },
+    })
+
+    assert.equal(legacyInitialized.result.protocolVersion, '2024-11-05')
+    assert.deepEqual(legacyInitialized.result.capabilities, {
+      tools: { listChanged: false },
+    })
+
     const notificationResponse = await fetch(`${bridge.url}/mcp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2343,6 +2366,65 @@ describe('llmwiki-agent-bridge', () => {
 
     const ping = await callBridgeMcp(bridge, 2, 'ping')
     assert.deepEqual(ping.result, {})
+  })
+
+  it('supports MCP 2026-07-28 server/discover and sessionless tools', async (t) => {
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const modernMeta = {
+      'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+      'io.modelcontextprotocol/clientInfo': { name: 'modern-probe', version: '1' },
+      'io.modelcontextprotocol/clientCapabilities': {},
+    }
+    const discover = await callBridgeMcp(bridge, 'discover-2026', 'server/discover', {
+      _meta: modernMeta,
+    })
+
+    assert.equal(discover.result.resultType, 'complete')
+    assert.deepEqual(discover.result.supportedVersions, ['2026-07-28', '2025-06-18', '2024-11-05'])
+    assert.deepEqual(discover.result.capabilities, {
+      tools: { listChanged: false },
+    })
+    assert.equal(discover.result._meta['io.modelcontextprotocol/serverInfo'].name, 'llmwiki-agent-bridge')
+    assert.equal(typeof discover.result._meta['io.modelcontextprotocol/serverInfo'].version, 'string')
+
+    const initialized = await callBridgeMcp(bridge, 'initialize-2026', 'initialize', {
+      protocolVersion: '2026-07-28',
+      capabilities: {},
+      clientInfo: { name: 'modern-initialize-probe', version: '1' },
+    })
+
+    assert.equal(initialized.result.protocolVersion, '2026-07-28')
+    assert.deepEqual(initialized.result.capabilities, {
+      tools: { listChanged: false },
+    })
+
+    const tools = await callBridgeMcp(bridge, 'tools-2026', 'tools/list', {
+      _meta: modernMeta,
+    })
+
+    assert.equal(tools.result.serverInfo.name, 'llmwiki-agent-bridge')
+    assert(tools.result.tools.some((tool) => tool.name === 'llmwiki_agent_run'))
+
+    const call = await callBridgeMcp(bridge, 'run-2026', 'tools/call', {
+      _meta: modernMeta,
+      name: 'llmwiki_agent_run',
+      arguments: {
+        query: 'Can modern MCP clients call bridge tools without a session?',
+        mode: 'evidence-only',
+        knowledgeSources: [],
+      },
+    })
+
+    assert.equal(call.result.isError, false)
+    assert.equal(call.result.content[0].type, 'text')
+    assert.match(call.result.content[0].text, /^Evidence-only result:/)
+    assert.deepEqual(call.result.structuredContent.llmwiki_agent_result.citations, [])
   })
 
   it('exposes an MCP llmwiki_agent_run tool backed by the A2A run path', async (t) => {
@@ -2658,6 +2740,71 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(serialized, new RegExp(escapeRegExp(queryStringCanary)))
     assert.doesNotMatch(serialized, new RegExp(escapeRegExp(mcpBodyCanary)))
     assert.doesNotMatch(serialized, /\?api_key=/)
+  })
+
+  it('redacts MCP 2026-07-28 request _meta from safe audit logs', async (t) => {
+    const logger = recordingLogger()
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      auditLog: true,
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const promptCanary = 'MCP_META_RAW_PROMPT_CANARY'
+    const pathCanary = 'C:\\Users\\angel\\private\\mcp-meta-secret.md'
+    const urlCanary = 'http://user:pass@meta-source.example.test/wiki?api_key=mcp-meta-secret'
+    const keyCanary = 'sk-proj-mcp-meta-secret-canary'
+    const bearerCanary = 'Bearer mcp-meta-bearer-canary'
+    const response = await fetch(`${bridge.url}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'audit-discover-2026',
+        method: 'server/discover',
+        params: {
+          _meta: {
+            'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+            'io.modelcontextprotocol/clientInfo': {
+              name: promptCanary,
+              version: '1',
+            },
+            'io.modelcontextprotocol/clientCapabilities': {
+              roots: {
+                path: pathCanary,
+              },
+              extensions: {
+                'io.example/private-runtime': {
+                  endpoint: urlCanary,
+                  apiKey: keyCanary,
+                  authorization: bearerCanary,
+                },
+              },
+            },
+          },
+        },
+      }),
+    })
+
+    assert.equal(response.status, 200)
+    const body = await response.json()
+    assert.equal(body.error, undefined)
+
+    const events = auditEvents(logger)
+    assert.equal(events.length, 1)
+    assert.equal(events[0].route, '/mcp')
+    assert.equal(events[0].mcpMethod, 'server/discover')
+    assert.equal(events[0].mcpError, false)
+    assert.equal(events[0].redacted, true)
+
+    const serialized = JSON.stringify(events)
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(promptCanary)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(pathCanary)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(urlCanary)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(keyCanary)))
+    assert.doesNotMatch(serialized, new RegExp(escapeRegExp(bearerCanary)))
   })
 
   it('emits default redacted IO logs for message sends and honors opt-out', async (t) => {
