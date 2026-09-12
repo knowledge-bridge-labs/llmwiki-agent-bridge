@@ -51,6 +51,17 @@
   initialize and create a session.
 - A separate provider-backed live test verifies one grounded answer only after
   the operator has explicitly configured model credentials.
+- `scripts/deepagents-acp-vllm-live-safe-smoke.mjs` fails closed when the
+  OpenAI-compatible runtime base URL or model is missing, and its syntax is
+  covered by `npm run lint`.
+- When the operator provides a vLLM-compatible runtime endpoint and model, the
+  live-safe script starts a temporary `DeepAgentsServer` wrapper with
+  `ChatOpenAICompletions`, registers a local `llmwiki-serve` source, sends an
+  A2A 1.0 delegated-runtime request with graph context, and validates cited
+  answer, source bundle, graph, citation anchors, and leak scan checks.
+- The temporary wrapper dependency install runs with install scripts disabled
+  and with a bounded npm environment so runtime endpoint and key variables are
+  not inherited by the install child process.
 
 ## Manual live validation
 
@@ -58,7 +69,12 @@
   using a lab-hosted model.
 - `chat-completions` adapter smoke returned a cited answer using fixture
   LLMWiki evidence.
+- Default npm `deepagents-acp` CLI launch was verified, but its documented CLI
+  surface does not expose a custom OpenAI-compatible base URL flag.
 - `deepagents-acp` adapter smoke returned a cited answer using fixture LLMWiki
-  evidence with `OPENAI_BASE_URL` set to a private provider endpoint and
-  `OPENAI_API_KEY` set to a non-secret placeholder required by the local
-  OpenAI-compatible server.
+  evidence only after launching an explicit programmatic wrapper that starts
+  `DeepAgentsServer` with `ChatOpenAICompletions` configured for the private
+  OpenAI-compatible endpoint.
+- The reusable live-safe wrapper smoke is available as
+  `npm run e2e:deepagents-acp:vllm -- --serve-repo <llmwiki-serve-checkout>`
+  and prints only sanitized aggregate JSON.

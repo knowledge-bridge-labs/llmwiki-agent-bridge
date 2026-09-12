@@ -187,7 +187,10 @@ Bind `host` and `port` changes are persisted for the next start and reported as
 restart-required fields.
 
 The agent card includes `metadata.settingsUrl` so clients can link operators to
-the local settings screen without hard-coding the path.
+the local settings screen without hard-coding the path. It also preserves the
+legacy `/message:send` `url` while adding the current A2A
+`supportedInterfaces` entry, protocol version metadata, default media modes,
+skills, and bearer-auth security metadata when bridge auth is configured.
 
 ## Rule of Thumb
 

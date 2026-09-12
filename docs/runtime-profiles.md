@@ -72,6 +72,67 @@ The default remains `runtimeAdapter=chat-completions`; select
 `deepagents-acp` only when the local DeepAgents ACP command and its provider
 credentials are intentionally configured.
 
+### DGX Spark / vLLM Checks
+
+For DGX Spark runs where vLLM exposes an OpenAI-compatible `/v1` endpoint,
+start with the default `chat-completions` adapter:
+
+```sh
+LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE=deepagents
+LLMWIKI_AGENT_BRIDGE_RUNTIME_ADAPTER=chat-completions
+LLMWIKI_AGENT_BRIDGE_BASE_URL=http://<dgx-host>:8000/v1
+LLMWIKI_AGENT_BRIDGE_MODEL=<served-model>
+```
+
+Set `LLMWIKI_AGENT_BRIDGE_API_KEY` only when the vLLM server was started with
+API-key enforcement. This path validates the bridge evidence bundle, A2A/MCP
+contract, citation fallback, and answer artifact against the same runtime API
+surface used by Hermes and generic local runtimes.
+
+Use `runtimeAdapter=deepagents-acp` as a second, explicit validation path when
+you want the DeepAgents ACP subprocess to own model/provider configuration.
+Configure the DeepAgents provider environment or config file separately from
+the bridge runtime endpoint. For OpenAI-compatible providers backed by vLLM,
+prefer a provider config that points at the vLLM base URL and disables
+Responses API usage when the gateway only implements Chat Completions.
+
+The npm `deepagents-acp` CLI documents model selection and API-key environment
+variables, but it does not currently document a `baseURL`/`base_url` CLI flag.
+For vLLM-backed ACP tests, use a small programmatic wrapper that starts
+`DeepAgentsServer` with a `ChatOpenAICompletions` model configured with
+`configuration.baseURL`. The bridge can then launch that wrapper with:
+
+```js
+await startAgentBridge({
+  runtimeProfile: 'deepagents',
+  runtimeAdapter: 'deepagents-acp',
+  deepagentsAcpCommand: process.execPath,
+  deepagentsAcpArgs: ['./llmwiki-deepagents-vllm-acp.mjs'],
+  deepagentsAcpCwd: process.cwd(),
+})
+```
+
+Keep the wrapper's provider packages and credentials outside the bridge package
+unless the deployment intentionally owns that runtime stack.
+
+The same flow is captured by the opt-in live-safe smoke script:
+
+```sh
+LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE=deepagents
+LLMWIKI_AGENT_BRIDGE_RUNTIME_ADAPTER=deepagents-acp
+LLMWIKI_AGENT_BRIDGE_BASE_URL=http://<dgx-host>:8000/v1
+LLMWIKI_AGENT_BRIDGE_MODEL=<served-model>
+npm run e2e:deepagents-acp:vllm -- --serve-repo <llmwiki-serve-checkout>
+```
+
+The smoke script creates an isolated temporary wrapper project, installs the
+pinned DeepAgents provider packages there with install scripts disabled and an
+isolated npm cache/home, starts or probes a local `llmwiki-serve` sample
+source, registers that source with the bridge, sends an A2A 1.0
+delegated-runtime request with graph context, and prints only sanitized
+aggregate JSON. It fails closed when the runtime base URL or model is not
+configured.
+
 ## Generic
 
 Use this profile for any OpenAI-compatible local runtime that is not better represented by a named profile.
@@ -214,4 +275,4 @@ non-default JSONL file path.
 
 The bridge exposes MCP-style and A2A-style compatibility surfaces for local integration. `POST /mcp` supports `tools/list` and `tools/call` for the `llmwiki_agent_run` tool, which returns `structuredContent.llmwiki_agent_result` from the same internal run path as `/message:send`.
 
-The package includes `@a2a-js/sdk@0.3.14` and tests agent-card discovery with the official SDK resolver. Do not describe the compatibility surfaces as certified conformance unless a separate certification process has been completed and documented.
+The package includes `@a2a-js/sdk@1.1.0` and tests agent-card discovery with the official SDK resolver. The Agent Card preserves legacy `url`, `capabilities`, and `metadata` fields while adding current `supportedInterfaces`, protocol version, default media mode, skill, and bearer-auth security fields. Do not describe the compatibility surfaces as certified conformance unless a separate certification process has been completed and documented.

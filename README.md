@@ -192,6 +192,15 @@ adapter starts one `deepagents-acp` stdio process per bridge runtime request,
 fails permission prompts closed with ACP `cancelled`, and applies the bridge
 request timeout to child cleanup.
 
+For DGX Spark or another host running vLLM behind an OpenAI-compatible `/v1`
+endpoint, validate the default `chat-completions` adapter first with
+`runtimeProfile=deepagents`. Use `runtimeAdapter=deepagents-acp` only when the
+DeepAgents ACP subprocess and its provider configuration are intentionally set
+up; the ACP subprocess owns provider config separately from the bridge. The
+npm `deepagents-acp` CLI does not currently document a `baseURL` flag, so
+vLLM-backed ACP checks should use a programmatic DeepAgents wrapper that
+injects a `ChatOpenAICompletions` model with `configuration.baseURL`.
+
 Leave the bridge running. The following commands are also bridge-checkout
 commands; if Terminal 2 is occupied by the bridge process, open another prompt
 and run `cd llmwiki-agent-bridge` first.
@@ -338,12 +347,17 @@ surface:
 | --- | --- |
 | `GET /health` | Runtime, configuration, source policy, and redacted source-registry readiness snapshot. |
 | `GET /sources` | Redacted source registry view. Add `?probe=1` for live source health and safe manifest metadata. |
-| `GET /.well-known/agent-card.json` | Local A2A-style agent card metadata with redacted source-registry readiness counts. |
+| `GET /.well-known/agent-card.json` | Local A2A-style agent card metadata with supported interfaces, protocol version metadata, skills, optional bearer-auth security metadata, and redacted source-registry readiness counts. |
 | `GET /settings` | Guided local setup UI: connect runtime, register Knowledge Sources, and verify with `POST /message:send`. |
 | `GET /settings.json` | Redacted runtime, bridge, persistence, and endpoint metadata. |
 | `PUT /settings/config.json` | Persists runtime configuration plus advanced access, CORS, timeout, and source-policy settings. |
 | `GET/PUT /settings/sources.json` | Reads or persists registered Knowledge Sources. |
-| `POST /message:send` | A2A-style request that returns a completed task artifact. |
+| `POST /message:send` | A2A-style request that returns a completed task artifact; explicit `A2A-Version: 1.0` stores a process-local task snapshot. |
+| `POST /message:stream` | A2A 1.0 SSE stream for submitted, working, and terminal task events. |
+| `GET /tasks`, `GET /tasks/{id}` | A2A 1.0 process-local task listing and lookup for recent bridge runs. |
+| `POST /tasks/{id}:cancel`, `GET/POST /tasks/{id}:subscribe` | A2A lifecycle routes with clean unsupported/not-cancelable errors for this synchronous local bridge. |
+| `GET/POST/DELETE /tasks/{id}/pushNotificationConfigs` | A2A push-notification routes that return a protocol-shaped unsupported error because push notifications are not advertised. |
+| `GET /extendedAgentCard` | A2A 1.0 extended card route; bearer auth is enforced when the bridge bearer token is configured. |
 | `POST /mcp` | MCP-style JSON-RPC endpoint with lifecycle methods, `llmwiki_agent_run`, and read-only source tools. |
 
 For each `POST /message:send` request, the bridge:
@@ -392,6 +406,22 @@ and A2A-style `metadata.threadId/sessionId/turnId`. The bridge uses the current
 query from `data.query` or A2A message text for source retrieval, then includes
 bounded user/assistant conversation history in the runtime chat-completions call
 after the evidence system prompt.
+
+The bridge exports its A2A wire-version constants from the package and uses the
+current SDK protocol version on `/.well-known/agent-card.json` and
+`A2A-Version` response headers for `/message:send`. Missing or empty
+`A2A-Version` request headers remain accepted as legacy `0.3`; explicit
+unsupported versions fail before source fan-out or runtime calls. Explicit
+`A2A-Version: 1.0` requests receive `application/a2a+json` with the current
+HTTP+JSON wrapper shape, while legacy requests keep the direct completed task
+response.
+
+For A2A 1.0 callers, the bridge also exposes `/message:stream`,
+process-local `/tasks` lookup, `/extendedAgentCard`, and protocol-shaped
+lifecycle error responses. The task store is bounded memory only; it is for
+local polling and debugging, not durable workflow persistence. Push
+notifications are advertised as unsupported and return the A2A
+`PUSH_NOTIFICATION_NOT_SUPPORTED` error shape.
 
 ### Retrieval mode routing
 
@@ -535,7 +565,7 @@ Supported Knowledge Source protocols:
 | Protocol | Behavior |
 | --- | --- |
 | `llmwiki-http` | Calls `GET /source-bundle` or legacy `GET /manifest` for safe bundle metadata, then calls `POST /query` and augments evidence with compact search variants. |
-| `mcp` | Calls `llmwiki_source_bundle` for safe bundle metadata when available, then calls `llmwiki_context` through a JSON-RPC MCP-style endpoint at `/mcp`. |
+| `mcp` | Calls `llmwiki_source_bundle` for safe bundle metadata when available, then calls `llmwiki_context` through a JSON-RPC MCP-style endpoint. Source URLs that already end in `/mcp` or `/mcp/stream` are used as-is; base service URLs keep the legacy `/mcp` fallback. |
 | `a2a` | Reads `/.well-known/agent-card.json`, posts a message, and prefers a `llmwiki_context` artifact when present. |
 
 The generated OpenAPI contract is committed at
@@ -543,7 +573,7 @@ The generated OpenAPI contract is committed at
 surface and the `llmwiki_agent_result` artifact shape as a public-preview
 compatibility contract, not as certified A2A conformance.
 
-The package includes `@a2a-js/sdk@0.3.14` for A2A discovery compatibility
+The package includes `@a2a-js/sdk@1.1.0` for A2A discovery compatibility
 checks while keeping the existing `/message:send` route stable.
 
 ## Runtime Profiles

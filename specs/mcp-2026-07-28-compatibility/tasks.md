@@ -6,6 +6,11 @@
 - [x] Advertise and accept `2026-07-28` on `/mcp`.
 - [x] Implement `server/discover`.
 - [x] Preserve sessionless `tools/list` and `tools/call`.
+- [x] Add private cache hints to `server/discover` and `tools/list`.
+- [x] Add result metadata to `tools/list` and `tools/call` without changing
+  structured content.
+- [x] Preserve explicit `/mcp/stream` MCP source endpoints and send modern MCP
+  headers plus `params._meta` to source tool calls.
 - [x] Preserve audit redaction for request `_meta`.
 - [x] Update MCP contract documentation.
 - [x] Regenerate OpenAPI if the generated contract changes.

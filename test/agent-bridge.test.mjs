@@ -19,7 +19,14 @@ import {
   summarizeAnswerOracleRunMetrics,
   summarizeExpectedCitationMappingRunMetrics,
 } from '../scripts/benchmark-runtime-prompt.mjs'
-import { agentBridgeOpenApi, startAgentBridge, startHermesA2aBridge } from '../src/index.mjs'
+import {
+  BRIDGE_A2A_CONTENT_TYPE,
+  BRIDGE_A2A_PROTOCOL_VERSION,
+  BRIDGE_A2A_VERSION_HEADER,
+  agentBridgeOpenApi,
+  startAgentBridge,
+  startHermesA2aBridge,
+} from '../src/index.mjs'
 
 const execFileAsync = promisify(execFile)
 const packageRoot = fileURLToPath(new URL('..', import.meta.url))
@@ -74,18 +81,43 @@ describe('llmwiki-agent-bridge', () => {
     const card = await cardResponse.json()
 
     assert.equal(cardResponse.status, 200)
+    assert.equal(cardResponse.headers.get(BRIDGE_A2A_VERSION_HEADER), BRIDGE_A2A_PROTOCOL_VERSION)
     assert.equal(card.id, 'llmwiki-agent-bridge-hermes')
     assert.equal(card.name, 'LLMWiki Agent Bridge for Hermes')
     assert.equal(card.url, '/message:send')
+    assert.equal(card.protocolVersion, BRIDGE_A2A_PROTOCOL_VERSION)
     assert.equal(card.runtime, 'hermes')
     assert.equal(card.agentRuntime, 'hermes')
     assert.equal(card.provider.organization, 'LLMWiki')
+    assert.equal(card.provider.url, 'https://knowledge-bridge-labs.github.io/llmwiki-docs/')
+    assert.equal(typeof card.version, 'string')
+    assert.deepEqual(card.supportedInterfaces, [
+      {
+        url: '/message:send',
+        protocolBinding: 'HTTP+JSON',
+        protocolVersion: BRIDGE_A2A_PROTOCOL_VERSION,
+        tenant: '',
+      },
+    ])
+    assert.equal(card.capabilities.streaming, true)
     assert.equal(card.capabilities.structuredArtifacts, true)
+    assert.equal(card.capabilities.pushNotifications, false)
+    assert.equal(card.capabilities.extendedAgentCard, true)
     assert.deepEqual(card.capabilities.knowledgeSourceProtocols, ['llmwiki-http', 'mcp', 'a2a'])
+    assert.deepEqual(card.defaultInputModes, ['text/plain', 'application/json'])
+    assert.deepEqual(card.defaultOutputModes, ['text/markdown', 'application/json'])
+    assert.equal(card.skills[0].id, 'llmwiki-grounded-answer')
+    assert.deepEqual(card.securitySchemes, {})
+    assert.deepEqual(card.securityRequirements, [])
     assert.equal(card.metadata.runtimeProfile, 'hermes')
     assert.equal(card.metadata.runtimeAdapter, 'chat-completions')
+    assert.equal(card.metadata.protocolVersion, BRIDGE_A2A_PROTOCOL_VERSION)
+    assert.deepEqual(card.metadata.supportedProtocolVersions, [BRIDGE_A2A_PROTOCOL_VERSION, '0.3'])
+    assert.equal(card.metadata.protocolVersionHeader, BRIDGE_A2A_VERSION_HEADER)
+    assert.equal(card.metadata.preferredInterface.protocolVersion, BRIDGE_A2A_PROTOCOL_VERSION)
     assert.equal(card.metadata.modelConfigured, true)
     assert.equal(card.metadata.hermesModelConfigured, true)
+    assert.equal(card.metadata.bridgeAuthRequired, false)
     assert.equal(card.metadata.sourcePolicy, 'private-http')
     assert.equal(card.metadata.settingsUrl, '/settings')
     assert.deepEqual(card.metadata.sourceRegistry, {
@@ -129,9 +161,391 @@ describe('llmwiki-agent-bridge', () => {
 
     assert.equal(card.id, 'llmwiki-agent-bridge-hermes')
     assert.equal(card.url, '/message:send')
+    assert.equal(card.supportedInterfaces[0].protocolVersion, BRIDGE_A2A_PROTOCOL_VERSION)
     assert.equal(card.metadata.settingsUrl, '/settings')
     assert.equal(card.metadata.protocolSurface.a2a, 'compatible')
     assert.equal(card.metadata.sourceRegistry.registeredSourceCount, 0)
+  })
+
+  it('advertises bearer security in the A2A agent card when bridge auth is configured', async (t) => {
+    const bridge = await startAgentBridge({
+      port: 0,
+      bridgeBearerToken: 'bridge-secret',
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const unauthorized = await fetch(`${bridge.url}/.well-known/agent-card.json`)
+    assert.equal(unauthorized.status, 401)
+
+    const cardResponse = await fetch(`${bridge.url}/.well-known/agent-card.json`, {
+      headers: { Authorization: 'Bearer bridge-secret' },
+    })
+    const card = await cardResponse.json()
+
+    assert.equal(cardResponse.status, 200)
+    assert.deepEqual(card.securitySchemes, {
+      bearerAuth: {
+        httpAuthSecurityScheme: {
+          scheme: 'Bearer',
+          bearerFormat: 'opaque',
+          description: 'Bridge bearer token supplied in the Authorization header.',
+        },
+      },
+    })
+    assert.deepEqual(card.security, [{ bearerAuth: [] }])
+    assert.deepEqual(card.securityRequirements, [{ schemes: { bearerAuth: { list: [] } } }])
+    assert.deepEqual(card.skills[0].securityRequirements, [{ schemes: { bearerAuth: { list: [] } } }])
+    assert.equal(card.metadata.bridgeAuthRequired, true)
+    assert.doesNotMatch(JSON.stringify(card), /bridge-secret/)
+  })
+
+  it('handles A2A-Version on message:send while keeping the legacy single-shot response', async (t) => {
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const legacyResponse = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        data: {
+          query: 'Does the bridge keep legacy A2A behavior?',
+          mode: 'evidence-only',
+          knowledgeSources: [],
+        },
+      }),
+    })
+    const legacyBody = await legacyResponse.json()
+
+    assert.equal(legacyResponse.status, 200)
+    assert.equal(legacyResponse.headers.get(BRIDGE_A2A_VERSION_HEADER), BRIDGE_A2A_PROTOCOL_VERSION)
+    assert.match(legacyResponse.headers.get('content-type') || '', /^application\/json/)
+    assert.equal(legacyBody.status.state, 'completed')
+    assert.equal(legacyBody.task, undefined)
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': BRIDGE_A2A_CONTENT_TYPE,
+        Accept: BRIDGE_A2A_CONTENT_TYPE,
+        [BRIDGE_A2A_VERSION_HEADER]: BRIDGE_A2A_PROTOCOL_VERSION,
+      },
+      body: JSON.stringify({
+        message: {
+          messageId: 'client-message-1',
+          role: 'ROLE_USER',
+          parts: [{ text: 'Does the bridge accept the latest A2A version header?' }],
+        },
+        configuration: { acceptedOutputModes: ['text/markdown'] },
+        data: { mode: 'evidence-only', knowledgeSources: [] },
+      }),
+    })
+    const body = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get(BRIDGE_A2A_VERSION_HEADER), BRIDGE_A2A_PROTOCOL_VERSION)
+    assert.match(response.headers.get('content-type') || '', /^application\/a2a\+json/)
+    assert.match(response.headers.get('vary') || '', /A2A-Version/)
+    assert.equal(body.task.status.state, 'TASK_STATE_COMPLETED')
+    assert.equal(body.task.status.message.role, 'ROLE_AGENT')
+    assert.equal(body.task.status.message.parts[0].mediaType, 'text/markdown')
+    assert.equal(body.task.artifacts[0].artifactId, 'llmwiki_agent_result')
+    assert.equal(body.task.artifacts[0].parts[0].mediaType, 'application/json')
+    assert.match(body.task.artifacts[0].parts[0].data.answer, /^Evidence-only result:/)
+
+    const unsupported = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        [BRIDGE_A2A_VERSION_HEADER]: '2.0',
+      },
+      body: JSON.stringify({
+        data: {
+          query: 'Unsupported version should fail before work starts.',
+          mode: 'evidence-only',
+          knowledgeSources: [],
+        },
+      }),
+    })
+    const error = await unsupported.json()
+
+    assert.equal(unsupported.status, 400)
+    assert.equal(unsupported.headers.get(BRIDGE_A2A_VERSION_HEADER), BRIDGE_A2A_PROTOCOL_VERSION)
+    assert.equal(error.error.code, 'a2a_version_not_supported')
+  })
+
+  it('stores bounded A2A 1.0 message:send task snapshots for list and get', async (t) => {
+    const bridge = await startAgentBridge({
+      port: 0,
+      a2aTaskStoreLimit: 2,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const legacyResponse = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Legacy task should not populate the A2A 1.0 task store.',
+          mode: 'evidence-only',
+          knowledgeSources: [],
+        },
+      }),
+    })
+
+    assert.equal(legacyResponse.status, 200)
+
+    const emptyListResponse = await fetch(`${bridge.url}/tasks?includeArtifacts=true`, {
+      headers: a2aHeaders(),
+    })
+    const emptyList = await emptyListResponse.json()
+
+    assert.equal(emptyListResponse.status, 200)
+    assert.equal(emptyList.totalSize, 0)
+    assert.deepEqual(emptyList.tasks, [])
+
+    const tasks = []
+    for (const query of ['First current task.', 'Second current task.', 'Third current task.']) {
+      const response = await fetch(`${bridge.url}/message:send`, {
+        method: 'POST',
+        headers: a2aHeaders(),
+        body: JSON.stringify({
+          data: {
+            query,
+            mode: 'evidence-only',
+            knowledgeSources: [],
+          },
+        }),
+      })
+      const body = await response.json()
+
+      assert.equal(response.status, 200)
+      assert.equal(body.task.status.state, 'TASK_STATE_COMPLETED')
+      tasks.push(body.task)
+    }
+
+    const defaultListResponse = await fetch(`${bridge.url}/tasks`, {
+      headers: a2aHeaders(),
+    })
+    const defaultList = await defaultListResponse.json()
+
+    assert.equal(defaultListResponse.status, 200)
+    assert.deepEqual(defaultList.tasks.map((task) => task.id), [tasks[2].id, tasks[1].id])
+    assert.deepEqual(defaultList.tasks.map((task) => task.artifacts), [[], []])
+
+    const listResponse = await fetch(`${bridge.url}/tasks?includeArtifacts=true&pageSize=1`, {
+      headers: a2aHeaders(),
+    })
+    const list = await listResponse.json()
+
+    assert.equal(listResponse.status, 200)
+    assert.equal(list.totalSize, 2)
+    assert.equal(list.pageSize, 1)
+    assert.equal(list.nextPageToken, '1')
+    assert.deepEqual(list.tasks.map((task) => task.id), [tasks[2].id])
+    assert.equal(list.tasks[0].artifacts[0].artifactId, 'llmwiki_agent_result')
+
+    const secondPageResponse = await fetch(`${bridge.url}/tasks?pageToken=${list.nextPageToken}&includeArtifacts=true`, {
+      headers: a2aHeaders(),
+    })
+    const secondPage = await secondPageResponse.json()
+
+    assert.equal(secondPageResponse.status, 200)
+    assert.deepEqual(secondPage.tasks.map((task) => task.id), [tasks[1].id])
+    assert.equal(secondPage.nextPageToken, '')
+
+    const taskResponse = await fetch(`${bridge.url}/tasks/${tasks[2].id}`, {
+      headers: a2aHeaders(),
+    })
+    const task = await taskResponse.json()
+
+    assert.equal(taskResponse.status, 200)
+    assert.equal(taskResponse.headers.get(BRIDGE_A2A_VERSION_HEADER), BRIDGE_A2A_PROTOCOL_VERSION)
+    assert.match(taskResponse.headers.get('content-type') || '', /^application\/a2a\+json/)
+    assert.equal(task.id, tasks[2].id)
+    assert.equal(task.status.state, 'TASK_STATE_COMPLETED')
+    assert.match(task.artifacts[0].parts[0].data.answer, /^Evidence-only result:/)
+
+    const filteredResponse = await fetch(`${bridge.url}/tasks?status=TASK_STATE_COMPLETED&contextId=${tasks[2].contextId}`, {
+      headers: a2aHeaders(),
+    })
+    const filtered = await filteredResponse.json()
+
+    assert.equal(filteredResponse.status, 200)
+    assert.deepEqual(filtered.tasks.map((item) => item.id), [tasks[2].id])
+
+    const evictedResponse = await fetch(`${bridge.url}/tasks/${tasks[0].id}`, {
+      headers: a2aHeaders(),
+    })
+    const evicted = await evictedResponse.json()
+
+    assert.equal(evictedResponse.status, 404)
+    assert.equal(evicted.error.code, 404)
+    assert.equal(evicted.error.status, 'NOT_FOUND')
+    assert.equal(evicted.error.details[0].reason, 'TASK_NOT_FOUND')
+  })
+
+  it('streams A2A 1.0 message:stream task updates and stores the completed task', async (t) => {
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:stream`, {
+      method: 'POST',
+      headers: a2aHeaders(),
+      body: JSON.stringify({
+        data: {
+          query: 'Stream a local evidence-only task.',
+          mode: 'evidence-only',
+          knowledgeSources: [],
+        },
+      }),
+    })
+    const text = await response.text()
+    const events = parseSseDataEvents(text)
+
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get(BRIDGE_A2A_VERSION_HEADER), BRIDGE_A2A_PROTOCOL_VERSION)
+    assert.match(response.headers.get('content-type') || '', /^text\/event-stream/)
+    assert.equal(events[0].task.status.state, 'TASK_STATE_SUBMITTED')
+    assert.equal(events[1].statusUpdate.status.state, 'TASK_STATE_WORKING')
+    assert.equal(events[2].statusUpdate.status.state, 'TASK_STATE_COMPLETED')
+    assert.equal(events[3].task.status.state, 'TASK_STATE_COMPLETED')
+    assert.equal(events[0].task.id, events[3].task.id)
+    assert.equal(events[1].statusUpdate.taskId, events[3].task.id)
+    assert.match(events[3].task.artifacts[0].parts[0].data.answer, /^Evidence-only result:/)
+
+    const taskResponse = await fetch(`${bridge.url}/tasks/${events[3].task.id}`, {
+      headers: a2aHeaders(),
+    })
+    const task = await taskResponse.json()
+
+    assert.equal(taskResponse.status, 200)
+    assert.equal(task.id, events[3].task.id)
+    assert.equal(task.status.state, 'TASK_STATE_COMPLETED')
+  })
+
+  it('returns and stores failed tasks for accepted A2A 1.0 runtime failures', async (t) => {
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 503, {
+        error: 'runtime unavailable',
+      })
+    })
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      logger: silentLogger,
+    })
+    t.after(async () => {
+      await closeServer(bridge.server)
+      await closeServer(runtime.server)
+    })
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: a2aHeaders(),
+      body: JSON.stringify({
+        data: {
+          query: 'Return a failed A2A task when runtime fails.',
+          knowledgeSources: [],
+        },
+      }),
+    })
+    const body = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(body.task.status.state, 'TASK_STATE_FAILED')
+    assert.match(body.task.status.message.parts[0].text, /^Task failed:/)
+    assert.equal(body.task.artifacts[0].parts[0].data.error.code, 'chat_completions_failed')
+    assert.equal(body.task.artifacts[0].parts[0].data.error.httpStatus, 502)
+    assert.equal(body.task.artifacts[0].parts[0].data.diagnostics[0].scope, 'runtime')
+
+    const taskResponse = await fetch(`${bridge.url}/tasks/${body.task.id}`, {
+      headers: a2aHeaders(),
+    })
+    const task = await taskResponse.json()
+
+    assert.equal(taskResponse.status, 200)
+    assert.equal(task.status.state, 'TASK_STATE_FAILED')
+    assert.equal(task.artifacts[0].parts[0].data.error.code, 'chat_completions_failed')
+  })
+
+  it('returns clean A2A errors for terminal subscribe, cancel, and unsupported push notifications', async (t) => {
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const cardResponse = await fetch(`${bridge.url}/extendedAgentCard`, {
+      headers: a2aHeaders(),
+    })
+    const card = await cardResponse.json()
+
+    assert.equal(cardResponse.status, 200)
+    assert.match(cardResponse.headers.get('content-type') || '', /^application\/a2a\+json/)
+    assert.equal(card.capabilities.streaming, true)
+    assert.equal(card.capabilities.extendedAgentCard, true)
+    assert.equal(card.capabilities.pushNotifications, false)
+
+    const sendResponse = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: a2aHeaders(),
+      body: JSON.stringify({
+        data: {
+          query: 'Create a terminal task for lifecycle errors.',
+          mode: 'evidence-only',
+          knowledgeSources: [],
+        },
+      }),
+    })
+    const sent = await sendResponse.json()
+    const taskId = sent.task.id
+
+    const cancelResponse = await fetch(`${bridge.url}/tasks/${taskId}:cancel`, {
+      method: 'POST',
+      headers: a2aHeaders(),
+    })
+    const cancelError = await cancelResponse.json()
+
+    assert.equal(cancelResponse.status, 400)
+    assert.equal(cancelError.error.code, 400)
+    assert.equal(cancelError.error.status, 'FAILED_PRECONDITION')
+    assert.equal(cancelError.error.details[0].reason, 'TASK_NOT_CANCELABLE')
+    assert.equal(cancelError.error.details[0].domain, 'a2a-protocol.org')
+
+    const subscribeResponse = await fetch(`${bridge.url}/tasks/${taskId}:subscribe`, {
+      method: 'POST',
+      headers: a2aHeaders(),
+    })
+    const subscribeError = await subscribeResponse.json()
+
+    assert.equal(subscribeResponse.status, 400)
+    assert.equal(subscribeError.error.details[0].reason, 'UNSUPPORTED_OPERATION')
+    assert.equal(subscribeError.error.details[0].metadata.state, 'TASK_STATE_COMPLETED')
+
+    const pushResponse = await fetch(`${bridge.url}/tasks/${taskId}/pushNotificationConfigs`, {
+      method: 'POST',
+      headers: a2aHeaders(),
+      body: JSON.stringify({ config: { url: 'https://example.test/push' } }),
+    })
+    const pushError = await pushResponse.json()
+
+    assert.equal(pushResponse.status, 400)
+    assert.equal(pushError.error.details[0].reason, 'PUSH_NOTIFICATION_NOT_SUPPORTED')
   })
 
   it('serves a static settings screen and redacted authenticated settings JSON', async (t) => {
@@ -1453,22 +1867,94 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(schema.info.version, '0.1.0-test')
     assert.deepEqual(Object.keys(schema.paths).sort(), [
       '/.well-known/agent-card.json',
+      '/extendedAgentCard',
       '/health',
       '/mcp',
       '/message:send',
+      '/message:stream',
       '/settings',
       '/settings.json',
       '/settings/config.json',
       '/settings/sources.json',
       '/sources',
+      '/tasks',
+      '/tasks/{id}',
+      '/tasks/{id}/pushNotificationConfigs',
+      '/tasks/{id}/pushNotificationConfigs/{configId}',
+      '/tasks/{id}:cancel',
+      '/tasks/{id}:subscribe',
     ])
     assert.equal(
       schema.paths['/message:send'].post.responses[200].content['application/json'].schema.$ref,
       '#/components/schemas/MessageSendResponse',
     )
+    assert.equal(
+      schema.paths['/message:send'].post.responses[200].content[BRIDGE_A2A_CONTENT_TYPE].schema.$ref,
+      '#/components/schemas/A2aSendMessageResponse',
+    )
+    assert.equal(
+      schema.paths['/message:send'].post.requestBody.content[BRIDGE_A2A_CONTENT_TYPE].schema.oneOf[0].$ref,
+      '#/components/schemas/MessageSendEnvelope',
+    )
+    assert.equal(
+      schema.paths['/message:stream'].post.responses[200].content['text/event-stream'].schema.type,
+      'string',
+    )
+    assert.equal(
+      schema.paths['/tasks'].get.responses[200].content[BRIDGE_A2A_CONTENT_TYPE].schema.$ref,
+      '#/components/schemas/A2aTaskListResponse',
+    )
+    assert.equal(
+      schema.paths['/tasks/{id}'].get.responses[200].content[BRIDGE_A2A_CONTENT_TYPE].schema.$ref,
+      '#/components/schemas/A2aTask',
+    )
+    assert.equal(
+      schema.paths['/tasks/{id}:cancel'].post.responses[400].content[BRIDGE_A2A_CONTENT_TYPE].schema.$ref,
+      '#/components/schemas/A2aRestErrorResponse',
+    )
+    assert.equal(
+      schema.paths['/tasks/{id}/pushNotificationConfigs'].post.responses[400].content[BRIDGE_A2A_CONTENT_TYPE].schema.$ref,
+      '#/components/schemas/A2aRestErrorResponse',
+    )
     assert(
       Object.hasOwn(schema.components.schemas, 'AgentCardResponse'),
       'AgentCardResponse schema missing',
+    )
+    assert(
+      Object.hasOwn(schema.components.schemas, 'A2aAgentInterface'),
+      'A2aAgentInterface schema missing',
+    )
+    assert(
+      Object.hasOwn(schema.components.schemas, 'A2aAgentSkill'),
+      'A2aAgentSkill schema missing',
+    )
+    assert(
+      Object.hasOwn(schema.components.schemas, 'A2aTaskListResponse'),
+      'A2aTaskListResponse schema missing',
+    )
+    assert(
+      Object.hasOwn(schema.components.schemas, 'A2aRestErrorResponse'),
+      'A2aRestErrorResponse schema missing',
+    )
+    assert.equal(
+      schema.components.schemas.A2aTaskStatus.properties.state.$ref,
+      '#/components/schemas/A2aTaskState',
+    )
+    assert.equal(
+      schema.components.schemas.AgentCardResponse.properties.protocolVersion.const,
+      BRIDGE_A2A_PROTOCOL_VERSION,
+    )
+    assert.equal(
+      schema.components.schemas.AgentCardResponse.properties.supportedInterfaces.items.$ref,
+      '#/components/schemas/A2aAgentInterface',
+    )
+    assert.equal(
+      schema.components.schemas.A2aAgentInterface.properties.protocolVersion.const,
+      BRIDGE_A2A_PROTOCOL_VERSION,
+    )
+    assert.equal(
+      schema.components.schemas.AgentCardResponse.properties.metadata.properties.protocolVersionHeader.const,
+      BRIDGE_A2A_VERSION_HEADER,
     )
     assert(
       Object.hasOwn(schema.components.schemas, 'MessageSendData'),
@@ -1583,8 +2069,28 @@ describe('llmwiki-agent-bridge', () => {
       'complete',
     )
     assert.equal(
+      schema.components.schemas.McpServerDiscoverResult.properties.ttlMs.type,
+      'integer',
+    )
+    assert.equal(
+      schema.components.schemas.McpServerDiscoverResult.properties.cacheScope.enum[0],
+      'private',
+    )
+    assert.equal(
       schema.components.schemas.McpServerDiscoverResult.properties._meta.properties['io.modelcontextprotocol/serverInfo'].required.includes('name'),
       true,
+    )
+    assert.equal(
+      schema.components.schemas.McpToolListResult.properties.resultType.const,
+      'complete',
+    )
+    assert.equal(
+      schema.components.schemas.McpToolListResult.properties.ttlMs.type,
+      'integer',
+    )
+    assert.equal(
+      schema.components.schemas.McpToolCallResult.properties.resultType.const,
+      'complete',
     )
     assert(
       Object.hasOwn(schema.components.schemas, 'McpPingResult'),
@@ -2443,6 +2949,17 @@ describe('llmwiki-agent-bridge', () => {
       tools: { listChanged: false },
     })
 
+    const previousInitialized = await callBridgeMcp(bridge, 'previous-2025-11', 'initialize', {
+      protocolVersion: '2025-11-25',
+      capabilities: {},
+      clientInfo: { name: 'previous-probe', version: '1' },
+    })
+
+    assert.equal(previousInitialized.result.protocolVersion, '2025-11-25')
+    assert.deepEqual(previousInitialized.result.capabilities, {
+      tools: { listChanged: false },
+    })
+
     const notificationResponse = await fetch(`${bridge.url}/mcp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2476,7 +2993,14 @@ describe('llmwiki-agent-bridge', () => {
     })
 
     assert.equal(discover.result.resultType, 'complete')
-    assert.deepEqual(discover.result.supportedVersions, ['2026-07-28', '2025-06-18', '2024-11-05'])
+    assert.equal(discover.result.ttlMs, 60000)
+    assert.equal(discover.result.cacheScope, 'private')
+    assert.deepEqual(discover.result.supportedVersions, [
+      '2026-07-28',
+      '2025-11-25',
+      '2025-06-18',
+      '2024-11-05',
+    ])
     assert.deepEqual(discover.result.capabilities, {
       tools: { listChanged: false },
     })
@@ -2498,7 +3022,11 @@ describe('llmwiki-agent-bridge', () => {
       _meta: modernMeta,
     })
 
+    assert.equal(tools.result.resultType, 'complete')
+    assert.equal(tools.result.ttlMs, 60000)
+    assert.equal(tools.result.cacheScope, 'private')
     assert.equal(tools.result.serverInfo.name, 'llmwiki-agent-bridge')
+    assert.equal(tools.result._meta['io.modelcontextprotocol/serverInfo'].name, 'llmwiki-agent-bridge')
     assert(tools.result.tools.some((tool) => tool.name === 'llmwiki_agent_run'))
 
     const call = await callBridgeMcp(bridge, 'run-2026', 'tools/call', {
@@ -2511,7 +3039,9 @@ describe('llmwiki-agent-bridge', () => {
       },
     })
 
+    assert.equal(call.result.resultType, 'complete')
     assert.equal(call.result.isError, false)
+    assert.equal(call.result._meta['io.modelcontextprotocol/serverInfo'].name, 'llmwiki-agent-bridge')
     assert.equal(call.result.content[0].type, 'text')
     assert.match(call.result.content[0].text, /^Evidence-only result:/)
     assert.deepEqual(call.result.structuredContent.llmwiki_agent_result.citations, [])
@@ -3525,9 +4055,17 @@ describe('llmwiki-agent-bridge', () => {
   it('proxies read-only MCP source tools to MCP Knowledge Source tools', async (t) => {
     const source = await startFixtureServer(async ({ request, url, body, response }) => {
       assert.equal(request.method, 'POST')
-      assert.equal(url.pathname, '/mcp')
+      assert.equal(url.pathname, '/mcp/stream')
+      assert.equal(request.headers['mcp-protocol-version'], '2026-07-28')
+      assert.equal(request.headers['mcp-method'], 'tools/call')
       assert.equal(body.method, 'tools/call')
+      assert.equal(
+        body.params._meta['io.modelcontextprotocol/protocolVersion'],
+        '2026-07-28',
+      )
+      assert.equal(body.params._meta['io.modelcontextprotocol/clientInfo'].name, 'llmwiki-agent-bridge')
       const name = body.params.name
+      assert.equal(request.headers['mcp-name'], name)
       const args = body.params.arguments
 
       if (name === 'llmwiki_context') {
@@ -3636,7 +4174,7 @@ describe('llmwiki-agent-bridge', () => {
     const bridge = await startAgentBridge({
       port: 0,
       registeredSources: [
-        knowledgeSource('mcp-source', 'MCP Source', 'mcp', source.url),
+        knowledgeSource('mcp-source', 'MCP Source', 'mcp', `${source.url}/mcp/stream`),
       ],
       logger: silentLogger,
     })
@@ -11374,6 +11912,28 @@ function expectedFallbackAnswer(answer, citationCount) {
   const omittedCount = citationCount - anchorCount
   const omittedText = omittedCount > 0 ? ` +${omittedCount} more` : ''
   return `${answer.trimEnd()}\n\nEvidence used: ${anchors.join(' ')}${omittedText}`
+}
+
+function a2aHeaders(extra = {}) {
+  return {
+    'Content-Type': BRIDGE_A2A_CONTENT_TYPE,
+    Accept: BRIDGE_A2A_CONTENT_TYPE,
+    [BRIDGE_A2A_VERSION_HEADER]: BRIDGE_A2A_PROTOCOL_VERSION,
+    ...extra,
+  }
+}
+
+function parseSseDataEvents(text) {
+  return text
+    .split(/\r?\n\r?\n/)
+    .map((block) => block
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice('data:'.length).trimStart())
+      .join('\n')
+      .trim())
+    .filter(Boolean)
+    .map((data) => JSON.parse(data))
 }
 
 async function delay(ms) {

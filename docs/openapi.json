@@ -435,6 +435,18 @@
                   }
                 ]
               }
+            },
+            "application/a2a+json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/MessageSendEnvelope"
+                  },
+                  {
+                    "$ref": "#/components/schemas/MessageSendData"
+                  }
+                ]
+              }
             }
           }
         },
@@ -445,6 +457,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MessageSendResponse"
+                }
+              },
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aSendMessageResponse"
                 }
               }
             }
@@ -501,6 +518,817 @@
           },
           "502": {
             "description": "Runtime chat completions failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/message:stream": {
+      "post": {
+        "summary": "Run a grounded answer request as A2A HTTP+JSON SSE events",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/MessageSendEnvelope"
+                  },
+                  {
+                    "$ref": "#/components/schemas/MessageSendData"
+                  }
+                ]
+              }
+            },
+            "application/a2a+json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/MessageSendEnvelope"
+                  },
+                  {
+                    "$ref": "#/components/schemas/MessageSendData"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A2A task and status-update event stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "Server-Sent Events; each data frame contains an A2A task or statusUpdate JSON object."
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad A2A request",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aRestErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected bridge failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks": {
+      "get": {
+        "summary": "List process-local A2A task snapshots",
+        "parameters": [
+          {
+            "name": "contextId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/A2aTaskState"
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "historyLength",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 12
+            }
+          },
+          {
+            "name": "statusTimestampAfter",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "includeArtifacts",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stored A2A task snapshots",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aTaskListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad A2A task-list request",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aRestErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks/{id}": {
+      "get": {
+        "summary": "Read one process-local A2A task snapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A2A task id"
+          },
+          {
+            "name": "historyLength",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 12
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stored A2A task",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aTask"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad A2A task request",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aRestErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "A2A task not found",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aRestErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks/{id}:cancel": {
+      "post": {
+        "summary": "Return the A2A task-not-cancelable error for local completed snapshots",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A2A task id"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Task cannot be canceled",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aRestErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "A2A task not found",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aRestErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks/{id}:subscribe": {
+      "get": {
+        "summary": "Return the A2A unsupported-operation error for local task subscription",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A2A task id"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Task subscription is not available",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aRestErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "A2A task not found",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aRestErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Return the A2A unsupported-operation error for local task subscription",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A2A task id"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Task subscription is not available",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aRestErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "A2A task not found",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aRestErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks/{id}/pushNotificationConfigs": {
+      "get": {
+        "summary": "Return the A2A push-notification-not-supported error",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A2A task id"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Push notifications are not supported",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aRestErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Return the A2A push-notification-not-supported error",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A2A task id"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Push notifications are not supported",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aRestErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Return the A2A push-notification-not-supported error",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A2A task id"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Push notifications are not supported",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aRestErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks/{id}/pushNotificationConfigs/{configId}": {
+      "get": {
+        "summary": "Return the A2A push-notification-not-supported error",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A2A task id"
+          },
+          {
+            "name": "configId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A2A push notification config id"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Push notifications are not supported",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aRestErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Return the A2A push-notification-not-supported error",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A2A task id"
+          },
+          {
+            "name": "configId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A2A push notification config id"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Push notifications are not supported",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aRestErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Return the A2A push-notification-not-supported error",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A2A task id"
+          },
+          {
+            "name": "configId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A2A push notification config id"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Push notifications are not supported",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aRestErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/extendedAgentCard": {
+      "get": {
+        "summary": "Return the extended A2A Agent Card for authenticated clients",
+        "responses": {
+          "200": {
+            "description": "Extended Agent Card",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCardResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad A2A version",
+            "content": {
+              "application/a2a+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aRestErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -710,6 +1538,9 @@
           "protocol": {
             "const": "a2a"
           },
+          "protocolVersion": {
+            "const": "1.0"
+          },
           "runtime": {
             "type": "string"
           },
@@ -720,13 +1551,29 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
+              "url": {
+                "type": "string"
+              },
               "organization": {
                 "type": "string"
               }
             },
             "required": [
+              "url",
               "organization"
             ]
+          },
+          "version": {
+            "type": "string"
+          },
+          "documentationUrl": {
+            "type": "string"
+          },
+          "supportedInterfaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/A2aAgentInterface"
+            }
           },
           "url": {
             "const": "/message:send"
@@ -736,6 +1583,19 @@
             "additionalProperties": false,
             "properties": {
               "streaming": {
+                "type": "boolean"
+              },
+              "pushNotifications": {
+                "type": "boolean"
+              },
+              "extensions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "extendedAgentCard": {
                 "type": "boolean"
               },
               "structuredArtifacts": {
@@ -757,10 +1617,56 @@
             },
             "required": [
               "streaming",
+              "pushNotifications",
+              "extensions",
+              "extendedAgentCard",
               "structuredArtifacts",
               "localBridge",
               "knowledgeSourceProtocols"
             ]
+          },
+          "defaultInputModes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "defaultOutputModes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/A2aAgentSkill"
+            }
+          },
+          "securitySchemes": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/A2aSecurityScheme"
+            }
+          },
+          "security": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/A2aSecurityRequirement"
+            }
+          },
+          "securityRequirements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/A2aSecurityRequirement"
+            }
+          },
+          "signatures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
           },
           "metadata": {
             "type": "object",
@@ -768,6 +1674,21 @@
             "properties": {
               "bridge": {
                 "const": "llmwiki-agent-bridge"
+              },
+              "protocolVersion": {
+                "const": "1.0"
+              },
+              "supportedProtocolVersions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "protocolVersionHeader": {
+                "const": "A2A-Version"
+              },
+              "preferredInterface": {
+                "$ref": "#/components/schemas/A2aAgentInterface"
               },
               "runtimeProfile": {
                 "enum": [
@@ -786,6 +1707,9 @@
                 "type": "boolean"
               },
               "hermesModelConfigured": {
+                "type": "boolean"
+              },
+              "bridgeAuthRequired": {
                 "type": "boolean"
               },
               "runtimeConnection": {
@@ -848,10 +1772,15 @@
             },
             "required": [
               "bridge",
+              "protocolVersion",
+              "supportedProtocolVersions",
+              "protocolVersionHeader",
+              "preferredInterface",
               "runtimeProfile",
               "runtimeAdapter",
               "modelConfigured",
               "hermesModelConfigured",
+              "bridgeAuthRequired",
               "sourcePolicy",
               "settingsUrl",
               "protocolSurface",
@@ -864,13 +1793,173 @@
           "name",
           "description",
           "protocol",
+          "protocolVersion",
           "runtime",
           "agentRuntime",
           "provider",
+          "version",
+          "supportedInterfaces",
           "url",
           "capabilities",
+          "defaultInputModes",
+          "defaultOutputModes",
+          "skills",
+          "securitySchemes",
+          "securityRequirements",
+          "signatures",
           "metadata"
         ]
+      },
+      "A2aAgentInterface": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "const": "/message:send"
+          },
+          "protocolBinding": {
+            "const": "HTTP+JSON"
+          },
+          "protocolVersion": {
+            "const": "1.0"
+          },
+          "tenant": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "protocolBinding",
+          "protocolVersion",
+          "tenant"
+        ]
+      },
+      "A2aAgentSkill": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "examples": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "inputModes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "outputModes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "security": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/A2aSecurityRequirement"
+            }
+          },
+          "securityRequirements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/A2aSecurityRequirement"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "tags",
+          "examples",
+          "inputModes",
+          "outputModes",
+          "securityRequirements"
+        ]
+      },
+      "A2aSecurityScheme": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "apiKeySecurityScheme": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "httpAuthSecurityScheme": {
+            "$ref": "#/components/schemas/A2aHttpAuthSecurityScheme"
+          },
+          "oauth2SecurityScheme": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "openIdConnectSecurityScheme": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "mtlsSecurityScheme": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "A2aHttpAuthSecurityScheme": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "scheme": {
+            "type": "string"
+          },
+          "bearerFormat": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "scheme"
+        ]
+      },
+      "A2aSecurityRequirement": {
+        "type": "object",
+        "properties": {
+          "schemes": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/A2aStringList"
+            }
+          }
+        }
+      },
+      "A2aStringList": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "list": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
       },
       "MessageSendEnvelope": {
         "type": "object",
@@ -1247,6 +2336,342 @@
           "status",
           "message",
           "artifacts"
+        ]
+      },
+      "A2aSendMessageResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "$ref": "#/components/schemas/A2aTask"
+          },
+          "message": {
+            "$ref": "#/components/schemas/A2aMessage"
+          }
+        }
+      },
+      "A2aTaskListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tasks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/A2aTask"
+            }
+          },
+          "nextPageToken": {
+            "type": "string"
+          },
+          "pageSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "totalSize": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "tasks",
+          "nextPageToken",
+          "pageSize",
+          "totalSize"
+        ]
+      },
+      "A2aStreamEvent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "task": {
+                "$ref": "#/components/schemas/A2aTask"
+              }
+            },
+            "required": [
+              "task"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "statusUpdate": {
+                "$ref": "#/components/schemas/A2aTaskStatusUpdate"
+              }
+            },
+            "required": [
+              "statusUpdate"
+            ]
+          }
+        ]
+      },
+      "A2aTaskStatusUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "taskId": {
+            "type": "string"
+          },
+          "contextId": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/A2aTaskStatus"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "taskId",
+          "contextId",
+          "status"
+        ]
+      },
+      "A2aRestErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/A2aRestErrorInfo"
+                }
+              }
+            },
+            "required": [
+              "code",
+              "status",
+              "message",
+              "details"
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "A2aRestErrorInfo": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "@type": {
+            "const": "type.googleapis.com/google.rpc.ErrorInfo"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "domain": {
+            "const": "a2a-protocol.org"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "@type",
+          "reason",
+          "domain"
+        ]
+      },
+      "A2aTask": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "contextId": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/A2aTaskStatus"
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/A2aArtifact"
+            }
+          },
+          "history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/A2aMessage"
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "id",
+          "contextId",
+          "status",
+          "artifacts",
+          "history"
+        ]
+      },
+      "A2aTaskStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "$ref": "#/components/schemas/A2aTaskState"
+          },
+          "message": {
+            "$ref": "#/components/schemas/A2aMessage"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "A2aTaskState": {
+        "enum": [
+          "TASK_STATE_SUBMITTED",
+          "TASK_STATE_WORKING",
+          "TASK_STATE_COMPLETED",
+          "TASK_STATE_FAILED",
+          "TASK_STATE_CANCELED",
+          "TASK_STATE_INPUT_REQUIRED",
+          "TASK_STATE_REJECTED",
+          "TASK_STATE_AUTH_REQUIRED"
+        ]
+      },
+      "A2aMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "messageId": {
+            "type": "string"
+          },
+          "contextId": {
+            "type": "string"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "ROLE_USER",
+              "ROLE_AGENT"
+            ]
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/A2aPart"
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "referenceTaskIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "messageId",
+          "contextId",
+          "taskId",
+          "role",
+          "parts",
+          "extensions",
+          "referenceTaskIds"
+        ]
+      },
+      "A2aArtifact": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "artifactId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/A2aPart"
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "artifactId",
+          "name",
+          "description",
+          "parts",
+          "extensions"
+        ]
+      },
+      "A2aPart": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "data": {},
+          "mediaType": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "filename": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mediaType"
         ]
       },
       "TaskStatusMessage": {
@@ -2926,6 +4351,16 @@
           "resultType": {
             "const": "complete"
           },
+          "ttlMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cacheScope": {
+            "enum": [
+              "private",
+              "public"
+            ]
+          },
           "supportedVersions": {
             "type": "array",
             "items": {
@@ -2981,6 +4416,8 @@
         },
         "required": [
           "resultType",
+          "ttlMs",
+          "cacheScope",
           "supportedVersions",
           "capabilities",
           "_meta"
@@ -2995,6 +4432,19 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "resultType": {
+            "const": "complete"
+          },
+          "ttlMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cacheScope": {
+            "enum": [
+              "private",
+              "public"
+            ]
+          },
           "serverInfo": {
             "type": "object",
             "additionalProperties": false,
@@ -3010,6 +4460,31 @@
               "name"
             ]
           },
+          "_meta": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "io.modelcontextprotocol/serverInfo": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "version"
+                ]
+              }
+            },
+            "required": [
+              "io.modelcontextprotocol/serverInfo"
+            ]
+          },
           "tools": {
             "type": "array",
             "items": {
@@ -3018,6 +4493,9 @@
           }
         },
         "required": [
+          "resultType",
+          "ttlMs",
+          "cacheScope",
           "tools"
         ]
       },
@@ -3055,6 +4533,9 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "resultType": {
+            "const": "complete"
+          },
           "content": {
             "type": "array",
             "items": {
@@ -3103,9 +4584,35 @@
           },
           "isError": {
             "type": "boolean"
+          },
+          "_meta": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "io.modelcontextprotocol/serverInfo": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "version"
+                ]
+              }
+            },
+            "required": [
+              "io.modelcontextprotocol/serverInfo"
+            ]
           }
         },
         "required": [
+          "resultType",
           "content",
           "structuredContent",
           "isError"

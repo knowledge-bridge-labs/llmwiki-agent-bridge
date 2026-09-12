@@ -22,7 +22,10 @@ path without regressing existing initialized clients.
   JSON-RPC endpoint.
 - Implement `server/discover` with a focused `DiscoverResult` that includes
   supported protocol versions, tools capability, and bridge server identity.
-- Keep existing `2025-06-18` and `2024-11-05` `initialize` behavior working.
+- Add conservative `resultType: "complete"` and private cache hints to modern
+  discovery/list results where they do not break existing clients.
+- Keep existing legacy `initialize` behavior working and accept the prior
+  official `2025-11-25` revision on the same compatibility path.
 - Keep `tools/list` and `tools/call` usable without session state.
 - Preserve existing request logging and diagnostic redaction boundaries when
   requests include modern `_meta`.
@@ -32,14 +35,17 @@ path without regressing existing initialized clients.
 - Do not claim complete MCP 2026-07-28 conformance.
 - Do not implement the full 2026-07-28 error taxonomy beyond the existing JSON-
   RPC surface needed for this slice.
-- Do not add protocol sessions, sticky routing, MRTR, caching controls, prompts,
-  resources, or extension negotiation.
-- Do not change source adapter behavior or runtime synthesis contracts.
+- Do not add protocol sessions, sticky routing, MRTR, active cache invalidation
+  controls, prompts, resources, or extension negotiation.
+- Do not change runtime synthesis contracts.
+- Do not replace the MCP source client with a full MCP SDK client; this slice
+  only preserves explicitly registered `/mcp/stream` endpoints and sends modern
+  request metadata headers on existing JSON-RPC tool calls.
 
 ## Requirements
 
-- `REQ-001`: `SUPPORTED_MCP_PROTOCOL_VERSIONS` includes `2026-07-28` and legacy
-  versions `2025-06-18` and `2024-11-05`.
+- `REQ-001`: `SUPPORTED_MCP_PROTOCOL_VERSIONS` includes `2026-07-28`,
+  `2025-11-25`, and legacy versions `2025-06-18` and `2024-11-05`.
 - `REQ-002`: Legacy `initialize` returns the requested supported version, so a
   `2026-07-28` initialize probe receives `protocolVersion: "2026-07-28"`
   without changing the response shape expected by existing tests.
@@ -53,6 +59,19 @@ path without regressing existing initialized clients.
   API keys, or local paths.
 - `REQ-006`: Contract docs describe this as a compatibility slice and avoid
   over-claiming full MCP 2026-07-28 support.
+- `REQ-007`: `server/discover` and `tools/list` include
+  `resultType: "complete"`, `ttlMs`, and `cacheScope: "private"` as additive
+  cache hints for modern clients.
+- `REQ-008`: `tools/call` includes additive `resultType: "complete"` and
+  response `_meta["io.modelcontextprotocol/serverInfo"]` without changing tool
+  structured content.
+- `REQ-009`: Registered MCP Knowledge Source URLs that already end with `/mcp`
+  or `/mcp/stream` are used as explicit endpoints. Base source URLs continue to
+  use the legacy `/mcp` fallback.
+- `REQ-010`: MCP Knowledge Source `tools/call` POSTs include
+  `Accept: application/json, text/event-stream`, `MCP-Protocol-Version:
+  2026-07-28`, `Mcp-Method: tools/call`, `Mcp-Name` for the selected source
+  tool, and protocol/client metadata under `params._meta`.
 
 ## Compatibility
 

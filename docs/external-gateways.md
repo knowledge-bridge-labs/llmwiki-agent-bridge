@@ -41,7 +41,8 @@ The bridge exposes a conservative MCP 2026-07-28 compatibility slice for the
 bridge endpoint:
 
 - `server/discover`
-- version advertising for `2026-07-28`, `2025-06-18`, and `2024-11-05`
+- version advertising for `2026-07-28`, `2025-11-25`, `2025-06-18`, and
+  `2024-11-05`
 - sessionless `tools/list`
 - sessionless `tools/call` for `llmwiki_agent_run` and read-only source tools
 
