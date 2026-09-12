@@ -83,6 +83,10 @@ Do not treat the bridge as a general gateway platform. It does not schedule
 containers, host arbitrary agents, manage cloud ingress, enforce tenancy, or
 replace the external gateway's security and deployment controls.
 
+For product-specific placement guides and configuration sketches, see
+[External Gateway Placement](./external-gateways.md) and
+[examples/gateways](../examples/gateways/README.md).
+
 ## Component Boundaries
 
 | Component | Boundary |

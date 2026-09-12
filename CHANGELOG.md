@@ -6,7 +6,19 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
-No unreleased changes.
+### Added
+
+- Positioned `llmwiki-agent-bridge` as the optional LLMWiki Knowledge Gateway
+  target or companion for evidence assembly, with explicit boundaries against
+  external gateway platforms and hosted runtime operations.
+- Added a conservative MCP `2026-07-28` compatibility slice around
+  `server/discover`, version advertising, and sessionless bridge tool calls.
+- Added additive gateway target registry metadata for bridge-managed Knowledge
+  Sources without renaming the existing source registry contract.
+- Added opt-in graph-guided bridge retrieval through `graphContext`, including
+  bounded graph-neighborhood expansion and summarized runtime prompt context.
+- Added external gateway placement documentation and configuration sketches for
+  Docker MCP Gateway, agentgateway, and AWS AgentCore Gateway.
 
 ## [0.4.0] - 2026-08-01
 
