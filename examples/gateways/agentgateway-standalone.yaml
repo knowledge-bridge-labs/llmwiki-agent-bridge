@@ -1,0 +1,32 @@
+# agentgateway standalone placement sketch.
+#
+# This file is not a tested production configuration. Verify the exact schema
+# and fields against the agentgateway version you deploy.
+#
+# Intended flow:
+#   MCP client -> agentgateway -> llmwiki-agent-bridge /mcp
+#
+# The bridge remains responsible for LLMWiki evidence assembly. agentgateway
+# remains responsible for ingress, auth, routing, policy, and operations.
+
+binds:
+  - port: 3000
+    listeners:
+      - routes:
+          - hostnames:
+              - "*"
+            policies:
+              # Add the auth/rate-limit/observability policies required by the
+              # operator environment.
+              cors:
+                allowOrigins:
+                  - "http://127.0.0.1:5173"
+            backends:
+              - mcp:
+                  targets:
+                    - name: llmwiki-agent-bridge
+                      mcp:
+                        host: http://127.0.0.1:8788/mcp
+                        # Modern MCP clients should validate server/discover
+                        # and sessionless tools/list/tools/call through the
+                        # gateway before this is used for shared traffic.

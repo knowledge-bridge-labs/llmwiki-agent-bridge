@@ -17,7 +17,7 @@ Gateway-compatible means the bridge can be called directly by local clients or
 placed behind an external agent/API gateway as a target or companion for
 LLMWiki evidence assembly. External gateways still own ingress, identity,
 policy, tenancy, deployment, scaling, network exposure, and operator controls.
-This package does not replace Docker, agentgateway, AWS AgentCore, API
+This package is not a substitute for Docker, agentgateway, AWS AgentCore, API
 gateways, runtime hosts, or deployment platforms.
 
 Use it when:
@@ -34,7 +34,7 @@ Use it when:
 Skip it when your agent or script can call `llmwiki-serve` directly and manage
 its own answer synthesis.
 
-[Quick Start](#quick-start) | [Choose a Path](#choose-a-path) | [Demo](https://knowledge-bridge-labs.github.io/llmwiki-docs/demo) | [Runtime Profiles](./docs/runtime-profiles.md) | [Message Contract](./docs/message-send-contract.md) | [OpenAPI](./docs/openapi.json) | [Integrations](./integrations/README.md) | [Examples](./examples/README.md) | [Docs portal](https://knowledge-bridge-labs.github.io/llmwiki-docs/) | [Contributing](./CONTRIBUTING.md) | [Security](./SECURITY.md) | [Support](./SUPPORT.md) | [Changelog](./CHANGELOG.md)
+[Quick Start](#quick-start) | [Choose a Path](#choose-a-path) | [Demo](https://knowledge-bridge-labs.github.io/llmwiki-docs/demo) | [Runtime Profiles](./docs/runtime-profiles.md) | [Message Contract](./docs/message-send-contract.md) | [External Gateways](./docs/external-gateways.md) | [OpenAPI](./docs/openapi.json) | [Integrations](./integrations/README.md) | [Examples](./examples/README.md) | [Docs portal](https://knowledge-bridge-labs.github.io/llmwiki-docs/) | [Contributing](./CONTRIBUTING.md) | [Security](./SECURITY.md) | [Support](./SUPPORT.md) | [Changelog](./CHANGELOG.md)
 
 > Public-preview note: npm install is available for
 > `llmwiki-agent-bridge@latest`; source checkout remains supported for local
@@ -73,6 +73,9 @@ Direct-client templates live in [integrations](./integrations/README.md). The
 bridge request and artifact contract is documented in
 [docs/message-send-contract.md](./docs/message-send-contract.md) and generated
 as [docs/openapi.json](./docs/openapi.json).
+External gateway placement notes and sketches live in
+[docs/external-gateways.md](./docs/external-gateways.md) and
+[examples/gateways](./examples/gateways/README.md).
 
 ## Component Boundaries
 
@@ -322,7 +325,9 @@ runtime; the stable integration target is the completed task plus the
 For complete payloads and local setup notes, use
 [examples](./examples/README.md), [runtime profiles](./docs/runtime-profiles.md),
 the [message contract](./docs/message-send-contract.md), and
-[client paths](./docs/client-paths.md).
+[client paths](./docs/client-paths.md). For external gateway placements, see
+[docs/external-gateways.md](./docs/external-gateways.md) and
+[examples/gateways](./examples/gateways/README.md).
 
 ## What It Does
 
@@ -607,6 +612,8 @@ responsible for ingress and policy and use `llmwiki-agent-bridge` as the
 LLMWiki evidence target behind it.
 
 - [Client path guide](./docs/client-paths.md)
+- [External gateway placement](./docs/external-gateways.md)
+- [Gateway examples](./examples/gateways/README.md)
 - [Integrations overview](./integrations/README.md)
 - [Codex skill example](./integrations/codex/skills/llmwiki-serve/SKILL.md)
 - [Claude Code command example](./integrations/claude-code/commands/llmwiki-query.md)

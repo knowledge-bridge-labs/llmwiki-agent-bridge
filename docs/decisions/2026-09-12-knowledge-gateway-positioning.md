@@ -35,7 +35,7 @@ Gateway-compatible means the bridge can be called directly by a local client or
 placed behind an external agent/API gateway as a target or companion service.
 The external gateway remains responsible for its own ingress, identity,
 authorization policy, deployment model, scaling, tenancy, cloud networking, and
-operator controls. The bridge does not replace Docker, agentgateway,
+operator controls. The bridge is not a substitute for Docker, agentgateway,
 AWS AgentCore, API gateways, runtime hosts, or deployment platforms.
 
 Keep adjacent component boundaries explicit:

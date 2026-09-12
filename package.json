@@ -34,6 +34,7 @@
     "bin/llmwiki-agent-bridge.mjs",
     "src/index.mjs",
     "docs/client-paths.md",
+    "docs/external-gateways.md",
     "docs/message-send-contract.md",
     "docs/openapi.json",
     "docs/release.md",

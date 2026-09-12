@@ -14,6 +14,11 @@ with citations, graph context, and trace steps. See
 [Message Send Contract](../docs/message-send-contract.md) for the full request,
 source descriptor, response, and failure shapes.
 
+External gateway placement sketches live in
+[examples/gateways](./gateways/README.md). Use them when Docker MCP Gateway,
+agentgateway, AWS AgentCore Gateway, or another operator-managed gateway should
+front the bridge as an LLMWiki evidence target.
+
 To try retrieval-mode forwarding against a source that advertises retrieval
 capabilities, add a `data.retrieval` object to the sample payload:
 
