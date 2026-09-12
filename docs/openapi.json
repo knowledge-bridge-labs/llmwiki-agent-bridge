@@ -943,6 +943,9 @@
           "retrievalGuidance": {
             "$ref": "#/components/schemas/RetrievalGuidance"
           },
+          "graphContext": {
+            "$ref": "#/components/schemas/GraphContextOptions"
+          },
           "knowledgeSources": {
             "type": "array",
             "items": {
@@ -1549,6 +1552,67 @@
           "exactIdentifiers",
           "fallbackModes"
         ]
+      },
+      "GraphContextOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "seedFrom": {
+            "type": "array",
+            "maxItems": 2,
+            "uniqueItems": true,
+            "default": [
+              "citations",
+              "graph"
+            ],
+            "items": {
+              "enum": [
+                "citations",
+                "graph"
+              ]
+            }
+          },
+          "depth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4,
+            "default": 1
+          },
+          "direction": {
+            "enum": [
+              "out",
+              "in",
+              "both"
+            ],
+            "default": "both"
+          },
+          "relations": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120,
+            "default": 40
+          },
+          "fallback": {
+            "enum": [
+              "omit",
+              "error"
+            ],
+            "default": "omit"
+          }
+        }
       },
       "RetrievalGuidanceFolderCard": {
         "type": "object",

@@ -45,6 +45,13 @@ const DEFAULT_GRAPH_TOOL_LIMIT = 120
 const MAX_GRAPH_TOOL_LIMIT = 500
 const DEFAULT_GRAPH_NEIGHBOR_DEPTH = 1
 const MAX_GRAPH_NEIGHBOR_DEPTH = 4
+const DEFAULT_GRAPH_CONTEXT_LIMIT = 40
+const MAX_GRAPH_CONTEXT_LIMIT = 120
+const MAX_GRAPH_CONTEXT_RELATIONS = 16
+const MAX_GRAPH_CONTEXT_RELATION_CHARS = 120
+const MAX_GRAPH_CONTEXT_SEEDS = 120
+const MAX_GRAPH_CONTEXT_SEED_CHARS = 512
+const MAX_GRAPH_CONTEXT_NODE_PREVIEW = 8
 const MAX_CITATION_DIGEST_ITEMS = 8
 const MAX_CITATION_DIGEST_SNIPPET_CHARS = 320
 const MAX_FALLBACK_CITATION_ANCHORS = 5
@@ -223,6 +230,10 @@ const RETRIEVAL_SEARCH_MODE_CAPABILITIES = {
 }
 const retrievalSearchModes = new Set(Object.keys(RETRIEVAL_SEARCH_MODE_CAPABILITIES))
 const retrievalFallbackModes = new Set(['lexical', 'none'])
+const graphContextSeedSourceModes = new Set(['citations', 'graph'])
+const graphContextDirections = new Set(['out', 'in', 'both'])
+const graphContextFallbackModes = new Set(['omit', 'error'])
+const graphContextKeys = new Set(['enabled', 'seedFrom', 'depth', 'direction', 'relations', 'limit', 'fallback'])
 const retrievalGuidanceOrientationSources = new Set(['authored', 'projection_extractive', 'none'])
 const retrievalGuidanceFallbackModes = ['literal', 'hybrid', 'vector']
 const retrievalCapabilitySet = new Set([
@@ -623,6 +634,7 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
           },
           retrieval: { $ref: '#/components/schemas/RetrievalIntent' },
           retrievalGuidance: { $ref: '#/components/schemas/RetrievalGuidance' },
+          graphContext: { $ref: '#/components/schemas/GraphContextOptions' },
           knowledgeSources: {
             type: 'array',
             items: { $ref: '#/components/schemas/KnowledgeSourceDescriptor' },
@@ -800,6 +812,7 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
         RetrievalIntent: retrievalIntentSchema(),
         RetrievalSearchOptions: retrievalSearchOptionsSchema(),
         RetrievalGuidance: retrievalGuidanceSchema(),
+        GraphContextOptions: graphContextInputSchema(),
         RetrievalGuidanceFolderCard: retrievalGuidanceFolderCardSchema(),
         RetrievalGuidancePageCard: retrievalGuidancePageCardSchema(),
         SettingsResponse: objectSchema({
@@ -2165,7 +2178,7 @@ async function handleBridgeRequest(request, response, config) {
 async function runA2aMessage(body, config, runContextInput = {}, auditDetails = null) {
   const runContext = normalizedRunContext(runContextInput)
   const diagnostics = []
-  const { query, sources, orchestrationMode, conversation, retrieval } = parseA2aRunRequest(body, config)
+  const { query, sources, orchestrationMode, conversation, retrieval, graphContext } = parseA2aRunRequest(body, config)
   const readySources = sources.filter((source) => isSelectedReadySource(source))
   const policyReadySources = readySources.filter((source) => isSelectedReadySource(source, config))
   recordA2aAuditDetails(auditDetails, {
@@ -2209,6 +2222,17 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
     })
     if (outcome.failure) sourceFailures.push(outcome.failure)
   }
+
+  const graphContextSummary = graphContext
+    ? await applyGraphContextExpansion({
+        sourceResults,
+        graphContext,
+        config,
+        runContext,
+        steps,
+        diagnostics,
+      })
+    : null
 
   const citations = dedupeCitations(sourceResults.flatMap((item) => item.result.citations))
   const graph = mergeGraphs(sourceResults.map((item) => item.result.graph).filter(Boolean))
@@ -2278,6 +2302,7 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
         citations,
         graph,
         sourceBundles,
+        graphContextSummary,
         config,
         runContext,
       })
@@ -2372,7 +2397,7 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
     route: MESSAGE_SEND_ROUTE,
     response: {
       statusCode: 200,
-      body: result,
+      body: bridgeResultIoLogResponseBody(result),
     },
   })
   return result
@@ -2456,6 +2481,305 @@ async function gatherSourceEvidence(source, query, config, runContext = {}, retr
       },
     }
   }
+}
+
+async function applyGraphContextExpansion({ sourceResults, graphContext, config, runContext, steps, diagnostics }) {
+  if (!sourceResults.length) return null
+
+  const outcomes = []
+  const allSources = sourceResults.map((item) => item.source)
+  for (const sourceResult of sourceResults) {
+    const outcome = await gatherGraphContextEvidence(sourceResult, graphContext, config, runContext, allSources)
+    if (outcome.steps.length) steps.push(...outcome.steps)
+    if (outcome.diagnostics.length) diagnostics.push(...outcome.diagnostics)
+
+    if (outcome.result) {
+      sourceResult.result = mergeGraphContextResult(sourceResult.result, outcome.result)
+    }
+
+    outcomes.push(outcome)
+
+    if (outcome.failure && graphContext.fallback === 'error') {
+      throw graphContextExpansionError(outcome, runContext, steps, diagnostics)
+    }
+  }
+
+  return graphContextPromptSummary(graphContext, outcomes)
+}
+
+async function gatherGraphContextEvidence(sourceResult, graphContext, config, runContext = {}, allSources = []) {
+  const { source, result } = sourceResult
+  const seeds = graphContextSeedIdsForSource(source, result, graphContext, allSources)
+  if (!seeds.length) {
+    return {
+      source,
+      seeds,
+      steps: [],
+      diagnostics: [],
+      skipped: 'no_seeds',
+    }
+  }
+
+  const graphStep = step({
+    id: `graph-context-${safeId(source.id)}`,
+    label: `Expand ${safeSourceLabel(source)} graph context`,
+    status: 'running',
+    connectionId: source.id,
+    toolName: `llmwiki_graph_neighbors__${safeId(source.id)}`,
+    detail: `Expanding bounded graph context from ${seeds.length} seed(s).`,
+    parentId: `tool-${safeId(source.id)}`,
+  })
+  const started = performance.now()
+
+  if (!sourceToolSupportsProtocol('llmwiki_graph_neighbors', source.protocol)) {
+    const diagnostic = graphContextDiagnostic(source, graphContext, seeds, {
+      reason: 'unsupported_protocol',
+      unsupported: true,
+    })
+    return {
+      source,
+      seeds,
+      steps: [{
+        ...graphStep,
+        status: 'error',
+        detail: `${safeSourceLabel(source)} graph context is not supported by this source protocol.`,
+        error: graphContextStepError(graphContext),
+        diagnostic,
+        latencyMs: Math.round(performance.now() - started),
+      }],
+      diagnostics: [diagnostic],
+      failure: {
+        source,
+        error: 'Graph context unsupported.',
+        diagnostic,
+        unsupported: true,
+      },
+    }
+  }
+
+  try {
+    const payload = await graphNeighborhoodKnowledgeSource(source, seeds, {
+      depth: graphContext.depth,
+      direction: graphContext.direction,
+      relations: graphContext.relations,
+      limit: graphContext.limit,
+      includeDrafts: false,
+      config,
+      runContext,
+    })
+    const neighborhood = normalizeGraphNeighborsToolResult(source, seeds, {
+      depth: graphContext.depth,
+      direction: graphContext.direction,
+      relations: graphContext.relations,
+      limit: graphContext.limit,
+      payload,
+      config,
+    })
+    return {
+      source,
+      seeds,
+      result: neighborhood,
+      steps: [{
+        ...graphStep,
+        status: 'done',
+        detail: graphContextStepDetail(neighborhood, seeds),
+        citationIds: neighborhood.citations.map((citation) => citation.id),
+        citationRefs: traceCitationRefs(neighborhood.citations),
+        latencyMs: Math.round(performance.now() - started),
+      }],
+      diagnostics: [],
+    }
+  } catch (error) {
+    config.logger.warn(redactedLogLine(`source ${safeId(source.id)} graph context unavailable`, error))
+    const diagnostic = graphContextDiagnostic(source, graphContext, seeds, { error })
+    return {
+      source,
+      seeds,
+      steps: [{
+        ...graphStep,
+        status: 'error',
+        detail: `${safeSourceLabel(source)} graph context could not be expanded; continuing without it.`,
+        error: graphContextStepError(graphContext),
+        diagnostic,
+        latencyMs: Math.round(performance.now() - started),
+      }],
+      diagnostics: [diagnostic],
+      failure: {
+        source,
+        error: 'Graph context expansion failed.',
+        diagnostic,
+        cause: error,
+      },
+    }
+  }
+}
+
+function mergeGraphContextResult(result, neighborhood) {
+  return {
+    ...result,
+    citations: dedupeCitations([
+      ...(result.citations || []),
+      ...(neighborhood.citations || []),
+    ]),
+    graph: mergeGraphs([
+      result.graph || emptyGraph(),
+      neighborhood.graph || emptyGraph(),
+    ]),
+  }
+}
+
+function graphContextExpansionError(outcome, runContext, steps, diagnostics) {
+  const cause = outcome.failure?.cause
+  const unsupported = Boolean(outcome.failure?.unsupported)
+  const sourcePolicy = cause ? isSourcePolicyError(cause) : false
+  const status = unsupported || sourcePolicy ? 400 : 502
+  return new HttpError(
+    status,
+    unsupported
+      ? 'Graph context expansion is not supported by one selected source.'
+      : 'Graph context expansion failed.',
+    unsupported ? 'graph_context_unsupported' : 'graph_context_failed',
+    {
+      requestId: runContext.requestId,
+      traceId: runContext.traceId,
+      steps,
+      diagnostics,
+    },
+  )
+}
+
+function graphContextStepError(graphContext) {
+  return graphContext.fallback === 'error' ? 'Graph context failed.' : 'Graph context omitted.'
+}
+
+function graphContextStepDetail(neighborhood, seeds) {
+  const graph = neighborhood.graph || emptyGraph()
+  return `Expanded graph context with ${seeds.length} seed(s), ${graph.nodes.length} node(s), ${graph.edges.length} edge(s), and ${neighborhood.citations.length} citation(s).`
+}
+
+function graphContextDiagnostic(source, graphContext, seeds, { error = null, reason = '', unsupported = false } = {}) {
+  const sourceLabel = safeSourceLabel(source)
+  const failureReason = reason || (unsupported ? 'unsupported_protocol' : 'source_error')
+  return diagnostic({
+    severity: graphContext.fallback === 'error' ? 'error' : 'warning',
+    scope: 'source',
+    phase: 'graph-context',
+    protocol: source.protocol,
+    subject: source.id,
+    retryable: error ? retryableFailure(error) : false,
+    redacted: true,
+    observations: [
+      ['reason', failureReason],
+      ['fallback', graphContext.fallback],
+      ['httpStatus', error ? httpStatusFromError(error) : undefined],
+      ['timeout', error && isTimeoutError(error) ? 'true' : undefined],
+      ['invalidJson', error && isInvalidJsonError(error) ? 'true' : undefined],
+      ['jsonRpcError', error && isJsonRpcError(error) ? 'true' : undefined],
+      ['sourceStatus', source.status],
+      ['seedCount', seeds.length],
+      ['depth', graphContext.depth],
+      ['direction', graphContext.direction],
+      ['relationCount', graphContext.relations.length],
+      ['limit', graphContext.limit],
+      ['redaction', 'source URL, query text, credentials, headers, upstream body, and graph payload omitted'],
+    ],
+    remediation: graphContext.fallback === 'error'
+      ? 'Use a Knowledge Source that supports graph neighborhoods, lower graphContext scope, or switch graphContext.fallback to omit.'
+      : 'The bridge will continue without graph-neighborhood expansion. Check source graph neighborhood support if this context is expected.',
+    message: `${sourceLabel} graph context could not be expanded by the bridge.`,
+  })
+}
+
+function graphContextPromptSummary(graphContext, outcomes) {
+  const sources = outcomes
+    .filter((outcome) => outcome.result)
+    .map((outcome) => graphContextSourcePromptSummary(outcome))
+    .filter(Boolean)
+  if (!sources.length) {
+    return removeUndefinedProperties({
+      enabled: true,
+      seedFrom: graphContext.seedFrom,
+      depth: graphContext.depth,
+      direction: graphContext.direction,
+      ...(graphContext.relations.length ? { relations: graphContext.relations } : {}),
+      limit: graphContext.limit,
+      fallback: graphContext.fallback,
+      sourceCount: 0,
+      seedCount: 0,
+      nodeCount: 0,
+      edgeCount: 0,
+      citationCount: 0,
+      omittedSourceCount: outcomes.filter((outcome) => outcome.failure || outcome.skipped).length || undefined,
+    })
+  }
+
+  return removeUndefinedProperties({
+    enabled: true,
+    seedFrom: graphContext.seedFrom,
+    depth: graphContext.depth,
+    direction: graphContext.direction,
+    ...(graphContext.relations.length ? { relations: graphContext.relations } : {}),
+    limit: graphContext.limit,
+    fallback: graphContext.fallback,
+    sourceCount: sources.length,
+    seedCount: sumNumbers(sources.map((source) => source.seedCount)),
+    nodeCount: sumNumbers(sources.map((source) => source.nodeCount)),
+    edgeCount: sumNumbers(sources.map((source) => source.edgeCount)),
+    citationCount: sumNumbers(sources.map((source) => source.citationCount)),
+    omittedSourceCount: outcomes.filter((outcome) => outcome.failure || outcome.skipped).length || undefined,
+    sources,
+  })
+}
+
+function graphContextSourcePromptSummary(outcome) {
+  const graph = outcome.result?.graph || emptyGraph()
+  const source = outcome.source
+  return removeUndefinedProperties({
+    id: safeTraceIdentifier(source.id),
+    name: safeTraceTitle(source.name),
+    protocol: source.protocol,
+    seedCount: outcome.seeds.length,
+    nodeCount: graph.nodes.length,
+    edgeCount: graph.edges.length,
+    citationCount: outcome.result.citations.length,
+    nodePreview: graphContextNodePreview(graph),
+  })
+}
+
+function graphContextNodePreview(graph) {
+  return readRecordArray(graph.nodes)
+    .slice(0, MAX_GRAPH_CONTEXT_NODE_PREVIEW)
+    .map((node) => removeUndefinedProperties({
+      id: safeTraceIdentifier(node.id),
+      label: safeTraceTitle(node.label),
+      kind: safeTraceIdentifier(node.kind),
+      path: safeTracePath(node.path),
+    }))
+    .filter((node) => Object.keys(node).length)
+}
+
+function graphContextSeedIdsForSource(source, result, graphContext, allSources = []) {
+  const requested = []
+  if (graphContext.seedFrom.includes('citations')) {
+    requested.push(...readRecordArray(result.citations).map((citation) => citation.id))
+  }
+  if (graphContext.seedFrom.includes('graph')) {
+    requested.push(...readRecordArray(result.graph?.nodes).map((node) => node.id))
+  }
+
+  const sourcePrefixes = allSources.map((item) => `${item.id}:`)
+  return graphNeighborNodeIdsForSource(source, requested, sourcePrefixes)
+    .map(safeGraphContextSeedId)
+    .filter(Boolean)
+    .slice(0, Math.min(graphContext.limit, MAX_GRAPH_CONTEXT_SEEDS))
+}
+
+function safeGraphContextSeedId(value) {
+  const text = readStringValue(value).trim()
+  if (!text || unicodeScalarLength(text) > MAX_GRAPH_CONTEXT_SEED_CHARS) return ''
+  if (looksLikeAbsoluteLocalPath(text) || text.includes('\\')) return ''
+  if (text.includes('://') || text.includes('@') || text.includes('?') || text.includes('#')) return ''
+  return text
 }
 
 async function mapWithConcurrency(items, concurrency, mapper) {
@@ -2671,6 +2995,7 @@ function llmwikiAgentRunToolDescriptor() {
         },
         retrieval: retrievalIntentInputSchema(),
         retrievalGuidance: retrievalGuidanceInputSchema(),
+        graphContext: graphContextInputSchema(),
         knowledgeSources: {
           type: 'array',
           items: knowledgeSourceInputSchema(),
@@ -2877,6 +3202,32 @@ function retrievalIntentInputSchema() {
           },
         },
       },
+    },
+  }
+}
+
+function graphContextInputSchema() {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      enabled: { type: 'boolean', default: false },
+      seedFrom: {
+        type: 'array',
+        maxItems: graphContextSeedSourceModes.size,
+        uniqueItems: true,
+        default: [...graphContextSeedSourceModes],
+        items: { enum: [...graphContextSeedSourceModes] },
+      },
+      depth: { type: 'integer', minimum: 1, maximum: MAX_GRAPH_NEIGHBOR_DEPTH, default: DEFAULT_GRAPH_NEIGHBOR_DEPTH },
+      direction: { enum: [...graphContextDirections], default: 'both' },
+      relations: {
+        type: 'array',
+        maxItems: MAX_GRAPH_CONTEXT_RELATIONS,
+        items: { type: 'string', minLength: 1, maxLength: MAX_GRAPH_CONTEXT_RELATION_CHARS },
+      },
+      limit: { type: 'integer', minimum: 1, maximum: MAX_GRAPH_CONTEXT_LIMIT, default: DEFAULT_GRAPH_CONTEXT_LIMIT },
+      fallback: { enum: [...graphContextFallbackModes], default: 'omit' },
     },
   }
 }
@@ -3475,7 +3826,10 @@ async function graphNeighborhoodKnowledgeSource(source, nodeIds, { depth, direct
       limit,
       include_drafts: includeDrafts,
     })
-    return fetchKnowledgeSourceJson(url, { method: 'GET' }, 'llmwiki-http graph neighborhood', config, ioLogSourceContext(source, runContext, 'llmwiki-http graph-neighborhood'))
+    return fetchKnowledgeSourceJson(url, { method: 'GET' }, 'llmwiki-http graph neighborhood', config, {
+      ...ioLogSourceContext(source, runContext, 'llmwiki-http graph-neighborhood'),
+      responseBody: graphNeighborhoodIoLogResponseBody,
+    })
   }
 
   if (source.protocol === 'mcp') {
@@ -3487,7 +3841,11 @@ async function graphNeighborhoodKnowledgeSource(source, nodeIds, { depth, direct
       relations,
       limit,
       include_drafts: includeDrafts,
-    }, config, runContext)
+    }, config, runContext, {
+      ioLogContext: {
+        responseBody: graphNeighborhoodIoLogResponseBody,
+      },
+    })
   }
 
   throw new Error(`Unsupported Knowledge Source protocol for graph neighbors: ${source.protocol}`)
@@ -3825,13 +4183,16 @@ async function queryLlmwikiHttpSource(source, query, config, runContext = {}, re
   return mergeSearchResultsIntoKnowledgePayload(primaryPayload, searchResults)
 }
 
-async function callMcpTool(source, name, args, config, runContext = {}) {
+async function callMcpTool(source, name, args, config, runContext = {}, options = {}) {
   const envelope = await postKnowledgeSourceJson(mcpEndpointUrl(source.url), {
     jsonrpc: '2.0',
     id: ++mcpRequestId,
     method: 'tools/call',
     params: { name, arguments: args },
-  }, `mcp ${name}`, config, ioLogSourceContext(source, runContext, `mcp ${name}`))
+  }, `mcp ${name}`, config, {
+    ...ioLogSourceContext(source, runContext, `mcp ${name}`),
+    ...(asRecord(options.ioLogContext) || {}),
+  })
   const error = asRecord(envelope.error)
   if (error) throw new Error('MCP tool returned a JSON-RPC error.')
   const result = asRecord(envelope.result)
@@ -3957,10 +4318,10 @@ function hasValidCitationAnchor(answer, citations) {
   return false
 }
 
-async function callHermesChatCompletions({ query, conversation, sourceResults, sourceFailures, citations, graph, config, runContext = {} }) {
+async function callHermesChatCompletions({ query, conversation, sourceResults, sourceFailures, citations, graph, graphContextSummary, config, runContext = {} }) {
   const body = {
     ...(config.hermesModel ? { model: config.hermesModel } : {}),
-    messages: hermesMessages({ query, conversation, sourceResults, sourceFailures, citations, graph }),
+    messages: hermesMessages({ query, conversation, sourceResults, sourceFailures, citations, graph, graphContextSummary }),
     temperature: 0.2,
     stream: false,
   }
@@ -4006,8 +4367,8 @@ function runtimeAdapterImplementation(config) {
   return typeof adapter === 'function' ? adapter : null
 }
 
-function runtimeAdapterRequest({ query, conversation, sourceResults, sourceFailures, citations, graph, sourceBundles = [], config, runContext = {} }) {
-  const messages = hermesMessages({ query, conversation, sourceResults, sourceFailures, citations, graph })
+function runtimeAdapterRequest({ query, conversation, sourceResults, sourceFailures, citations, graph, sourceBundles = [], graphContextSummary, config, runContext = {} }) {
+  const messages = hermesMessages({ query, conversation, sourceResults, sourceFailures, citations, graph, graphContextSummary })
   return {
     adapter: config.runtimeAdapter,
     profile: config.runtimeProfile,
@@ -4020,6 +4381,7 @@ function runtimeAdapterRequest({ query, conversation, sourceResults, sourceFailu
     sourceFailures,
     citations,
     graph,
+    ...(graphContextSummary ? { graphContext: graphContextSummary } : {}),
     sourceBundles,
     messages,
     prompt: runtimePromptFromMessages(messages),
@@ -4461,7 +4823,7 @@ function renderEvidenceBundleForPrompt(evidenceBundle) {
   return JSON.stringify(evidenceBundle)
 }
 
-function hermesMessages({ query, conversation = emptyConversationContext(), sourceResults, sourceFailures, citations, graph }) {
+function hermesMessages({ query, conversation = emptyConversationContext(), sourceResults, sourceFailures, citations, graph, graphContextSummary = null }) {
   const sourceCorpusSummaries = sourceResults.map(({ source, result }) => sourceCorpusSummary(source, result))
   const mergedCorpusSummary = mergeCorpusSummaries(sourceCorpusSummaries)
   const citationIndexById = new Map(citations.map((citation, index) => [citation.id, index + 1]))
@@ -4476,6 +4838,7 @@ function hermesMessages({ query, conversation = emptyConversationContext(), sour
     ...(runtimeConversationContext ? { conversationContext: runtimeConversationContext } : {}),
     citationDigest: rankedCitationDigest(query, citations),
     citations,
+    ...(graphContextSummary ? { graphContext: graphContextSummary } : {}),
     sources: sourceResults.map(({ result }, index) => ({
       ...sourceCorpusSummaries[index],
       orientation: result.orientation,
@@ -5860,6 +6223,12 @@ function validateMessageSendRetrievalForIoLog(body) {
   if (Object.hasOwn(data, 'retrievalGuidance')) {
     parsePublicRetrievalGuidance(data.retrievalGuidance, 'data.retrievalGuidance')
   }
+  const graphContextValue = Object.hasOwn(data, 'graphContext')
+    ? data.graphContext
+    : Object.hasOwn(envelope || {}, 'graphContext')
+      ? envelope.graphContext
+      : undefined
+  parseGraphContextOptions(graphContextValue, 'data.graphContext')
 }
 
 function parseRetrievalIntent(value, fieldPath = 'retrieval', options = {}) {
@@ -5931,6 +6300,107 @@ function parseRetrievalSearchOptions(value, fieldPath, options = {}) {
   })
 }
 
+function parseGraphContextOptions(value, fieldPath = 'graphContext') {
+  if (value === undefined || value === null || value === false) return null
+  const options = asRecord(value)
+  if (!options) {
+    throw invalidGraphContext(`${fieldPath} must be an object when graph context is enabled.`)
+  }
+
+  for (const key of Object.keys(options)) {
+    if (!graphContextKeys.has(key)) {
+      throw invalidGraphContext(`${fieldPath} contains unsupported field: ${safeRetrievalFieldName(key)}.`)
+    }
+  }
+
+  const enabled = readBoolean(options, 'enabled') ?? false
+  if (!enabled) return null
+
+  return {
+    enabled: true,
+    seedFrom: graphContextSeedFrom(options.seedFrom, `${fieldPath}.seedFrom`),
+    depth: graphContextBoundedInteger(options.depth, `${fieldPath}.depth`, DEFAULT_GRAPH_NEIGHBOR_DEPTH, MAX_GRAPH_NEIGHBOR_DEPTH),
+    direction: graphContextDirection(options.direction, `${fieldPath}.direction`),
+    relations: graphContextRelations(options.relations, `${fieldPath}.relations`),
+    limit: graphContextBoundedInteger(options.limit, `${fieldPath}.limit`, DEFAULT_GRAPH_CONTEXT_LIMIT, MAX_GRAPH_CONTEXT_LIMIT),
+    fallback: graphContextFallback(options.fallback, `${fieldPath}.fallback`),
+  }
+}
+
+function graphContextSeedFrom(value, fieldPath) {
+  if (value === undefined) return [...graphContextSeedSourceModes]
+  if (!Array.isArray(value)) {
+    throw invalidGraphContext(`${fieldPath} must be an array.`)
+  }
+  if (!value.length || value.length > graphContextSeedSourceModes.size) {
+    throw invalidGraphContext(`${fieldPath} must contain 1 to ${graphContextSeedSourceModes.size} item(s).`)
+  }
+  const seen = new Set()
+  return value.map((item, index) => {
+    if (typeof item !== 'string' || !graphContextSeedSourceModes.has(item)) {
+      throw invalidGraphContext(`${fieldPath}[${index}] must be one of: ${[...graphContextSeedSourceModes].join(', ')}.`)
+    }
+    if (seen.has(item)) {
+      throw invalidGraphContext(`${fieldPath} must contain unique values.`)
+    }
+    seen.add(item)
+    return item
+  })
+}
+
+function graphContextDirection(value, fieldPath) {
+  if (value === undefined) return 'both'
+  if (typeof value !== 'string' || !graphContextDirections.has(value)) {
+    throw invalidGraphContext(`${fieldPath} must be one of: ${[...graphContextDirections].join(', ')}.`)
+  }
+  return value
+}
+
+function graphContextFallback(value, fieldPath) {
+  if (value === undefined) return 'omit'
+  if (typeof value !== 'string' || !graphContextFallbackModes.has(value)) {
+    throw invalidGraphContext(`${fieldPath} must be one of: ${[...graphContextFallbackModes].join(', ')}.`)
+  }
+  return value
+}
+
+function graphContextRelations(value, fieldPath) {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) {
+    throw invalidGraphContext(`${fieldPath} must be an array.`)
+  }
+  if (value.length > MAX_GRAPH_CONTEXT_RELATIONS) {
+    throw invalidGraphContext(`${fieldPath} must contain at most ${MAX_GRAPH_CONTEXT_RELATIONS} item(s).`)
+  }
+  const seen = new Set()
+  const relations = []
+  value.forEach((item, index) => {
+    if (typeof item !== 'string') {
+      throw invalidGraphContext(`${fieldPath}[${index}] must be a string.`)
+    }
+    const relation = item.trim()
+    if (!relation) throw invalidGraphContext(`${fieldPath}[${index}] must not be empty.`)
+    if (unicodeScalarLength(relation) > MAX_GRAPH_CONTEXT_RELATION_CHARS) {
+      throw invalidGraphContext(`${fieldPath}[${index}] must be ${MAX_GRAPH_CONTEXT_RELATION_CHARS} character(s) or fewer.`)
+    }
+    if (!safeGraphContextSeedId(relation)) {
+      throw invalidGraphContext(`${fieldPath}[${index}] must not be a URL, local path, credential-shaped value, query string, or fragment.`)
+    }
+    if (seen.has(relation)) return
+    seen.add(relation)
+    relations.push(relation)
+  })
+  return relations
+}
+
+function graphContextBoundedInteger(value, fieldPath, defaultValue, maxValue) {
+  if (value === undefined) return defaultValue
+  if (!Number.isInteger(value)) {
+    throw invalidGraphContext(`${fieldPath} must be an integer.`)
+  }
+  return Math.max(1, Math.min(maxValue, value))
+}
+
 function retrievalBoundedInteger(value, fieldPath, maxValue) {
   if (value === undefined) return undefined
   if (!Number.isInteger(value) || value < 1 || value > maxValue) {
@@ -5998,6 +6468,10 @@ function invalidRetrievalGuidance(message) {
   return new HttpError(400, message, 'invalid_retrieval_guidance')
 }
 
+function invalidGraphContext(message) {
+  return new HttpError(400, message, 'invalid_graph_context')
+}
+
 function safeRetrievalFieldName(value) {
   if (isUnsafeRetrievalIoKey(value) || isCredentialLikeKey(value) || isUrlLikeKey(value)) return 'sensitive'
   const text = String(value || '').replace(/[^A-Za-z0-9_.-]+/g, '_').slice(0, 80)
@@ -6017,6 +6491,12 @@ function parseA2aRunRequest(body, config) {
   const retrievalGuidance = Object.hasOwn(data, 'retrievalGuidance')
     ? parsePublicRetrievalGuidance(data.retrievalGuidance, 'data.retrievalGuidance')
     : undefined
+  const graphContextValue = Object.hasOwn(data, 'graphContext')
+    ? data.graphContext
+    : Object.hasOwn(envelope, 'graphContext')
+      ? envelope.graphContext
+      : undefined
+  const graphContext = parseGraphContextOptions(graphContextValue, 'data.graphContext')
   const conversation = normalizeConversationPayload(data, envelope, query, a2aMessage)
 
   const sourceValue = data.knowledgeSources ?? data.knowledge_sources
@@ -6024,7 +6504,7 @@ function parseA2aRunRequest(body, config) {
   const rawSources = requestSuppliesSources ? sourceValue : config.registeredSources
   const sources = normalizeKnowledgeSourceDescriptors(rawSources)
 
-  return { query, sources, orchestrationMode, conversation, retrieval, retrievalGuidance }
+  return { query, sources, orchestrationMode, conversation, retrieval, retrievalGuidance, graphContext }
 }
 
 function normalizeConversationPayload(data, envelope, query, a2aMessage = null) {
@@ -9860,7 +10340,7 @@ async function fetchJson(url, init, label, config, ioLogContext = {}) {
       response: {
         statusCode: response.status,
         ok: response.ok,
-        body: parsed.validJson ? parsed.value : { text: responseText },
+        body: ioLogResponseBody(parsed, responseText, ioLogContext),
       },
       durationMs: Math.round(performance.now() - started),
     })
@@ -9886,6 +10366,64 @@ async function fetchJson(url, init, label, config, ioLogContext = {}) {
     })
     throw error
   }
+}
+
+function ioLogResponseBody(parsed, responseText, ioLogContext = {}) {
+  if (ioLogContext.responseBody === false) return undefined
+  if (typeof ioLogContext.responseBody === 'function') {
+    return ioLogContext.responseBody(parsed.validJson ? parsed.value : { text: responseText })
+  }
+  return parsed.validJson ? parsed.value : { text: responseText }
+}
+
+function bridgeResultIoLogResponseBody(result) {
+  const artifact = extractLlmwikiAgentResult(result)
+  const graph = asRecord(artifact?.graph) || emptyGraph()
+  return removeUndefinedProperties({
+    status: readString(asRecord(result?.status) || {}, 'state'),
+    artifactCount: Array.isArray(result?.artifacts) ? result.artifacts.length : undefined,
+    answerPresent: Boolean(artifact?.answer),
+    orchestrationMode: artifact?.orchestrationMode,
+    citationCount: Array.isArray(artifact?.citations) ? artifact.citations.length : undefined,
+    graphNodeCount: Array.isArray(graph.nodes) ? graph.nodes.length : undefined,
+    graphEdgeCount: Array.isArray(graph.edges) ? graph.edges.length : undefined,
+    sourceBundleCount: Array.isArray(artifact?.sourceBundles) ? artifact.sourceBundles.length : undefined,
+    stepCount: Array.isArray(artifact?.steps) ? artifact.steps.length : undefined,
+    diagnosticCount: Array.isArray(artifact?.diagnostics) ? artifact.diagnostics.length : undefined,
+    responseBodyOmitted: true,
+    graphPayloadOmitted: true,
+    sourceBundlesOmitted: true,
+    redacted: true,
+  })
+}
+
+function graphNeighborhoodIoLogResponseBody(value) {
+  const payload = graphNeighborhoodPayloadForIoLog(value)
+  const graph = graphFromKnowledgePayload(payload) || emptyGraph()
+  return {
+    graphNeighborhood: {
+      nodeCount: graph.nodes.length,
+      edgeCount: graph.edges.length,
+      citationCount: [
+        ...readRecordArray(payload.evidence),
+        ...readRecordArray(payload.citations),
+      ].length,
+    },
+    responseBodyOmitted: true,
+    redacted: true,
+  }
+}
+
+function graphNeighborhoodPayloadForIoLog(value) {
+  const envelope = asRecord(value)
+  const result = asRecord(envelope?.result)
+  const structuredContent = asRecord(result?.structuredContent) || asRecord(result?.structured_content)
+  return asRecord(structuredContent?.llmwiki_graph_neighbors)
+    || structuredContent
+    || asRecord(result?.data)
+    || extractRecordFromParts(result?.content)
+    || envelope
+    || {}
 }
 
 function jsonBodyFromFetchInit(init) {
