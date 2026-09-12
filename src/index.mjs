@@ -211,6 +211,9 @@ const RETRIEVAL_GUIDANCE_SCHEMA_VERSION = 'llmwiki.retrieval_guidance.v1'
 const RETRIEVAL_CAPABILITY_V1 = 'llmwiki_retrieval_v1'
 const GUIDED_LEXICAL_CAPABILITY_V1 = 'llmwiki_agent_guided_lexical_v1'
 const A2A_RETRIEVAL_CAPABILITIES = Symbol('llmwiki.a2aRetrievalCapabilities')
+const GATEWAY_TARGET_KIND = 'knowledge-source'
+const GATEWAY_REGISTRY_ROLE = 'gateway-target'
+const GATEWAY_ID_NAMESPACE = 'gateway-target'
 const RETRIEVAL_GUIDANCE_CONTENT_TRUST = 'untrusted_source_evidence'
 const RETRIEVAL_SEARCH_MODE_CAPABILITIES = {
   lexical: 'llmwiki_search_mode_lexical',
@@ -679,20 +682,47 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
         },
         KnowledgeSourceDescriptor: objectSchema({
           id: { type: 'string' },
+          targetId: { type: 'string' },
+          targetKind: { const: GATEWAY_TARGET_KIND },
+          registryRole: { const: GATEWAY_REGISTRY_ROLE },
+          idNamespace: { const: GATEWAY_ID_NAMESPACE },
           name: { type: 'string' },
           title: { type: 'string' },
           description: { type: 'string' },
           protocol: { enum: ['llmwiki-http', 'mcp', 'a2a'] },
           status: { type: 'string' },
           url: { type: 'string', format: 'uri' },
+          endpoint: { $ref: '#/components/schemas/GatewayEndpoint' },
           selected: { type: 'boolean' },
           capabilities: {
             type: 'array',
             items: { type: 'string' },
           },
+          capabilityBasis: { enum: ['descriptor', 'source-bundle', 'manifest', 'llmwiki_source_bundle', 'agent-card'] },
+          retrievalModes: {
+            type: 'array',
+            items: { enum: ['lexical', 'literal', 'vector', 'hybrid'] },
+          },
+          sourceTools: {
+            type: 'array',
+            items: {
+              enum: [
+                'llmwiki_context',
+                'llmwiki_search',
+                'llmwiki_read',
+                'llmwiki_graph',
+                'llmwiki_graph_neighbors',
+                'llmwiki_source_bundle',
+              ],
+            },
+          },
           adapter: { type: 'string' },
           implementation: { type: 'string' },
+          sourceId: { type: 'string' },
           bundleId: { type: 'string' },
+          projection: { $ref: '#/components/schemas/GatewayProjectionMetadata' },
+          graph: { $ref: '#/components/schemas/GatewayGraphMetadata' },
+          sourceRefCount: { type: 'number' },
           pageCount: { type: 'number' },
           approvedPageCount: { type: 'number' },
           root: { type: 'string' },
@@ -938,6 +968,10 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
         }, ['schemaVersion', 'generatedAt', 'healthBasis', 'sources', 'registeredCount', 'selectedCount', 'readyCount', 'unavailableCount', 'warningCount', 'warnings']),
         RegistrySourceSummary: objectSchema({
           id: { type: 'string' },
+          targetId: { type: 'string' },
+          targetKind: { const: GATEWAY_TARGET_KIND },
+          registryRole: { const: GATEWAY_REGISTRY_ROLE },
+          idNamespace: { const: GATEWAY_ID_NAMESPACE },
           name: { type: 'string' },
           title: { type: 'string' },
           description: { type: 'string' },
@@ -945,18 +979,65 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
           status: { type: 'string' },
           selected: { type: 'boolean' },
           url: { type: 'string' },
+          endpoint: { $ref: '#/components/schemas/GatewayEndpoint' },
           readiness: { $ref: '#/components/schemas/McpSourceReadiness' },
           health: { $ref: '#/components/schemas/SourceHealth' },
           capabilities: { type: 'array', items: { type: 'string' } },
+          capabilityBasis: { enum: ['descriptor', 'source-bundle', 'manifest', 'llmwiki_source_bundle', 'agent-card'] },
+          retrievalModes: {
+            type: 'array',
+            items: { enum: ['lexical', 'literal', 'vector', 'hybrid'] },
+          },
+          sourceTools: {
+            type: 'array',
+            items: {
+              enum: [
+                'llmwiki_context',
+                'llmwiki_search',
+                'llmwiki_read',
+                'llmwiki_graph',
+                'llmwiki_graph_neighbors',
+                'llmwiki_source_bundle',
+              ],
+            },
+          },
           adapter: { type: 'string' },
           implementation: { type: 'string' },
+          sourceId: { type: 'string' },
           bundleId: { type: 'string' },
+          projection: { $ref: '#/components/schemas/GatewayProjectionMetadata' },
+          graph: { $ref: '#/components/schemas/GatewayGraphMetadata' },
+          sourceRefCount: { type: 'number' },
           pageCount: { type: 'number' },
           approvedPageCount: { type: 'number' },
           root: { type: 'string' },
           rootLabel: { type: 'string' },
           rootRedacted: { type: 'boolean' },
         }, ['id', 'name', 'protocol', 'status', 'selected', 'url', 'health']),
+        GatewayEndpoint: objectSchema({
+          protocol: { enum: ['llmwiki-http', 'mcp', 'a2a'] },
+          configured: { type: 'boolean' },
+          redacted: { type: 'boolean' },
+          redactedUrl: { type: 'string' },
+          origin: { type: 'string' },
+          policyBasis: { enum: ['settings_descriptor', 'selection', 'last_known_status', 'descriptor', 'bridge_policy', 'last_known_status_bridge_policy'] },
+          probeBasis: { enum: ['selection', 'last_known_status', 'descriptor', 'bridge_policy', 'last_known_status_bridge_policy', 'live_probe'] },
+          lastCheckedAt: { type: 'string', format: 'date-time' },
+          fetchAllowed: { type: 'boolean' },
+        }, ['protocol', 'configured', 'redacted']),
+        GatewayProjectionMetadata: objectSchema({
+          signature: { type: 'string' },
+          pageCount: { type: 'number' },
+          approvedPageCount: { type: 'number' },
+          graphNodeCount: { type: 'number' },
+          graphEdgeCount: { type: 'number' },
+          sourceRefCount: { type: 'number' },
+        }),
+        GatewayGraphMetadata: objectSchema({
+          available: { type: 'boolean' },
+          nodeCount: { type: 'number' },
+          edgeCount: { type: 'number' },
+        }, ['available']),
         SourceHealth: objectSchema({
           ok: { type: 'boolean' },
           basis: { enum: ['selection', 'last_known_status', 'descriptor', 'bridge_policy', 'last_known_status_bridge_policy', 'live_probe'] },
@@ -1124,20 +1205,47 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
         }, ['sources', 'totalSourceCount', 'selectedSourceCount', 'readySourceCount', 'unavailableSourceCount']),
         McpSourceSummary: objectSchema({
           id: { type: 'string' },
+          targetId: { type: 'string' },
+          targetKind: { const: GATEWAY_TARGET_KIND },
+          registryRole: { const: GATEWAY_REGISTRY_ROLE },
+          idNamespace: { const: GATEWAY_ID_NAMESPACE },
           name: { type: 'string' },
           description: { type: 'string' },
           protocol: { enum: ['llmwiki-http', 'mcp', 'a2a'] },
           status: { type: 'string' },
           selected: { type: 'boolean' },
           url: { type: 'string' },
+          endpoint: { $ref: '#/components/schemas/GatewayEndpoint' },
           readiness: { $ref: '#/components/schemas/McpSourceReadiness' },
           capabilities: {
             type: 'array',
             items: { type: 'string' },
           },
+          capabilityBasis: { enum: ['descriptor', 'source-bundle', 'manifest', 'llmwiki_source_bundle', 'agent-card'] },
+          retrievalModes: {
+            type: 'array',
+            items: { enum: ['lexical', 'literal', 'vector', 'hybrid'] },
+          },
+          sourceTools: {
+            type: 'array',
+            items: {
+              enum: [
+                'llmwiki_context',
+                'llmwiki_search',
+                'llmwiki_read',
+                'llmwiki_graph',
+                'llmwiki_graph_neighbors',
+                'llmwiki_source_bundle',
+              ],
+            },
+          },
           adapter: { type: 'string' },
           implementation: { type: 'string' },
+          sourceId: { type: 'string' },
           bundleId: { type: 'string' },
+          projection: { $ref: '#/components/schemas/GatewayProjectionMetadata' },
+          graph: { $ref: '#/components/schemas/GatewayGraphMetadata' },
+          sourceRefCount: { type: 'number' },
           pageCount: { type: 'number' },
           approvedPageCount: { type: 'number' },
           rootLabel: { type: 'string' },
@@ -3410,6 +3518,7 @@ function graphNeighborRelations(args) {
 }
 
 function knowledgeSourceToolSummary(source, config = null) {
+  const readiness = knowledgeSourceReadiness(source, config)
   return removeUndefinedProperties({
     id: source.id,
     name: source.name,
@@ -3418,10 +3527,12 @@ function knowledgeSourceToolSummary(source, config = null) {
     status: source.status,
     selected: source.selected !== false,
     url: source.url,
-    readiness: knowledgeSourceReadiness(source, config),
+    readiness,
     capabilities: source.capabilities,
+    ...gatewayTargetOverlay(source, config, { readiness }),
     adapter: source.adapter,
     implementation: source.implementation,
+    sourceId: source.sourceId,
     bundleId: source.bundleId,
     pageCount: source.pageCount,
     approvedPageCount: source.approvedPageCount,
@@ -6120,8 +6231,33 @@ function conversationRuntimeContextForPrompt(conversation) {
 }
 
 function normalizeKnowledgeSourceDescriptors(rawSources) {
-  return readRecordArray(rawSources).map((source, index) => ({
-    id: readString(source, 'id') || readString(source, 'source_id') || readString(source, 'sourceId') || `source-${index + 1}`,
+  return readRecordArray(rawSources).map(normalizeKnowledgeSourceDescriptor)
+}
+
+function normalizeKnowledgeSourceDescriptor(source, index) {
+  const projection = descriptorProjectionMetadata(source)
+  const graphRecord = asRecord(source.graph)
+  const id = readString(source, 'id')
+    || readString(source, 'targetId')
+    || readString(source, 'source_id')
+    || readString(source, 'sourceId')
+    || `source-${index + 1}`
+  const graphNodeCount = readNumber(source, 'graphNodeCount')
+    ?? readNumber(source, 'graph_node_count')
+    ?? readNumber(graphRecord, 'nodeCount')
+    ?? readNumber(graphRecord, 'node_count')
+    ?? readNumber(projection, 'graphNodeCount')
+  const graphEdgeCount = readNumber(source, 'graphEdgeCount')
+    ?? readNumber(source, 'graph_edge_count')
+    ?? readNumber(graphRecord, 'edgeCount')
+    ?? readNumber(graphRecord, 'edge_count')
+    ?? readNumber(projection, 'graphEdgeCount')
+  const sourceRefCount = readNumber(source, 'sourceRefCount')
+    ?? readNumber(source, 'source_ref_count')
+  const projectionSourceRefCount = readNumber(projection, 'sourceRefCount')
+
+  return removeUndefinedProperties({
+    id,
     name: readString(source, 'name') || readString(source, 'title') || `Source ${index + 1}`,
     title: readString(source, 'title') || readString(source, 'name') || `Source ${index + 1}`,
     description: readString(source, 'description'),
@@ -6130,14 +6266,21 @@ function normalizeKnowledgeSourceDescriptors(rawSources) {
     url: readString(source, 'url'),
     selected: source.selected,
     capabilities: readStringArray(source.capabilities),
+    capabilityBasis: descriptorCapabilityBasis(source),
     adapter: readString(source, 'adapter'),
     implementation: readString(source, 'implementation'),
+    sourceId: readString(source, 'sourceId') || readString(source, 'source_id'),
     bundleId: readString(source, 'bundleId') || readString(source, 'bundle_id'),
-    pageCount: readNumber(source, 'pageCount') ?? readNumber(source, 'page_count'),
-    approvedPageCount: readNumber(source, 'approvedPageCount') ?? readNumber(source, 'approved_page_count'),
+    projection,
+    pageCount: readNumber(source, 'pageCount') ?? readNumber(source, 'page_count') ?? readNumber(projection, 'pageCount'),
+    approvedPageCount: readNumber(source, 'approvedPageCount') ?? readNumber(source, 'approved_page_count') ?? readNumber(projection, 'approvedPageCount'),
+    graphNodeCount,
+    graphEdgeCount,
+    sourceRefCount,
+    projectionSourceRefCount,
     root: sourceRootValue(source),
     rootLabel: sourceRootLabelValue(source),
-  }))
+  })
 }
 
 function requestOrchestrationMode(data, envelope) {
@@ -6474,6 +6617,7 @@ function registrySourceDescriptor(source, config = null, {
 } = {}) {
   const rootMetadata = sourceRootMetadataForOutput(source, { includeLocalRoots })
   const readiness = config ? knowledgeSourceReadiness(source, config) : knowledgeSourceReadiness(source)
+  const resolvedHealth = includeHealth ? (health || sourceHealthFromReadiness(readiness)) : undefined
   return removeUndefinedProperties({
     id: source.id,
     name: source.name,
@@ -6484,14 +6628,141 @@ function registrySourceDescriptor(source, config = null, {
     selected: source.selected !== false,
     url: redactSourceUrls ? redactedUrlSummary(source.url) : source.url,
     readiness: includeHealth ? readiness : undefined,
-    health: includeHealth ? (health || sourceHealthFromReadiness(readiness)) : undefined,
+    health: resolvedHealth,
     capabilities: source.capabilities,
+    ...gatewayTargetOverlay(source, config, { readiness, health: resolvedHealth }),
     adapter: source.adapter,
     implementation: source.implementation,
+    sourceId: source.sourceId,
     bundleId: source.bundleId,
     pageCount: source.pageCount,
     approvedPageCount: source.approvedPageCount,
     ...rootMetadata,
+  })
+}
+
+function gatewayTargetOverlay(source, config = null, { readiness = undefined, health = undefined } = {}) {
+  const resolvedReadiness = readiness || (config ? knowledgeSourceReadiness(source, config) : knowledgeSourceReadiness(source))
+  const sourceTools = gatewaySourceTools(source)
+  const projection = gatewayProjectionMetadata(source)
+  const graph = gatewayGraphMetadata(source, projection, sourceTools)
+  return removeUndefinedProperties({
+    targetId: source.id,
+    targetKind: GATEWAY_TARGET_KIND,
+    registryRole: GATEWAY_REGISTRY_ROLE,
+    idNamespace: GATEWAY_ID_NAMESPACE,
+    endpoint: gatewayEndpointMetadata(source, config, resolvedReadiness, health),
+    capabilityBasis: gatewayCapabilityBasis(source),
+    retrievalModes: gatewayRetrievalModes(source, sourceTools),
+    sourceTools,
+    sourceId: source.sourceId,
+    projection,
+    graph,
+    sourceRefCount: source.sourceRefCount,
+  })
+}
+
+function gatewayEndpointMetadata(source, config, readiness, health) {
+  return removeUndefinedProperties({
+    protocol: source.protocol,
+    configured: Boolean(source.url),
+    redacted: true,
+    redactedUrl: source.url ? gatewayEndpointUrlSummary(source.url) : undefined,
+    origin: source.url ? redactedUrlOrigin(source.url) : undefined,
+    policyBasis: config ? readiness?.basis : 'settings_descriptor',
+    probeBasis: health?.basis,
+    lastCheckedAt: health?.checkedAt,
+    fetchAllowed: config && source.url ? isAllowedKnowledgeSourceFetchUrl(source.url, config) : undefined,
+  })
+}
+
+function gatewayEndpointUrlSummary(value) {
+  try {
+    const url = new URL(value)
+    url.username = ''
+    url.password = ''
+    url.search = ''
+    url.hash = ''
+    const pathname = /^\/+$/.test(url.pathname) ? '' : url.pathname
+    return `${url.origin}${pathname}`
+  } catch {
+    return '[invalid-url]'
+  }
+}
+
+function redactedUrlOrigin(value) {
+  try {
+    const url = new URL(value)
+    url.username = ''
+    url.password = ''
+    url.search = ''
+    url.hash = ''
+    return url.origin
+  } catch {
+    return undefined
+  }
+}
+
+function gatewayCapabilityBasis(source) {
+  if (source.capabilityBasis) return source.capabilityBasis
+  return readStringArray(source.capabilities).length ? 'descriptor' : undefined
+}
+
+function gatewayRetrievalModes(source, sourceTools) {
+  const modes = []
+  if (sourceTools.includes('llmwiki_search')) modes.push('lexical')
+  const capabilityEntries = Object.entries(RETRIEVAL_SEARCH_MODE_CAPABILITIES)
+  for (const capability of readStringArray(source.capabilities)) {
+    const matched = capabilityEntries.find(([, value]) => value === capability)
+    if (matched && !modes.includes(matched[0])) modes.push(matched[0])
+  }
+  return modes.length ? modes : undefined
+}
+
+function gatewaySourceTools(source) {
+  return [
+    'llmwiki_context',
+    'llmwiki_search',
+    'llmwiki_read',
+    'llmwiki_graph',
+    'llmwiki_graph_neighbors',
+    'llmwiki_source_bundle',
+  ].filter((toolName) => sourceToolSupportsProtocol(toolName, source.protocol))
+}
+
+function gatewayProjectionMetadata(source) {
+  const nestedProjection = normalizeManifestProjectionMetadata(source.projection)
+  const projection = removeUndefinedProperties({
+    signature: readString(nestedProjection, 'signature') || readString(source, 'projectionSignature') || readString(source, 'projection_signature') || undefined,
+    pageCount: readNumber(nestedProjection, 'pageCount') ?? source.pageCount,
+    approvedPageCount: readNumber(nestedProjection, 'approvedPageCount') ?? source.approvedPageCount,
+    graphNodeCount: readNumber(nestedProjection, 'graphNodeCount') ?? source.graphNodeCount,
+    graphEdgeCount: readNumber(nestedProjection, 'graphEdgeCount') ?? source.graphEdgeCount,
+    sourceRefCount: readNumber(nestedProjection, 'sourceRefCount') ?? source.projectionSourceRefCount,
+  })
+  return Object.keys(projection).length ? projection : undefined
+}
+
+function gatewayGraphMetadata(source, projection, sourceTools) {
+  const graphRecord = asRecord(source.graph)
+  const nodeCount = readNumber(graphRecord, 'nodeCount')
+    ?? readNumber(graphRecord, 'node_count')
+    ?? readNumber(projection, 'graphNodeCount')
+    ?? source.graphNodeCount
+  const edgeCount = readNumber(graphRecord, 'edgeCount')
+    ?? readNumber(graphRecord, 'edge_count')
+    ?? readNumber(projection, 'graphEdgeCount')
+    ?? source.graphEdgeCount
+  const hasGraphTool = sourceTools.includes('llmwiki_graph') || sourceTools.includes('llmwiki_graph_neighbors')
+  const hasGraphCapability = readStringArray(source.capabilities).some((capability) => (
+    capability === 'llmwiki_graph' || capability === 'llmwiki_graph_neighbors'
+  ))
+  const available = hasGraphTool || hasGraphCapability || nodeCount !== undefined || edgeCount !== undefined
+  if (!available) return undefined
+  return removeUndefinedProperties({
+    available: true,
+    nodeCount,
+    edgeCount,
   })
 }
 
@@ -6550,7 +6821,9 @@ async function probeLlmwikiHttpSource(source, config) {
           checkedAt,
           endpoint: candidate.label,
         },
-        metadata: registryManifestMetadata(source, payload),
+        metadata: registryManifestMetadata(source, payload, {
+          capabilityBasis: candidate.label,
+        }),
       }
     } catch (error) {
       lastError = error
@@ -6571,7 +6844,9 @@ async function probeMcpSource(source, config) {
         checkedAt,
         endpoint: 'llmwiki_source_bundle',
       },
-      metadata: registryManifestMetadata(source, sourceBundle),
+      metadata: registryManifestMetadata(source, sourceBundle, {
+        capabilityBasis: 'llmwiki_source_bundle',
+      }),
     }
   } catch (error) {
     return registryProbeFailure(error, checkedAt)
@@ -6595,7 +6870,9 @@ async function probeA2aSource(source, config) {
         checkedAt,
         endpoint: 'agent-card',
       },
-      metadata: registryManifestMetadata(source, asRecord(card.metadata) || card),
+      metadata: registryManifestMetadata(source, asRecord(card.metadata) || card, {
+        capabilityBasis: 'agent-card',
+      }),
     }
   } catch (error) {
     return registryProbeFailure(error, checkedAt)
@@ -6618,7 +6895,7 @@ function registryProbeFailure(error, checkedAt) {
   }
 }
 
-function registryManifestMetadata(source, payload) {
+function registryManifestMetadata(source, payload, { capabilityBasis = undefined } = {}) {
   const manifest = asRecord(payload)
   if (!manifest) return {}
   const metadata = asRecord(manifest.metadata) || {}
@@ -6627,12 +6904,25 @@ function registryManifestMetadata(source, payload) {
   const rootCarrier = { ...metadata, ...manifest, ...(projectionRecord || {}) }
   const root = sourceRootValue(rootCarrier) || source.root
   const rootLabel = sourceRootLabelValue(rootCarrier) || sourceRootLabelValue(source) || safePathBasename(root)
+  const capabilities = uniqueNonEmptyStrings(readStringArray(manifest.capabilities))
+  const normalizedProjection = normalizeManifestProjectionMetadata(projection)
+  const sourceRefs = readRecordArray(manifest.source_refs ?? manifest.sourceRefs)
+  const sourceRefCount = (sourceRefs.length ? sourceRefs.length : undefined)
+    ?? readNumber(projection, 'source_ref_count')
+    ?? readNumber(projection, 'sourceRefCount')
+    ?? source.sourceRefCount
   return removeUndefinedProperties({
+    sourceId: readString(manifest, 'source_id') || readString(manifest, 'sourceId') || source.sourceId || source.id,
     bundleId: readString(manifest, 'bundle_id') || readString(manifest, 'bundleId') || source.bundleId,
+    ...(capabilities.length ? { capabilities, capabilityBasis } : {}),
     adapter: readString(manifest, 'adapter') || readString(metadata, 'adapter') || source.adapter,
     implementation: readString(manifest, 'implementation') || readString(metadata, 'implementation') || source.implementation,
-    pageCount: readNumber(projection, 'page_count') ?? readNumber(projection, 'pageCount') ?? source.pageCount,
-    approvedPageCount: readNumber(projection, 'approved_page_count') ?? readNumber(projection, 'approvedPageCount') ?? source.approvedPageCount,
+    projection: normalizedProjection,
+    graphNodeCount: readNumber(normalizedProjection, 'graphNodeCount') ?? source.graphNodeCount,
+    graphEdgeCount: readNumber(normalizedProjection, 'graphEdgeCount') ?? source.graphEdgeCount,
+    sourceRefCount,
+    pageCount: readNumber(normalizedProjection, 'pageCount') ?? source.pageCount,
+    approvedPageCount: readNumber(normalizedProjection, 'approvedPageCount') ?? source.approvedPageCount,
     ...(root ? { root } : {}),
     ...(rootLabel ? { rootLabel } : {}),
   })
@@ -7007,16 +7297,36 @@ function normalizeRegisteredSource(value, index) {
   if (!url) throw new HttpError(400, `Source ${index + 1} url is required.`, 'bad_request')
   assertRegistrySourceUrl(url, index)
 
-  const id = readString(source, 'id') || readString(source, 'source_id') || readString(source, 'sourceId') || `source-${index + 1}`
+  const id = readString(source, 'id')
+    || readString(source, 'targetId')
+    || readString(source, 'source_id')
+    || readString(source, 'sourceId')
+    || `source-${index + 1}`
   const name = readString(source, 'name') || readString(source, 'title') || `Source ${index + 1}`
   const title = readString(source, 'title') || name
   const description = readString(source, 'description')
   const capabilities = readStringArray(source.capabilities).map((item) => item.trim()).filter(Boolean)
+  const capabilityBasis = descriptorCapabilityBasis(source)
   const adapter = readString(source, 'adapter')
   const implementation = readString(source, 'implementation')
+  const sourceId = readString(source, 'sourceId') || readString(source, 'source_id')
   const bundleId = readString(source, 'bundleId') || readString(source, 'bundle_id')
-  const pageCount = readNumber(source, 'pageCount') ?? readNumber(source, 'page_count')
-  const approvedPageCount = readNumber(source, 'approvedPageCount') ?? readNumber(source, 'approved_page_count')
+  const projection = descriptorProjectionMetadata(source)
+  const pageCount = readNumber(source, 'pageCount') ?? readNumber(source, 'page_count') ?? readNumber(projection, 'pageCount')
+  const approvedPageCount = readNumber(source, 'approvedPageCount') ?? readNumber(source, 'approved_page_count') ?? readNumber(projection, 'approvedPageCount')
+  const graphRecord = asRecord(source.graph)
+  const graphNodeCount = readNumber(source, 'graphNodeCount')
+    ?? readNumber(source, 'graph_node_count')
+    ?? readNumber(graphRecord, 'nodeCount')
+    ?? readNumber(graphRecord, 'node_count')
+    ?? readNumber(projection, 'graphNodeCount')
+  const graphEdgeCount = readNumber(source, 'graphEdgeCount')
+    ?? readNumber(source, 'graph_edge_count')
+    ?? readNumber(graphRecord, 'edgeCount')
+    ?? readNumber(graphRecord, 'edge_count')
+    ?? readNumber(projection, 'graphEdgeCount')
+  const sourceRefCount = readNumber(source, 'sourceRefCount') ?? readNumber(source, 'source_ref_count')
+  const projectionSourceRefCount = readNumber(projection, 'sourceRefCount')
   const root = sourceRootValue(source)
   const rootLabel = sourceRootLabelValue(source) || safePathBasename(root)
 
@@ -7030,14 +7340,34 @@ function normalizeRegisteredSource(value, index) {
     url,
     selected: source.selected !== false,
     ...(capabilities.length ? { capabilities } : {}),
+    ...(capabilityBasis ? { capabilityBasis } : {}),
     ...(adapter ? { adapter } : {}),
     ...(implementation ? { implementation } : {}),
+    ...(sourceId ? { sourceId } : {}),
     ...(bundleId ? { bundleId } : {}),
+    ...(projection ? { projection } : {}),
     ...(pageCount !== undefined ? { pageCount } : {}),
     ...(approvedPageCount !== undefined ? { approvedPageCount } : {}),
+    ...(graphNodeCount !== undefined ? { graphNodeCount } : {}),
+    ...(graphEdgeCount !== undefined ? { graphEdgeCount } : {}),
+    ...(sourceRefCount !== undefined ? { sourceRefCount } : {}),
+    ...(projectionSourceRefCount !== undefined ? { projectionSourceRefCount } : {}),
     ...(root ? { root } : {}),
     ...(rootLabel ? { rootLabel } : {}),
   })
+}
+
+function descriptorCapabilityBasis(source) {
+  const basis = readString(source, 'capabilityBasis') || readString(source, 'capability_basis')
+  return ['descriptor', 'source-bundle', 'manifest', 'llmwiki_source_bundle', 'agent-card'].includes(basis)
+    ? basis
+    : undefined
+}
+
+function descriptorProjectionMetadata(source) {
+  const projectionRecord = asRecord(source.projection)
+  const projectionCarrier = projectionRecord ? { ...source, ...projectionRecord } : source
+  return normalizeManifestProjectionMetadata(projectionCarrier)
 }
 
 function assertUniqueRegisteredSourceIds(sources) {

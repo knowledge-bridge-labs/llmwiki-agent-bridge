@@ -1075,6 +1075,18 @@
           "id": {
             "type": "string"
           },
+          "targetId": {
+            "type": "string"
+          },
+          "targetKind": {
+            "const": "knowledge-source"
+          },
+          "registryRole": {
+            "const": "gateway-target"
+          },
+          "idNamespace": {
+            "const": "gateway-target"
+          },
           "name": {
             "type": "string"
           },
@@ -1098,6 +1110,9 @@
             "type": "string",
             "format": "uri"
           },
+          "endpoint": {
+            "$ref": "#/components/schemas/GatewayEndpoint"
+          },
           "selected": {
             "type": "boolean"
           },
@@ -1107,14 +1122,59 @@
               "type": "string"
             }
           },
+          "capabilityBasis": {
+            "enum": [
+              "descriptor",
+              "source-bundle",
+              "manifest",
+              "llmwiki_source_bundle",
+              "agent-card"
+            ]
+          },
+          "retrievalModes": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "lexical",
+                "literal",
+                "vector",
+                "hybrid"
+              ]
+            }
+          },
+          "sourceTools": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "llmwiki_context",
+                "llmwiki_search",
+                "llmwiki_read",
+                "llmwiki_graph",
+                "llmwiki_graph_neighbors",
+                "llmwiki_source_bundle"
+              ]
+            }
+          },
           "adapter": {
             "type": "string"
           },
           "implementation": {
             "type": "string"
           },
+          "sourceId": {
+            "type": "string"
+          },
           "bundleId": {
             "type": "string"
+          },
+          "projection": {
+            "$ref": "#/components/schemas/GatewayProjectionMetadata"
+          },
+          "graph": {
+            "$ref": "#/components/schemas/GatewayGraphMetadata"
+          },
+          "sourceRefCount": {
+            "type": "number"
           },
           "pageCount": {
             "type": "number"
@@ -2280,6 +2340,18 @@
           "id": {
             "type": "string"
           },
+          "targetId": {
+            "type": "string"
+          },
+          "targetKind": {
+            "const": "knowledge-source"
+          },
+          "registryRole": {
+            "const": "gateway-target"
+          },
+          "idNamespace": {
+            "const": "gateway-target"
+          },
           "name": {
             "type": "string"
           },
@@ -2305,6 +2377,9 @@
           "url": {
             "type": "string"
           },
+          "endpoint": {
+            "$ref": "#/components/schemas/GatewayEndpoint"
+          },
           "readiness": {
             "$ref": "#/components/schemas/McpSourceReadiness"
           },
@@ -2317,14 +2392,59 @@
               "type": "string"
             }
           },
+          "capabilityBasis": {
+            "enum": [
+              "descriptor",
+              "source-bundle",
+              "manifest",
+              "llmwiki_source_bundle",
+              "agent-card"
+            ]
+          },
+          "retrievalModes": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "lexical",
+                "literal",
+                "vector",
+                "hybrid"
+              ]
+            }
+          },
+          "sourceTools": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "llmwiki_context",
+                "llmwiki_search",
+                "llmwiki_read",
+                "llmwiki_graph",
+                "llmwiki_graph_neighbors",
+                "llmwiki_source_bundle"
+              ]
+            }
+          },
           "adapter": {
             "type": "string"
           },
           "implementation": {
             "type": "string"
           },
+          "sourceId": {
+            "type": "string"
+          },
           "bundleId": {
             "type": "string"
+          },
+          "projection": {
+            "$ref": "#/components/schemas/GatewayProjectionMetadata"
+          },
+          "graph": {
+            "$ref": "#/components/schemas/GatewayGraphMetadata"
+          },
+          "sourceRefCount": {
+            "type": "number"
           },
           "pageCount": {
             "type": "number"
@@ -2350,6 +2470,105 @@
           "selected",
           "url",
           "health"
+        ]
+      },
+      "GatewayEndpoint": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "protocol": {
+            "enum": [
+              "llmwiki-http",
+              "mcp",
+              "a2a"
+            ]
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "redacted": {
+            "type": "boolean"
+          },
+          "redactedUrl": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "policyBasis": {
+            "enum": [
+              "settings_descriptor",
+              "selection",
+              "last_known_status",
+              "descriptor",
+              "bridge_policy",
+              "last_known_status_bridge_policy"
+            ]
+          },
+          "probeBasis": {
+            "enum": [
+              "selection",
+              "last_known_status",
+              "descriptor",
+              "bridge_policy",
+              "last_known_status_bridge_policy",
+              "live_probe"
+            ]
+          },
+          "lastCheckedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fetchAllowed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "protocol",
+          "configured",
+          "redacted"
+        ]
+      },
+      "GatewayProjectionMetadata": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "signature": {
+            "type": "string"
+          },
+          "pageCount": {
+            "type": "number"
+          },
+          "approvedPageCount": {
+            "type": "number"
+          },
+          "graphNodeCount": {
+            "type": "number"
+          },
+          "graphEdgeCount": {
+            "type": "number"
+          },
+          "sourceRefCount": {
+            "type": "number"
+          }
+        }
+      },
+      "GatewayGraphMetadata": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "nodeCount": {
+            "type": "number"
+          },
+          "edgeCount": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "available"
         ]
       },
       "SourceHealth": {
@@ -2896,6 +3115,18 @@
           "id": {
             "type": "string"
           },
+          "targetId": {
+            "type": "string"
+          },
+          "targetKind": {
+            "const": "knowledge-source"
+          },
+          "registryRole": {
+            "const": "gateway-target"
+          },
+          "idNamespace": {
+            "const": "gateway-target"
+          },
           "name": {
             "type": "string"
           },
@@ -2918,6 +3149,9 @@
           "url": {
             "type": "string"
           },
+          "endpoint": {
+            "$ref": "#/components/schemas/GatewayEndpoint"
+          },
           "readiness": {
             "$ref": "#/components/schemas/McpSourceReadiness"
           },
@@ -2927,14 +3161,59 @@
               "type": "string"
             }
           },
+          "capabilityBasis": {
+            "enum": [
+              "descriptor",
+              "source-bundle",
+              "manifest",
+              "llmwiki_source_bundle",
+              "agent-card"
+            ]
+          },
+          "retrievalModes": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "lexical",
+                "literal",
+                "vector",
+                "hybrid"
+              ]
+            }
+          },
+          "sourceTools": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "llmwiki_context",
+                "llmwiki_search",
+                "llmwiki_read",
+                "llmwiki_graph",
+                "llmwiki_graph_neighbors",
+                "llmwiki_source_bundle"
+              ]
+            }
+          },
           "adapter": {
             "type": "string"
           },
           "implementation": {
             "type": "string"
           },
+          "sourceId": {
+            "type": "string"
+          },
           "bundleId": {
             "type": "string"
+          },
+          "projection": {
+            "$ref": "#/components/schemas/GatewayProjectionMetadata"
+          },
+          "graph": {
+            "$ref": "#/components/schemas/GatewayGraphMetadata"
+          },
+          "sourceRefCount": {
+            "type": "number"
           },
           "pageCount": {
             "type": "number"

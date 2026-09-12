@@ -396,6 +396,24 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(saved.sources.length, 2)
     assert.equal(saved.sources[1].selected, false)
     assert.equal(saved.persistence.registeredSources, 2)
+    assert.equal(saved.sources[0].targetId, 'registered-source')
+    assert.equal(saved.sources[0].targetKind, 'knowledge-source')
+    assert.equal(saved.sources[0].registryRole, 'gateway-target')
+    assert.equal(saved.sources[0].idNamespace, 'gateway-target')
+    assert.equal(saved.sources[0].endpoint.protocol, 'llmwiki-http')
+    assert.equal(saved.sources[0].endpoint.configured, true)
+    assert.equal(saved.sources[0].endpoint.redacted, true)
+    assert.equal(saved.sources[0].endpoint.redactedUrl, source.url)
+    assert.equal(saved.sources[0].endpoint.policyBasis, 'settings_descriptor')
+    assert.deepEqual(saved.sources[0].sourceTools, [
+      'llmwiki_context',
+      'llmwiki_search',
+      'llmwiki_read',
+      'llmwiki_graph',
+      'llmwiki_graph_neighbors',
+      'llmwiki_source_bundle',
+    ])
+    assert.deepEqual(saved.sources[0].retrievalModes, ['lexical'])
 
     const sourcesResponse = await fetch(`${bridge.url}/settings/sources.json`)
     const registered = await sourcesResponse.json()
@@ -404,6 +422,8 @@ describe('llmwiki-agent-bridge', () => {
     assert.deepEqual(registered.sources.map((item) => item.id), ['registered-source', 'secondary-source'])
     assert.equal(registered.sources[1].selected, false)
     assert.equal(registered.persistence.registeredSources, 2)
+    assert.equal(registered.sources[0].targetId, 'registered-source')
+    assert.equal(registered.sources[0].endpoint.redactedUrl, source.url)
 
     const response = await fetch(`${bridge.url}/message:send`, {
       method: 'POST',
@@ -455,12 +475,26 @@ describe('llmwiki-agent-bridge', () => {
       writeJson(response, 200, {
         source_id: 'registry-source',
         bundle_id: 'registry-bundle',
+        capabilities: [
+          'llmwiki_retrieval_v1',
+          'llmwiki_search_mode_hybrid',
+          'llmwiki_search_mode_vector',
+          'llmwiki_graph_neighbors',
+        ],
         adapter: 'llmwiki-markdown',
         implementation: 'fixture-source',
         projection: {
+          signature: 'sha256:registry-projection',
           page_count: 67,
           approved_page_count: 61,
+          graph_node_count: 12,
+          graph_edge_count: 34,
+          source_ref_count: 5,
         },
+        source_refs: [
+          { id: 'docs', label: 'Docs', type: 'folder', uri: 'llmwiki://registry-source/docs' },
+          { id: 'private', label: 'Private Root', type: 'folder', uri: rootPath },
+        ],
         root: rootPath,
       })
     })
@@ -509,6 +543,26 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(listed.sources[0].rootLabel, 'wiki')
     assert.equal(listed.sources[0].rootRedacted, true)
     assert.equal(listed.sources[0].health.basis, 'last_known_status_bridge_policy')
+    assert.equal(listed.sources[0].targetId, 'registry-source')
+    assert.equal(listed.sources[0].targetKind, 'knowledge-source')
+    assert.equal(listed.sources[0].registryRole, 'gateway-target')
+    assert.equal(listed.sources[0].idNamespace, 'gateway-target')
+    assert.equal(listed.sources[0].endpoint.protocol, 'llmwiki-http')
+    assert.equal(listed.sources[0].endpoint.configured, true)
+    assert.equal(listed.sources[0].endpoint.redacted, true)
+    assert.equal(listed.sources[0].endpoint.redactedUrl, source.url)
+    assert.equal(listed.sources[0].endpoint.fetchAllowed, true)
+    assert.equal(listed.sources[0].endpoint.policyBasis, 'last_known_status_bridge_policy')
+    assert.deepEqual(listed.sources[0].sourceTools, [
+      'llmwiki_context',
+      'llmwiki_search',
+      'llmwiki_read',
+      'llmwiki_graph',
+      'llmwiki_graph_neighbors',
+      'llmwiki_source_bundle',
+    ])
+    assert.deepEqual(listed.sources[0].retrievalModes, ['lexical'])
+    assert.equal(listed.sources[0].graph.available, true)
     assert.doesNotMatch(JSON.stringify(listed), new RegExp(escapeRegExp(rootPath)))
 
     const probeResponse = await fetch(`${bridge.url}/sources?probe=1`)
@@ -519,9 +573,25 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(probed.sources[0].health.ok, true)
     assert.equal(probed.sources[0].health.basis, 'live_probe')
     assert.equal(probed.sources[0].health.endpoint, 'source-bundle')
+    assert.equal(probed.sources[0].endpoint.policyBasis, 'last_known_status_bridge_policy')
+    assert.equal(probed.sources[0].endpoint.probeBasis, 'live_probe')
+    assert.match(probed.sources[0].endpoint.lastCheckedAt, /^\d{4}-\d{2}-\d{2}T/)
     assert.equal(probed.sources[0].adapter, 'llmwiki-markdown')
     assert.equal(probed.sources[0].implementation, 'fixture-source')
     assert.equal(probed.sources[0].bundleId, 'registry-bundle')
+    assert.equal(probed.sources[0].sourceId, 'registry-source')
+    assert.equal(probed.sources[0].capabilityBasis, 'source-bundle')
+    assert.deepEqual(probed.sources[0].retrievalModes, ['lexical', 'hybrid', 'vector'])
+    assert.equal(probed.sources[0].projection.signature, 'sha256:registry-projection')
+    assert.equal(probed.sources[0].projection.pageCount, 67)
+    assert.equal(probed.sources[0].projection.approvedPageCount, 61)
+    assert.equal(probed.sources[0].projection.graphNodeCount, 12)
+    assert.equal(probed.sources[0].projection.graphEdgeCount, 34)
+    assert.equal(probed.sources[0].projection.sourceRefCount, 5)
+    assert.equal(probed.sources[0].graph.available, true)
+    assert.equal(probed.sources[0].graph.nodeCount, 12)
+    assert.equal(probed.sources[0].graph.edgeCount, 34)
+    assert.equal(probed.sources[0].sourceRefCount, 2)
     assert.equal(probed.sources[0].pageCount, 67)
     assert.equal(probed.sources[0].approvedPageCount, 61)
     assert.equal(probed.sources[0].root, undefined)
@@ -1543,6 +1613,26 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(
       schema.components.schemas.McpSourceSummary.properties.readiness.$ref,
       '#/components/schemas/McpSourceReadiness',
+    )
+    assert.equal(
+      schema.components.schemas.KnowledgeSourceDescriptor.properties.endpoint.$ref,
+      '#/components/schemas/GatewayEndpoint',
+    )
+    assert.equal(
+      schema.components.schemas.RegistrySourceSummary.properties.endpoint.$ref,
+      '#/components/schemas/GatewayEndpoint',
+    )
+    assert.equal(
+      schema.components.schemas.McpSourceSummary.properties.endpoint.$ref,
+      '#/components/schemas/GatewayEndpoint',
+    )
+    assert.equal(
+      schema.components.schemas.RegistrySourceSummary.properties.projection.$ref,
+      '#/components/schemas/GatewayProjectionMetadata',
+    )
+    assert.equal(
+      schema.components.schemas.McpSourceSummary.properties.graph.$ref,
+      '#/components/schemas/GatewayGraphMetadata',
     )
     assert.deepEqual(
       schema.components.schemas.McpSourceReadiness.required,
@@ -3222,9 +3312,26 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(listedSources.sources[0].id, 'progressive-source')
     assert.equal(listedSources.sources[0].url, source.url)
     assert.deepEqual(listedSources.sources[0].readiness, { ready: true, basis: 'last_known_status_bridge_policy' })
+    assert.equal(listedSources.sources[0].targetId, 'progressive-source')
+    assert.equal(listedSources.sources[0].targetKind, 'knowledge-source')
+    assert.equal(listedSources.sources[0].registryRole, 'gateway-target')
+    assert.equal(listedSources.sources[0].idNamespace, 'gateway-target')
+    assert.equal(listedSources.sources[0].endpoint.redactedUrl, source.url)
+    assert.equal(listedSources.sources[0].endpoint.redacted, true)
+    assert.equal(listedSources.sources[0].endpoint.policyBasis, 'last_known_status_bridge_policy')
+    assert.deepEqual(listedSources.sources[0].sourceTools, [
+      'llmwiki_context',
+      'llmwiki_search',
+      'llmwiki_read',
+      'llmwiki_graph',
+      'llmwiki_graph_neighbors',
+      'llmwiki_source_bundle',
+    ])
     assert.equal(listedSources.sources[1].id, 'warming-source')
     assert.equal(listedSources.sources[1].url, `${source.url}/warming-private-path?token=source-secret`)
     assert.deepEqual(listedSources.sources[1].readiness, { ready: false, reason: 'status_not_ready', basis: 'last_known_status' })
+    assert.equal(listedSources.sources[1].endpoint.redactedUrl, `${source.url}/warming-private-path`)
+    assert.equal(listedSources.sources[1].endpoint.redacted, true)
     assert.match(listed.result.content[0].text, /progressive-source: Progressive Source \(llmwiki-http, ready, ready\)/)
     assert.doesNotMatch(listed.result.content[0].text, /127\.0\.0\.1/)
     assert.doesNotMatch(listed.result.content[0].text, /warming-private-path/)

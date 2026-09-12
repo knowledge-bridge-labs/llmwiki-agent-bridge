@@ -467,6 +467,31 @@ can select bridge-managed sources and pass the selected descriptors back to
 `/message:send` or `llmwiki_agent_run`. Do not copy private local URLs into
 public docs, issues, examples, or traces.
 
+The source registry also carries an additive gateway target overlay. `/sources`,
+`/settings/sources.json`, and MCP `llmwiki_list_sources` still expose the
+existing source fields, but each descriptor may also include `targetId` (an
+alias of `id`), `targetKind: "knowledge-source"`, `registryRole:
+"gateway-target"`, `idNamespace: "gateway-target"`, a redacted `endpoint`
+object, `capabilityBasis`, derived `retrievalModes`, and `sourceTools`. The
+overlay lets gateway clients treat bridge-managed Knowledge Sources as targets
+without renaming or breaking the source-registry contract.
+
+`endpoint` metadata is safe for registry display: it includes source protocol,
+configured status, a redacted URL with credentials/query/fragment removed,
+origin, policy/readiness basis, live probe basis and timestamp when available,
+and `fetchAllowed` when bridge policy can be evaluated. It never includes
+bearer tokens or local root paths. Existing `url` fields remain for
+backwards-compatible local clients; use `endpoint.redactedUrl` for display,
+logs, public issues, and gateway target lists.
+
+When `/sources?probe=1` can read `GET /source-bundle`, legacy `GET /manifest`,
+MCP `llmwiki_source_bundle`, or A2A agent-card metadata, the same descriptor may
+include safe gateway hints such as source-bundle `sourceId`, `bundleId`,
+projection signature, page counts, graph node/edge counts, source reference
+count, and graph availability. Unknown nested metadata, raw roots, private
+locators, credentials, query strings, fragments, and local paths remain
+omitted from the gateway overlay.
+
 Source tools return citation, search result, graph node, and graph-neighborhood
 ids with the bridge source prefix (`<sourceId>:<upstreamId>`) when needed to
 avoid collisions across sources. Host agents may pass those source-prefixed ids
