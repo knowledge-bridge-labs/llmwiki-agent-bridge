@@ -61,4 +61,3 @@ existing source-registry clients or leaking private local details.
 The overlay is additive. Existing clients can keep reading the legacy source
 fields. Clients that want gateway terminology can read `targetId` as the stable
 alias of `id` and use `endpoint`, `projection`, and `graph` when present.
-

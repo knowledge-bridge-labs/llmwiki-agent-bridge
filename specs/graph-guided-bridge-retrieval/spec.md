@@ -70,4 +70,3 @@ contracts.
 The contract is additive and opt-in. Existing clients that omit `graphContext`
 receive the same query/runtime behavior. Clients that enable it may see
 additional citations, graph nodes, graph edges, trace steps, and diagnostics.
-

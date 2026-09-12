@@ -36,4 +36,3 @@
   redacted.
 - Live probe metadata must stay allowlisted because source bundles can carry
   raw origins and local path data.
-

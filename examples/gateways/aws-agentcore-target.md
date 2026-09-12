@@ -52,4 +52,3 @@ Run these through the AgentCore target path:
    allowlisted Knowledge Source.
 4. Optional `/message:send` only when HTTP passthrough is the selected target
    shape.
-

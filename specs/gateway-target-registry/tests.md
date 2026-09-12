@@ -22,4 +22,3 @@
   local paths in redacted views.
 - Inspect endpoint metadata for absence of credentials, query strings,
   fragments, bearer tokens, and raw local roots.
-

@@ -37,4 +37,3 @@
   opt-in and `fallback: "omit"` remains the default.
 - Diagnostics and logs must not include user query text, raw URLs, local paths,
   bearer tokens, or upstream response bodies.
-

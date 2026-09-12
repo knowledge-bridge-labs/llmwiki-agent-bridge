@@ -54,4 +54,3 @@ curl -s http://127.0.0.1:8788/mcp \
 Then route the same checks through the external gateway. Operator validation is
 required because each gateway owns different policy, authentication, transport,
 and logging behavior.
-

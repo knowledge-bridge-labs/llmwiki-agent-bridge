@@ -60,4 +60,3 @@ still include them when explicitly run in local inspection mode.
 
 - Spec: `specs/gateway-target-registry/`
 - Related ADR: `docs/decisions/2026-09-12-knowledge-gateway-positioning.md`
-

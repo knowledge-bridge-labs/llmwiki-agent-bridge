@@ -51,4 +51,3 @@ not inlined into prompts.
 
 - Spec: `specs/graph-guided-bridge-retrieval/`
 - Related ADR: `docs/decisions/2026-09-12-knowledge-gateway-positioning.md`
-
