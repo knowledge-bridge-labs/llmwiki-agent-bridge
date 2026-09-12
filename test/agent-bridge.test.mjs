@@ -3879,6 +3879,648 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(serialized, /\bat .*:\d+:\d+/)
   })
 
+  it('expands /message:send graphContext through HTTP graph neighborhoods after source queries', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      if (url.pathname === '/source-bundle') {
+        assert.equal(request.method, 'GET')
+        writeJson(response, 200, {
+          source_id: 'http-graph-source',
+          bundle_id: 'http-graph-bundle',
+          capabilities: ['llmwiki_context', 'llmwiki_graph_neighbors'],
+        })
+        return
+      }
+
+      assert.equal(request.method, url.pathname === '/graph/neighborhood' ? 'GET' : 'POST')
+
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+
+      if (url.pathname === '/query') {
+        writeJson(response, 200, {
+          wiki_title: 'HTTP Graph Context Wiki',
+          evidence: [
+            {
+              page_id: 'release-readiness',
+              title: 'Release Readiness',
+              path: 'release-readiness.md',
+              snippet: `Release readiness evidence for ${body.query}.`,
+            },
+          ],
+          graph: {
+            nodes: [{ id: 'page:release-readiness', label: 'Release Readiness', kind: 'page' }],
+            edges: [],
+          },
+        })
+        return
+      }
+
+      if (url.pathname === '/graph/neighborhood') {
+        assert.deepEqual(url.searchParams.getAll('seed'), ['release-readiness', 'page:release-readiness'])
+        assert.equal(url.searchParams.get('depth'), '2')
+        assert.equal(url.searchParams.get('direction'), 'out')
+        assert.deepEqual(url.searchParams.getAll('relation'), ['depends_on', 'supports'])
+        assert.equal(url.searchParams.get('limit'), '120')
+        writeJson(response, 200, {
+          nodes: [
+            { id: 'page:release-readiness', label: 'Release Readiness', kind: 'page' },
+            { id: 'page:release-risk', label: 'Release Risk', kind: 'decision', path: 'release-risk.md' },
+          ],
+          edges: [
+            { source: 'page:release-readiness', target: 'page:release-risk', relation: 'depends_on' },
+          ],
+          citations: [
+            {
+              page_id: 'release-risk',
+              title: 'Release Risk',
+              path: 'release-risk.md',
+              snippet: 'Release risk citation from graph traversal.',
+            },
+          ],
+        })
+        return
+      }
+
+      writeJson(response, 404, { error: 'unexpected graph context path' })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Which release readiness dependency matters?',
+          mode: 'evidence-only',
+          graphContext: {
+            enabled: true,
+            seedFrom: ['citations', 'graph'],
+            depth: 2,
+            direction: 'out',
+            relations: ['depends_on', 'supports'],
+            limit: 200,
+          },
+          knowledgeSources: [
+            knowledgeSource('http-graph', 'HTTP Graph', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts[0].parts[0].data
+    const graphStep = artifact.steps.find((item) => item.id === 'graph-context-http_graph')
+    const requestPaths = source.requests.map((item) => item.url.pathname)
+
+    assert.equal(response.status, 200)
+    assert(requestPaths.indexOf('/graph/neighborhood') > requestPaths.indexOf('/query'))
+    assert.equal(source.requests.filter((item) => item.url.pathname === '/graph/neighborhood').length, 1)
+    assert.equal(graphStep.status, 'done')
+    assert.equal(graphStep.parentId, 'tool-http_graph')
+    assert.equal(graphStep.connectionId, 'http-graph')
+    assert.equal(graphStep.toolName, 'llmwiki_graph_neighbors__http_graph')
+    assert.match(graphStep.detail, /Expanded graph context with 2 seed\(s\), 2 node\(s\), 1 edge\(s\), and 1 citation\(s\)/)
+    assert.deepEqual(artifact.citations.map((citation) => citation.id), [
+      'http-graph:release-readiness',
+      'http-graph:release-risk',
+    ])
+    assert.deepEqual(artifact.graph.nodes.map((node) => node.id), [
+      'http-graph:page:release-readiness',
+      'http-graph:page:release-risk',
+    ])
+    assert.deepEqual(artifact.graph.edges.map((edge) => [edge.source, edge.target, edge.relation]), [
+      ['http-graph:page:release-readiness', 'http-graph:page:release-risk', 'depends_on'],
+    ])
+  })
+
+  it('expands MCP llmwiki_agent_run graphContext through source graph neighbor tools', async (t) => {
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      assert.equal(request.method, 'POST')
+      assert.equal(url.pathname, '/mcp')
+      assert.equal(body.method, 'tools/call')
+
+      const name = body.params.name
+      const args = body.params.arguments
+      if (name === 'llmwiki_source_bundle') {
+        writeJson(response, 200, {
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            structuredContent: {
+              source_id: 'mcp-graph-source',
+              bundle_id: 'mcp-graph-bundle',
+              capabilities: ['llmwiki_context', 'llmwiki_graph_neighbors', 'llmwiki_source_bundle'],
+            },
+          },
+        })
+        return
+      }
+
+      if (name === 'llmwiki_context') {
+        writeJson(response, 200, {
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            structuredContent: {
+              wiki_title: 'MCP Graph Context Wiki',
+              evidence: [
+                {
+                  page_id: 'mcp-release',
+                  title: 'MCP Release',
+                  path: 'mcp-release.md',
+                  snippet: `MCP release evidence for ${args.query}.`,
+                },
+              ],
+              graph: {
+                nodes: [{ id: 'page:mcp-release', label: 'MCP Release', kind: 'page' }],
+                edges: [],
+              },
+            },
+          },
+        })
+        return
+      }
+
+      if (name === 'llmwiki_graph_neighbors') {
+        assert.deepEqual(args.seeds, ['mcp-release', 'page:mcp-release'])
+        assert.equal(args.depth, 1)
+        assert.equal(args.direction, 'both')
+        assert.deepEqual(args.relations, [])
+        assert.equal(args.limit, 40)
+        writeJson(response, 200, {
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            structuredContent: {
+              llmwiki_graph_neighbors: {
+                nodes: [
+                  { id: 'page:mcp-release', label: 'MCP Release', kind: 'page' },
+                  { id: 'page:mcp-owner', label: 'MCP Owner', kind: 'owner' },
+                ],
+                edges: [
+                  { source: 'page:mcp-release', target: 'page:mcp-owner', relation: 'owned_by' },
+                ],
+                citations: [
+                  {
+                    page_id: 'mcp-owner',
+                    title: 'MCP Owner',
+                    path: 'mcp-owner.md',
+                    snippet: 'MCP owner citation from graph traversal.',
+                  },
+                ],
+              },
+            },
+          },
+        })
+        return
+      }
+
+      writeJson(response, 500, { error: `unexpected MCP tool ${name}` })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const mcpRun = await callBridgeMcpTool(bridge, 'mcp-graph-run', 'llmwiki_agent_run', {
+      query: 'Which MCP owner is adjacent?',
+      mode: 'evidence-only',
+      graphContext: { enabled: true },
+      knowledgeSources: [
+        {
+          ...knowledgeSource('mcp-graph', 'MCP Graph', 'mcp', source.url),
+          capabilities: ['llmwiki_context', 'llmwiki_graph_neighbors', 'llmwiki_source_bundle'],
+        },
+      ],
+    })
+    const artifact = mcpRun.result.structuredContent.llmwiki_agent_result
+
+    assert.equal(mcpRun.result.isError, false)
+    assert.deepEqual(source.requests.map((item) => item.body.params.name), [
+      'llmwiki_source_bundle',
+      'llmwiki_context',
+      'llmwiki_graph_neighbors',
+    ])
+    assert.deepEqual(artifact.citations.map((citation) => citation.id), [
+      'mcp-graph:mcp-release',
+      'mcp-graph:mcp-owner',
+    ])
+    assert.deepEqual(artifact.graph.edges.map((edge) => [edge.source, edge.target, edge.relation]), [
+      ['mcp-graph:page:mcp-release', 'mcp-graph:page:mcp-owner', 'owned_by'],
+    ])
+    assert.equal(artifact.steps.find((item) => item.id === 'graph-context-mcp_graph').status, 'done')
+  })
+
+  it('routes graphContext seeds source-locally across multiple sources in deterministic order', async (t) => {
+    const graphSeedsBySource = new Map()
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      const [sourceId, action] = url.pathname.split('/').filter(Boolean)
+      assert(['alpha', 'beta'].includes(sourceId))
+
+      if (action === 'source-bundle') {
+        assert.equal(request.method, 'GET')
+        writeJson(response, 200, {
+          source_id: `${sourceId}-bundle-source`,
+          bundle_id: `${sourceId}-bundle`,
+          capabilities: ['llmwiki_context', 'llmwiki_graph_neighbors'],
+        })
+        return
+      }
+
+      assert.equal(request.method, action === 'graph' ? 'GET' : 'POST')
+
+      if (action === 'search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+
+      if (action === 'query') {
+        writeJson(response, 200, {
+          wiki_title: `${sourceId} Wiki`,
+          evidence: [
+            {
+              page_id: 'topic',
+              title: `${sourceId} Topic`,
+              path: `${sourceId}/topic.md`,
+              snippet: `${sourceId} topic evidence for ${body.query}.`,
+            },
+          ],
+          graph: {
+            nodes: [{ id: `node-${sourceId}`, label: `${sourceId} Node` }],
+            edges: [],
+          },
+        })
+        return
+      }
+
+      if (action === 'graph' && url.pathname.endsWith('/graph/neighborhood')) {
+        const seeds = url.searchParams.getAll('seed')
+        graphSeedsBySource.set(sourceId, seeds)
+        assert.deepEqual(seeds, ['topic', `node-${sourceId}`])
+        writeJson(response, 200, {
+          nodes: [
+            { id: `node-${sourceId}`, label: `${sourceId} Node` },
+            { id: `neighbor-${sourceId}`, label: `${sourceId} Neighbor` },
+          ],
+          edges: [{ source: `node-${sourceId}`, target: `neighbor-${sourceId}`, relation: 'related' }],
+          citations: [
+            {
+              page_id: `neighbor-${sourceId}`,
+              title: `${sourceId} Neighbor`,
+              path: `${sourceId}/neighbor.md`,
+              snippet: `${sourceId} neighbor citation.`,
+            },
+          ],
+        })
+        return
+      }
+
+      writeJson(response, 404, { error: 'unexpected source-local graph context path' })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Route graph context seeds source locally.',
+          mode: 'evidence-only',
+          graphContext: { enabled: true },
+          knowledgeSources: [
+            knowledgeSource('alpha', 'Alpha Source', 'llmwiki-http', `${source.url}/alpha`),
+            knowledgeSource('beta', 'Beta Source', 'llmwiki-http', `${source.url}/beta`),
+          ],
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts[0].parts[0].data
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(
+      source.requests
+        .filter((item) => item.url.pathname.endsWith('/graph/neighborhood'))
+        .map((item) => item.url.pathname),
+      ['/alpha/graph/neighborhood', '/beta/graph/neighborhood'],
+    )
+    assert.deepEqual([...graphSeedsBySource.entries()], [
+      ['alpha', ['topic', 'node-alpha']],
+      ['beta', ['topic', 'node-beta']],
+    ])
+    assert.deepEqual(artifact.citations.map((citation) => citation.id), [
+      'alpha:topic',
+      'alpha:neighbor-alpha',
+      'beta:topic',
+      'beta:neighbor-beta',
+    ])
+    assert.deepEqual(artifact.graph.nodes.map((node) => node.id), [
+      'alpha:node-alpha',
+      'alpha:neighbor-alpha',
+      'beta:node-beta',
+      'beta:neighbor-beta',
+    ])
+  })
+
+  it('omits unsupported graphContext neighborhoods with redacted diagnostics by default', async (t) => {
+    const logger = recordingLogger()
+    const source = await startFixtureServer(async ({ request, url, response }) => {
+      if (url.pathname === '/source-bundle') {
+        assert.equal(request.method, 'GET')
+        writeJson(response, 200, {
+          source_id: 'missing-neighborhood-source',
+          bundle_id: 'missing-neighborhood-bundle',
+          capabilities: ['llmwiki_context'],
+        })
+        return
+      }
+
+      if (url.pathname === '/search') {
+        assert.equal(request.method, 'POST')
+        writeJson(response, 200, { results: [] })
+        return
+      }
+
+      if (url.pathname === '/query') {
+        assert.equal(request.method, 'POST')
+        writeJson(response, 200, {
+          wiki_title: 'Missing Neighborhood Wiki',
+          evidence: [
+            {
+              page_id: 'missing-neighborhood',
+              title: 'Missing Neighborhood',
+              path: 'missing-neighborhood.md',
+              snippet: 'Evidence still survives missing graph neighborhoods.',
+            },
+          ],
+          graph: {
+            nodes: [{ id: 'page:missing-neighborhood', label: 'Missing Neighborhood' }],
+            edges: [],
+          },
+        })
+        return
+      }
+
+      if (url.pathname === '/graph/neighborhood') {
+        assert.equal(request.method, 'GET')
+        writeJson(response, 404, {
+          error: 'not found at http://user:pass@private-source.example.test/raw?token=source-secret',
+          root: 'C:\\fixture-private\\graph',
+          bearer: 'Bearer source-bearer-secret',
+        })
+        return
+      }
+
+      writeJson(response, 404, { error: 'unexpected missing graph neighborhood path' })
+    })
+    t.after(() => closeServer(source.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Continue when graph context is unsupported.',
+          mode: 'evidence-only',
+          graphContext: { enabled: true },
+          knowledgeSources: [
+            knowledgeSource('missing-neighborhood', 'Missing Neighborhood', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts[0].parts[0].data
+    const graphStep = artifact.steps.find((item) => item.id === 'graph-context-missing_neighborhood')
+    const diagnostic = artifact.diagnostics.find((item) => item.phase === 'graph-context')
+    const serialized = JSON.stringify(artifact) + logger.lines.join('\n')
+
+    assert.equal(response.status, 200)
+    assert.equal(a2a.status.state, 'completed')
+    assert.equal(graphStep.status, 'error')
+    assert.equal(graphStep.error, 'Graph context omitted.')
+    assert.equal(diagnostic.schemaVersion, 'llmwiki.agent-bridge.diagnostic.v1')
+    assert.equal(diagnostic.severity, 'warning')
+    assert.equal(diagnostic.scope, 'source')
+    assert.equal(diagnostic.subject, 'missing-neighborhood')
+    assert.equal(diagnostic.redacted, true)
+    assert.equal(observationValue(diagnostic, 'fallback'), 'omit')
+    assert.equal(observationValue(diagnostic, 'httpStatus'), '404')
+    assert.equal(observationValue(diagnostic, 'seedCount'), '2')
+    assert.deepEqual(artifact.citations.map((citation) => citation.id), ['missing-neighborhood:missing-neighborhood'])
+    assert.doesNotMatch(serialized, /private-source\.example\.test/)
+    assert.doesNotMatch(serialized, /user:pass/)
+    assert.doesNotMatch(serialized, /source-secret/)
+    assert.doesNotMatch(serialized, /fixture-private/)
+    assert.doesNotMatch(serialized, /source-bearer-secret/)
+  })
+
+  it('sends only a bounded graphContext summary to runtime prompts while preserving artifact graph', async (t) => {
+    const graphNeighborNodes = [
+      {
+        id: 'seed-node',
+        label: 'Seed Node',
+        kind: 'page',
+        path: 'C:\\fixture-private\\seed-node.md',
+        metadata: { marker: 'FULL_GRAPH_CONTEXT_METADATA_SENTINEL' },
+      },
+      ...Array.from({ length: 30 }, (_, index) => ({
+        id: `neighbor-${index + 1}`,
+        label: `Graph Neighbor ${index + 1}`,
+        kind: 'topic',
+        path: index === 29
+          ? 'https://private-neighbor.example.test/raw?token=graph-secret'
+          : `C:\\fixture-private\\neighbor-${index + 1}.md`,
+        metadata: { marker: 'FULL_GRAPH_CONTEXT_METADATA_SENTINEL', ordinal: index + 1 },
+      })),
+    ]
+    const source = await startFixtureServer(async ({ request, url, body, response }) => {
+      if (url.pathname === '/source-bundle') {
+        assert.equal(request.method, 'GET')
+        writeJson(response, 200, {
+          source_id: 'prompt-graph-source',
+          bundle_id: 'prompt-graph-bundle',
+          capabilities: ['llmwiki_context', 'llmwiki_graph_neighbors'],
+          source_refs: [
+            {
+              id: 'private-source-ref',
+              label: 'FULL_SOURCE_BUNDLE_REF_SENTINEL',
+              uri: 'urn:llmwiki:source-ref:private-source-ref',
+            },
+          ],
+        })
+        return
+      }
+
+      assert.equal(request.method, url.pathname === '/graph/neighborhood' ? 'GET' : 'POST')
+
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+
+      if (url.pathname === '/query') {
+        writeJson(response, 200, {
+          wiki_title: 'Prompt Graph Wiki',
+          evidence: [
+            {
+              page_id: 'seed-page',
+              title: 'Seed Page',
+              path: 'seed-page.md',
+              snippet: `Seed page evidence for ${body.query}.`,
+            },
+          ],
+          graph: {
+            nodes: [{ id: 'seed-node', label: 'Seed Node', kind: 'page' }],
+            edges: [],
+          },
+        })
+        return
+      }
+
+      if (url.pathname === '/graph/neighborhood') {
+        writeJson(response, 200, {
+          nodes: graphNeighborNodes,
+          edges: graphNeighborNodes.slice(1).map((node) => ({
+            source: 'seed-node',
+            target: node.id,
+            relation: 'related',
+            metadata: { marker: 'FULL_GRAPH_CONTEXT_METADATA_SENTINEL' },
+          })),
+          citations: [
+            {
+              page_id: 'neighbor-summary',
+              title: 'Neighbor Summary',
+              path: 'neighbor-summary.md',
+              snippet: 'Bounded neighbor summary citation.',
+            },
+          ],
+        })
+        return
+      }
+
+      writeJson(response, 404, { error: 'unexpected prompt graph context path' })
+    })
+    t.after(() => closeServer(source.server))
+
+    const runtime = await startFixtureServer(async ({ body, response }) => {
+      runtime.lastBody = body
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'Prompt graph context answer.' } }],
+      })
+    })
+    t.after(() => closeServer(runtime.server))
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: `${runtime.url}/v1`,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Use bounded graph context in the runtime prompt.',
+          graphContext: { enabled: true, limit: 40 },
+          knowledgeSources: [
+            knowledgeSource('prompt-graph', 'Prompt Graph', 'llmwiki-http', source.url),
+          ],
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts[0].parts[0].data
+    const runtimeUserMessage = runtime.lastBody.messages.find((message) => message.role === 'user').content
+    const evidenceBundle = parseHermesEvidenceBundle(runtimeUserMessage)
+    const promptGraphContext = evidenceBundle.graphContext
+
+    assert.equal(response.status, 200)
+    assert.equal(artifact.graph.nodes.length, 31)
+    assert.equal(artifact.graph.nodes.some((node) => node.metadata?.marker === 'FULL_GRAPH_CONTEXT_METADATA_SENTINEL'), true)
+    assert.equal(artifact.graph.nodes.some((node) => node.id === 'prompt-graph:neighbor-30'), true)
+    assert.equal(artifact.sourceBundles[0].sourceRefs[0].label, 'FULL_SOURCE_BUNDLE_REF_SENTINEL')
+    assert.equal(promptGraphContext.enabled, true)
+    assert.deepEqual(promptGraphContext.seedFrom, ['citations', 'graph'])
+    assert.equal(promptGraphContext.limit, 40)
+    assert.equal(promptGraphContext.sourceCount, 1)
+    assert.equal(promptGraphContext.nodeCount, 31)
+    assert.equal(promptGraphContext.edgeCount, 30)
+    assert.equal(promptGraphContext.citationCount, 1)
+    assert.equal(promptGraphContext.sources[0].id, 'prompt-graph')
+    assert.equal(promptGraphContext.sources[0].seedCount, 2)
+    assert(promptGraphContext.sources[0].nodePreview.length <= 8)
+    assert.equal(promptGraphContext.sources[0].nodes, undefined)
+    assert.doesNotMatch(runtimeUserMessage, /FULL_GRAPH_CONTEXT_METADATA_SENTINEL/)
+    assert.doesNotMatch(runtimeUserMessage, /FULL_SOURCE_BUNDLE_REF_SENTINEL/)
+    assert.doesNotMatch(runtimeUserMessage, /neighbor-30/)
+    assert.doesNotMatch(runtimeUserMessage, /fixture-private/)
+    assert.doesNotMatch(runtimeUserMessage, /private-neighbor\.example\.test/)
+    assert.doesNotMatch(runtimeUserMessage, /graph-secret/)
+  })
+
+  it('publishes graphContext options in OpenAPI and MCP tool schemas', async (t) => {
+    const schema = agentBridgeOpenApi({ version: '0.1.0-test' })
+
+    assert(
+      Object.hasOwn(schema.components.schemas, 'GraphContextOptions'),
+      'GraphContextOptions schema missing',
+    )
+    assert.equal(
+      schema.components.schemas.MessageSendData.properties.graphContext.$ref,
+      '#/components/schemas/GraphContextOptions',
+    )
+    assert.deepEqual(
+      schema.components.schemas.GraphContextOptions.properties.seedFrom.items.enum,
+      ['citations', 'graph'],
+    )
+    assert.equal(schema.components.schemas.GraphContextOptions.properties.limit.maximum, 120)
+    assert.deepEqual(
+      schema.components.schemas.GraphContextOptions.properties.fallback.enum,
+      ['omit', 'error'],
+    )
+
+    const bridge = await startAgentBridge({
+      port: 0,
+      hermesBaseUrl: 'http://127.0.0.1:1/v1',
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    const tools = await callBridgeMcp(bridge, 'graph-context-tools', 'tools/list')
+    const agentRunSchema = tools.result.tools.find((tool) => tool.name === 'llmwiki_agent_run').inputSchema
+    assert.equal(agentRunSchema.properties.graphContext.properties.enabled.type, 'boolean')
+    assert.deepEqual(agentRunSchema.properties.graphContext.properties.fallback.enum, ['omit', 'error'])
+  })
+
   it('returns evidence-only artifacts without calling runtime and includes safe source bundle metadata', async (t) => {
     const source = await startFixtureServer(async ({ request, url, body, response }) => {
       if (url.pathname === '/source-bundle') {

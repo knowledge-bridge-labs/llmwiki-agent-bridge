@@ -215,6 +215,69 @@ diagnostics or warning surfaces. When `fallback` is `none`, the bridge returns
 HTTP `400` before source fan-out if any selected ready source cannot satisfy
 the requested mode or guided lexical variant capability.
 
+## Graph Context
+
+Requests may include `data.graphContext` to opt into bounded graph-neighborhood
+expansion after the normal source query/context fan-out succeeds:
+
+```json
+{
+  "data": {
+    "query": "Which release dependency is adjacent to this evidence?",
+    "mode": "delegated-runtime",
+    "graphContext": {
+      "enabled": true,
+      "seedFrom": ["citations", "graph"],
+      "depth": 1,
+      "direction": "both",
+      "relations": ["depends_on", "supports"],
+      "limit": 40,
+      "fallback": "omit"
+    }
+  }
+}
+```
+
+`graphContext` is not a graph query language. It does not add Cypher-like
+queries, global traversal, writes, or cross-source graph joins. It is a
+source-local expansion step for one-shot runs. The bridge derives seed ids from
+the citations and/or graph nodes returned by each source's normal query result,
+strips the bridge source prefix before upstream calls, deduplicates the seeds,
+and calls each selected source independently.
+
+When omitted, `false`, or `{ "enabled": false }`, the bridge does not call
+graph-neighborhood APIs. When enabled, defaults are:
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `enabled` | boolean | Must be `true` to run graph-neighborhood expansion. |
+| `seedFrom` | `citations`, `graph` | Optional unique array. Defaults to both. Citation ids are tried before graph node ids. |
+| `depth` | integer | Defaults to `1` and is clamped to the bridge graph-neighbor maximum. |
+| `direction` | `out`, `in`, `both` | Defaults to `both`. |
+| `relations` | string array | Optional relation filter. Empty or omitted means no relation filter. |
+| `limit` | integer | Defaults to `40` and is clamped to the one-shot maximum of `120`. |
+| `fallback` | `omit`, `error` | Defaults to `omit`. Unsupported or failed expansion is either omitted with a diagnostic or treated as fatal before the runtime call. |
+
+HTTP Knowledge Sources receive `GET /graph/neighborhood` with repeated `seed`
+and `relation` query parameters. MCP Knowledge Sources receive
+`llmwiki_graph_neighbors` with the same bounded options. A2A Knowledge Sources
+are currently skipped for graph neighborhoods unless a future source protocol
+adds explicit support.
+
+Successful graph-neighborhood responses are normalized with the same
+source-prefixing rules as `llmwiki_graph_neighbors`, then merged into the
+result artifact `citations` and `graph` fields in selected source order. The
+runtime prompt receives only a bounded `graphContext` summary with seed counts,
+node/edge/citation counts, and a small safe node preview. It does not receive
+the full graph payload, source bundles, raw source metadata, source URLs, local
+paths, bearer tokens, request headers, or upstream response bodies.
+
+Graph-context diagnostics use `phase: "graph-context"`. They include small
+facts such as fallback mode, HTTP status when available, seed count, depth,
+direction, relation count, and limit. They do not include the user query,
+source URLs, credentials, local paths, request bodies, upstream bodies, or full
+graph payloads.
+
 ### Agent-Guided Lexical Workflow
 
 Host agents that can call source tools should use progressive disclosure:
@@ -522,11 +585,13 @@ keeps node and citation ids source-prefixed in the bridge result.
 | `diagnostics` | Small redacted diagnostic envelope for warning/error trace steps. Empty arrays are valid. |
 
 Trace steps include stable IDs such as `bridge-plan`, `bridge-evidence`,
-and per-source `tool-<source-id>` entries. `runtime-chat-completions` appears
-only when the resolved orchestration mode calls the configured runtime
+and per-source `tool-<source-id>` entries. When `graphContext.enabled` is true
+and a source yields usable seeds, the bridge also adds per-source
+`graph-context-<source-id>` entries. `runtime-chat-completions` appears only
+when the resolved orchestration mode calls the configured runtime
 (`delegated-runtime` or `hybrid`); it is intentionally absent for
-`evidence-only`. Source failure steps are redacted and do not expose blocked
-private URLs.
+`evidence-only`. Source and graph-context failure steps are redacted and do not
+expose blocked private URLs.
 Successful per-source tool steps include `citationIds` in the order the bridge
 read citations from that source. They also include bounded `citationRefs`
 preview records with only safe `id`, `title`, relative `path`, and `sourceRefs`
