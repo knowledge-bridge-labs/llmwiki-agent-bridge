@@ -6,6 +6,10 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+No unreleased changes.
+
+## [0.5.0] - 2026-09-12
+
 ### Added
 
 - Positioned `llmwiki-agent-bridge` as the optional LLMWiki Knowledge Gateway
