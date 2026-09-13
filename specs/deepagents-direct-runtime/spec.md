@@ -39,6 +39,11 @@ manually configure DeepAgents as another client of the same sources.
 - DeepAgents MCP docs describe `.mcp.json` auto-discovery and MCP tool loading.
 - The current DeepAgents ACP docs describe `deepagents-acp` as a CLI and
   programmatic API for exposing Deep Agents over ACP stdio.
+- The npm `deepagents-acp` CLI documents `--model`, `--workspace`, skills,
+  memory, and API-key environment variables, but does not document a custom
+  OpenAI-compatible `baseURL` CLI flag. vLLM-backed ACP validation should use
+  an explicit DeepAgents programmatic wrapper or a framework-supported provider
+  config path.
 - The Agent Client Protocol TypeScript docs identify
   `@agentclientprotocol/sdk` as the official TypeScript package for building
   ACP clients and agents.

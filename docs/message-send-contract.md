@@ -124,6 +124,50 @@ If a request does not include `knowledgeSources` or `knowledge_sources`, the
 bridge uses the persistent source registry from `/settings/sources.json`.
 Sending an empty array is treated as an explicit request with no sources.
 
+## A2A Compatibility
+
+The bridge publishes `GET /.well-known/agent-card.json` for A2A-style
+discovery. The card is additive: newer clients can read
+`supportedInterfaces[0]` for the preferred `HTTP+JSON` `/message:send`
+interface and protocol version, while older clients can continue to read the
+legacy `url`, `capabilities`, and `metadata` fields. The card also includes
+provider URL and organization, package `version`, `defaultInputModes`,
+`defaultOutputModes`, `skills`, `securitySchemes`, `securityRequirements`, and
+`signatures`.
+
+When bridge bearer auth is configured, the card is served only to authorized
+callers and advertises bearer HTTP security metadata without exposing the token
+value. When bearer auth is not configured, the security fields are present but
+empty.
+
+For `POST /message:send`, clients may send `A2A-Version` as an HTTP header or
+request query parameter. Missing or empty values are treated as legacy `0.3`
+for compatibility. The current bridge-supported A2A version is accepted and is
+returned in the `A2A-Version` response header. Explicit unsupported versions
+return HTTP `400` with `error.code: "a2a_version_not_supported"` before source
+fan-out or runtime calls. The endpoint still returns one immediate completed
+task-like response and does not create durable task storage. Requests that
+explicitly use the current A2A version receive `application/a2a+json`, the
+current HTTP+JSON response wrapper, and a bounded process-local task snapshot
+for `/tasks` lookup; legacy requests keep the direct task response and
+`application/json`.
+
+For A2A 1.0 lifecycle clients, the bridge also exposes:
+
+| Route | Behavior |
+| --- | --- |
+| `POST /message:stream` | Runs the same synchronous request path and emits submitted, working, terminal status, and final task SSE events. |
+| `GET /tasks` | Lists recent current-version task snapshots held in bounded process memory. |
+| `GET /tasks/{id}` | Returns one recent task snapshot or a protocol-shaped not-found error. |
+| `POST /tasks/{id}:cancel` | Returns not-cancelable for completed synchronous task snapshots. |
+| `GET/POST /tasks/{id}:subscribe` | Returns the current terminal snapshot when the task is available. |
+| `GET /extendedAgentCard` | Returns the same safe Agent Card metadata and enforces bearer auth when configured. |
+| `GET/POST/DELETE /tasks/{id}/pushNotificationConfigs` | Returns the A2A push-notification unsupported error shape because push notifications are not advertised. |
+
+The lifecycle store is intentionally process-local and bounded. It is useful
+for local polling, debugging, and current-version client compatibility, not for
+durable workflow persistence.
+
 ## Retrieval Intent
 
 Requests may include `data.retrieval` to ask capable sources for lexical,
@@ -389,7 +433,8 @@ userinfo-bearing, or disallowed origins are skipped with redacted trace errors.
 
 ## Response Shape
 
-Successful requests return HTTP `200` and a completed A2A-style task:
+Successful legacy requests, including requests without `A2A-Version`, return
+HTTP `200` and the existing completed A2A-style direct task:
 
 ```json
 {
@@ -430,6 +475,44 @@ Successful requests return HTTP `200` and a completed A2A-style task:
 }
 ```
 
+Requests that explicitly send `A2A-Version: 1.0` receive
+`Content-Type: application/a2a+json` and the latest HTTP+JSON wrapper shape:
+
+```json
+{
+  "task": {
+    "id": "generated-task-id",
+    "contextId": "generated-request-id",
+    "status": {
+      "state": "TASK_STATE_COMPLETED",
+      "message": {
+        "messageId": "generated-message-id",
+        "contextId": "generated-request-id",
+        "taskId": "generated-task-id",
+        "role": "ROLE_AGENT",
+        "parts": [{ "text": "Answer markdown...", "mediaType": "text/markdown" }],
+        "extensions": [],
+        "referenceTaskIds": []
+      }
+    },
+    "artifacts": [
+      {
+        "artifactId": "llmwiki_agent_result",
+        "name": "llmwiki_agent_result",
+        "parts": [
+          {
+            "data": { "answer": "Answer markdown..." },
+            "mediaType": "application/json"
+          }
+        ],
+        "extensions": []
+      }
+    ],
+    "history": []
+  }
+}
+```
+
 The `llmwiki_agent_result` artifact is the stable integration target for
 clients that need structured output.
 The generated OpenAPI contract for this endpoint is committed at
@@ -460,23 +543,36 @@ The bridge also exposes `POST /mcp` as an MCP-style JSON-RPC compatibility
 surface for tool-oriented clients.
 
 This surface is dual-era compatible for the bridge's tool use case. Existing
-initialization-based clients can continue to use `2025-06-18` or `2024-11-05`
-with `initialize`. Modern clients can use the small `2026-07-28` stateless
-slice by sending per-request `params._meta` and calling `server/discover`,
-`tools/list`, or `tools/call` without a prior MCP session. This is not a claim
-of complete MCP 2026-07-28 conformance: MRTR, full transport header validation,
-caching controls, prompts, resources, and extension negotiation are not part of
-this bridge slice.
+initialization-based clients can continue to use `2025-11-25`, `2025-06-18`,
+or `2024-11-05` with `initialize`. Modern clients can use the small
+`2026-07-28` stateless slice by sending per-request `params._meta` and calling
+`server/discover`, `tools/list`, or `tools/call` without a prior MCP session. `server/discover`
+and `tools/list` include `resultType: "complete"` plus private cache hints
+(`ttlMs` and `cacheScope`) for modern clients; `tools/call` includes
+`resultType: "complete"` while preserving existing `content`,
+`structuredContent`, and `isError` fields. This is not a claim of complete MCP
+2026-07-28 conformance: MRTR, full transport header validation, active cache
+invalidation semantics, prompts, resources, and extension negotiation are not
+part of this bridge slice.
+
+MCP tool listing defaults to `direct` exposure for compatibility. Operators can
+set `LLMWIKI_AGENT_BRIDGE_MCP_TOOL_EXPOSURE=gateway` to make `tools/list`
+return only progressive-discovery meta-tools:
+`llmwiki_gateway_search_tools`, `llmwiki_gateway_get_tool_details`, and
+`llmwiki_gateway_call_tool`. `gateway` mode lets a host search compact catalog
+entries without full schemas, inspect one selected source-tool schema, and call
+that source tool by `sourceId/toolName`. `tools/call` still accepts direct
+source tools for clients that already know the direct names.
 
 It supports:
 
 | Method | Behavior |
 | --- | --- |
-| `initialize` | Returns bridge server info and tools capability for legacy clients. The bridge accepts `2026-07-28`, `2025-06-18`, and `2024-11-05`; omitted or unsupported versions fall back to the legacy default `2025-06-18`. |
-| `server/discover` | Returns `resultType: "complete"`, supported protocol versions, tools capability, and bridge server info under `_meta["io.modelcontextprotocol/serverInfo"]`. |
+| `initialize` | Returns bridge server info and tools capability for legacy clients. The bridge accepts `2026-07-28`, `2025-11-25`, `2025-06-18`, and `2024-11-05`; omitted or unsupported versions fall back to the legacy default `2025-06-18`. |
+| `server/discover` | Returns `resultType: "complete"`, private cache hints, supported protocol versions, tools capability, and bridge server info under `_meta["io.modelcontextprotocol/serverInfo"]`. |
 | `ping` | Returns an empty success object. |
-| `tools/list` | Returns `llmwiki_agent_run` plus read-only source exploration tools. |
-| `tools/call` | Runs a named tool. `llmwiki_agent_run` uses the `/message:send` run path; source tools query registered or request-supplied Knowledge Sources directly. |
+| `tools/list` | Returns `resultType: "complete"` and private cache hints. Default `direct` exposure lists `llmwiki_agent_run` and read-only source exploration tools. `gateway` exposure lists only compact progressive-discovery meta-tools. |
+| `tools/call` | Runs a named tool and returns `resultType: "complete"`. `llmwiki_agent_run` uses the `/message:send` run path; source tools query registered or request-supplied Knowledge Sources directly; gateway meta-tools search, inspect, or dispatch to those same source tools. |
 
 Example call:
 
@@ -517,6 +613,19 @@ bridge uses sources registered through `/settings`. When more than one ready
 selected source is available, source-specific tools require `sourceId`. Source
 tools do not call the configured Hermes, DeepAgents, or OpenAI-compatible
 runtime and do not mutate bridge settings or wiki content.
+
+Gateway meta-tools are intended for MCP hosts that do not want every direct
+source-tool schema in the model context at conversation start:
+
+| Tool | Required args | Structured result |
+| --- | --- | --- |
+| `llmwiki_gateway_search_tools` | none | `structuredContent.llmwiki_gateway_tool_search` compact catalog entries without full schemas |
+| `llmwiki_gateway_get_tool_details` | `name` or `toolName` | `structuredContent.llmwiki_gateway_tool_details` for one selected schema |
+| `llmwiki_gateway_call_tool` | `name` or `toolName` | `structuredContent.llmwiki_gateway_tool_call` with the redacted downstream source-tool result |
+
+Gateway wrapper results redact URL-like, credential-like, and local-path fields
+more aggressively than the legacy direct source-tool result shape because they
+are meant to be passed back through model context after catalog selection.
 
 `llmwiki_agent_run`, `llmwiki_context`, and `llmwiki_search` accept the same
 optional `retrieval` object described above. Unsupported retrieval payloads and
@@ -631,8 +740,11 @@ line with fallback anchors that map to the same 1-based `citations` array.
 For `llmwiki-http` sources, the bridge attempts `GET /source-bundle` during a
 run when the URL is allowed by the configured source policy, then falls back to
 legacy `GET /manifest` if needed. For MCP sources, it attempts the
-`llmwiki_source_bundle` tool before `llmwiki_context`. Discovery failures do
-not fail the run; they appear as redacted trace steps.
+`llmwiki_source_bundle` tool before `llmwiki_context`. MCP source URLs ending in
+`/mcp` or `/mcp/stream` are treated as explicit endpoints; base source URLs keep
+the legacy `/mcp` fallback. Source tool calls include the bridge's current MCP
+request headers and `params._meta` client metadata. Discovery failures do not
+fail the run; they appear as redacted trace steps.
 
 Successful responses are normalized into `sourceBundles` with an explicit
 allowlist: `connectionId`, `sourceId`, `bundleId`, `title`, `capabilities`,
@@ -699,7 +811,8 @@ failure.
   registrations through `GET/PUT /settings/sources.json`, and Step 3 verifies
   the bridge with `POST /message:send`.
 - The agent card advertises `metadata.settingsUrl` so clients can discover the
-  local settings screen.
+  local settings screen, plus additive A2A interface and protocol metadata for
+  clients that prefer the current Agent Card shape.
 - Runtime settings and advanced access/source-policy settings saved through
   `/settings` apply live; host and port changes require a bridge restart.
 - Use `LLMWIKI_AGENT_BRIDGE_BEARER_TOKEN` for shared or non-loopback bridge

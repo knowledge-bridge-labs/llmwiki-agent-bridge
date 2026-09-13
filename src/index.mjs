@@ -6,7 +6,12 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 
-import { AGENT_CARD_PATH } from '@a2a-js/sdk'
+import {
+  A2A_CONTENT_TYPE as SDK_A2A_CONTENT_TYPE,
+  A2A_PROTOCOL_VERSION as SDK_A2A_PROTOCOL_VERSION,
+  A2A_VERSION_HEADER,
+  AGENT_CARD_PATH,
+} from '@a2a-js/sdk'
 import {
   PROTOCOL_VERSION as ACP_PROTOCOL_VERSION,
   client as createAcpClient,
@@ -32,8 +37,13 @@ const DEFAULT_RUNTIME_NAME = 'LLMWiki Agent Bridge for Hermes'
 const DEFAULT_RUNTIME_KIND = 'hermes'
 const DEFAULT_AGENT_RUNTIME = 'hermes'
 const DEFAULT_PROVIDER_ORGANIZATION = 'LLMWiki'
+const DEFAULT_PROVIDER_URL = 'https://knowledge-bridge-labs.github.io/llmwiki-docs/'
 const PACKAGE_NAME = 'llmwiki-agent-bridge'
 const PACKAGE_VERSION = readPackageVersion()
+export const BRIDGE_A2A_PROTOCOL_VERSION = SDK_A2A_PROTOCOL_VERSION
+export const BRIDGE_A2A_CONTENT_TYPE = SDK_A2A_CONTENT_TYPE
+export const BRIDGE_A2A_VERSION_HEADER = A2A_VERSION_HEADER
+export const BRIDGE_A2A_SUPPORTED_PROTOCOL_VERSIONS = Object.freeze([BRIDGE_A2A_PROTOCOL_VERSION, '0.3'])
 const MAX_BODY_BYTES = 2 * 1024 * 1024
 const MAX_EVIDENCE_ITEMS_PER_SOURCE = 8
 const MAX_SEARCH_AUGMENT_QUERIES = 2
@@ -63,6 +73,17 @@ const MAX_TRACE_DETAIL_CHARS = 360
 const DIAGNOSTIC_SCHEMA_VERSION = 'llmwiki.agent-bridge.diagnostic.v1'
 const AGENT_CARD_ROUTE = `/${AGENT_CARD_PATH}`
 const MESSAGE_SEND_ROUTE = '/message:send'
+const MESSAGE_STREAM_ROUTE = '/message:stream'
+const TASKS_ROUTE = '/tasks'
+const EXTENDED_AGENT_CARD_ROUTE = '/extendedAgentCard'
+const A2A_PUSH_NOTIFICATION_CONFIGS_SEGMENT = 'pushNotificationConfigs'
+const A2A_PROTOCOL_ROUTES = new Set([
+  AGENT_CARD_ROUTE,
+  EXTENDED_AGENT_CARD_ROUTE,
+  MESSAGE_SEND_ROUTE,
+  MESSAGE_STREAM_ROUTE,
+  TASKS_ROUTE,
+])
 const MCP_ROUTE = '/mcp'
 const SOURCES_ROUTE = '/sources'
 const SETTINGS_ROUTE = '/settings'
@@ -73,6 +94,7 @@ const CONFIG_PATH_ENV = 'LLMWIKI_AGENT_BRIDGE_CONFIG_PATH'
 const AUDIT_LOG_ENV = 'LLMWIKI_AGENT_BRIDGE_AUDIT_LOG'
 const IO_LOG_ENV = 'LLMWIKI_AGENT_BRIDGE_IO_LOG'
 const IO_LOG_PATH_ENV = 'LLMWIKI_AGENT_BRIDGE_IO_LOG_PATH'
+const MCP_TOOL_EXPOSURE_ENV = 'LLMWIKI_AGENT_BRIDGE_MCP_TOOL_EXPOSURE'
 const DEEPAGENTS_ACP_COMMAND_ENV = 'LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_COMMAND'
 const DEEPAGENTS_ACP_ARGS_ENV = 'LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_ARGS'
 const DEEPAGENTS_ACP_CWD_ENV = 'LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_CWD'
@@ -90,10 +112,48 @@ const LOGGER_IO_LOG_MODE = 'logger'
 const OFF_IO_LOG_MODE = 'off'
 const DEFAULT_IO_LOG_MODE = FILE_IO_LOG_MODE
 const DEFAULT_IO_LOG_FILE_PATH = join('.runtime-logs', 'llmwiki-agent-bridge-io.jsonl')
+const A2A_HTTP_JSON_BINDING = 'HTTP+JSON'
+const A2A_DEFAULT_INPUT_MODES = ['text/plain', 'application/json']
+const A2A_DEFAULT_OUTPUT_MODES = ['text/markdown', 'application/json']
+const DEFAULT_A2A_TASK_STORE_LIMIT = 100
+const DEFAULT_A2A_TASK_LIST_PAGE_SIZE = 50
+const MAX_A2A_TASK_LIST_PAGE_SIZE = 100
+const A2A_TASK_STATE_SUBMITTED = 'TASK_STATE_SUBMITTED'
+const A2A_TASK_STATE_WORKING = 'TASK_STATE_WORKING'
+const A2A_TASK_STATE_COMPLETED = 'TASK_STATE_COMPLETED'
+const A2A_TASK_STATE_FAILED = 'TASK_STATE_FAILED'
+const A2A_TASK_STATE_CANCELED = 'TASK_STATE_CANCELED'
+const A2A_TASK_STATE_REJECTED = 'TASK_STATE_REJECTED'
+const A2A_TASK_STATE_VALUES = new Set([
+  A2A_TASK_STATE_SUBMITTED,
+  A2A_TASK_STATE_WORKING,
+  A2A_TASK_STATE_COMPLETED,
+  A2A_TASK_STATE_FAILED,
+  A2A_TASK_STATE_CANCELED,
+  'TASK_STATE_INPUT_REQUIRED',
+  A2A_TASK_STATE_REJECTED,
+  'TASK_STATE_AUTH_REQUIRED',
+])
+const A2A_TERMINAL_TASK_STATES = new Set([
+  A2A_TASK_STATE_COMPLETED,
+  A2A_TASK_STATE_FAILED,
+  A2A_TASK_STATE_CANCELED,
+  A2A_TASK_STATE_REJECTED,
+])
 const MCP_PROTOCOL_VERSION = '2025-06-18'
+const MCP_PREVIOUS_PROTOCOL_VERSION = '2025-11-25'
 const MODERN_MCP_PROTOCOL_VERSION = '2026-07-28'
-const SUPPORTED_MCP_PROTOCOL_VERSION_LIST = [MODERN_MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION, '2024-11-05']
+const SUPPORTED_MCP_PROTOCOL_VERSION_LIST = [
+  MODERN_MCP_PROTOCOL_VERSION,
+  MCP_PREVIOUS_PROTOCOL_VERSION,
+  MCP_PROTOCOL_VERSION,
+  '2024-11-05',
+]
 const SUPPORTED_MCP_PROTOCOL_VERSIONS = new Set(SUPPORTED_MCP_PROTOCOL_VERSION_LIST)
+const MCP_CACHE_TTL_MS = 60_000
+const MCP_CACHE_SCOPE = 'private'
+const DEFAULT_MCP_TOOL_EXPOSURE = 'direct'
+const MAX_GATEWAY_TOOL_SEARCH_RESULTS = 50
 const MAX_IO_LOG_DEPTH = 8
 const MAX_IO_LOG_ARRAY_ITEMS = 50
 const MAX_IO_LOG_STRING_CHARS = 20_000
@@ -212,6 +272,13 @@ const runtimeAdapterAliases = new Map([
   ['deepagentsacp', 'deepagents-acp'],
   ['acp', 'deepagents-acp'],
 ])
+const mcpToolExposureAliases = new Map([
+  ['direct', 'direct'],
+  ['gateway', 'gateway'],
+  ['progressive', 'gateway'],
+  ['progressivediscovery', 'gateway'],
+  ['both', 'both'],
+])
 const orchestrationModes = new Set(['evidence-only', 'delegated-runtime', 'hybrid'])
 const RETRIEVAL_SCHEMA_VERSION = 'llmwiki.retrieval.v1'
 const RETRIEVAL_GUIDANCE_SCHEMA_VERSION = 'llmwiki.retrieval_guidance.v1'
@@ -313,12 +380,13 @@ const unavailableIpv4CidrBlocks = [
 ]
 
 const baseCorsHeaders = {
-  'Access-Control-Allow-Headers': 'authorization, content-type',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
+  'Access-Control-Allow-Headers': `authorization, content-type, ${BRIDGE_A2A_VERSION_HEADER}`,
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
   Vary: 'Origin',
 }
 const auditedBridgeRoutes = new Set([
   MESSAGE_SEND_ROUTE,
+  MESSAGE_STREAM_ROUTE,
   MCP_ROUTE,
   SOURCES_ROUTE,
   SETTINGS_ROUTE,
@@ -326,6 +394,8 @@ const auditedBridgeRoutes = new Set([
   SETTINGS_CONFIG_JSON_ROUTE,
   SETTINGS_SOURCES_JSON_ROUTE,
   AGENT_CARD_ROUTE,
+  EXTENDED_AGENT_CARD_ROUTE,
+  TASKS_ROUTE,
   '/health',
 ])
 const auditedMcpMethods = new Set(['initialize', 'notifications/initialized', 'ping', 'server/discover', 'tools/list', 'tools/call'])
@@ -333,6 +403,144 @@ const conversationMessageRoles = new Set(['user', 'assistant', 'system'])
 const conversationRuntimeRoles = new Set(['user', 'assistant'])
 
 let mcpRequestId = 0
+
+function createA2aTaskStore(limit = DEFAULT_A2A_TASK_STORE_LIMIT) {
+  const maxEntries = Math.max(1, Math.min(1000, Math.trunc(limit) || DEFAULT_A2A_TASK_STORE_LIMIT))
+  const entries = new Map()
+
+  function put(task) {
+    const id = readStringValue(task?.id)
+    if (!id) return null
+    const now = new Date().toISOString()
+    const existing = entries.get(id)
+    const entry = {
+      task: cloneJson(task),
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    }
+    if (existing) entries.delete(id)
+    entries.set(id, entry)
+    while (entries.size > maxEntries) {
+      entries.delete(entries.keys().next().value)
+    }
+    return cloneJson(entry.task)
+  }
+
+  function get(id, options = {}) {
+    const entry = entries.get(readStringValue(id))
+    return entry ? taskForRead(entry.task, options) : null
+  }
+
+  function list(options = {}) {
+    const parsed = parseA2aTaskListOptions(options)
+    const filtered = [...entries.values()]
+      .map((entry) => entry.task)
+      .filter((task) => !parsed.contextId || task.contextId === parsed.contextId)
+      .filter((task) => !parsed.status || task.status?.state === parsed.status)
+      .filter((task) => !parsed.statusTimestampAfter || taskStatusTime(task) >= parsed.statusTimestampAfter)
+      .reverse()
+    const totalSize = filtered.length
+    const page = filtered.slice(parsed.offset, parsed.offset + parsed.pageSize)
+    const nextOffset = parsed.offset + page.length
+    return {
+      tasks: page.map((task) => taskForRead(task, parsed)),
+      nextPageToken: nextOffset < totalSize ? String(nextOffset) : '',
+      pageSize: parsed.pageSize,
+      totalSize,
+    }
+  }
+
+  return { put, get, list }
+}
+
+function parseA2aTaskListOptions(options = {}) {
+  const pageSize = boundedA2aPageSize(options.pageSize)
+  return {
+    contextId: readStringValue(options.contextId).trim(),
+    status: parseA2aTaskStatusFilter(options.status),
+    pageSize,
+    offset: parseA2aPageToken(options.pageToken),
+    historyLength: parseA2aHistoryLength(options.historyLength),
+    statusTimestampAfter: parseA2aTimestampFilter(options.statusTimestampAfter),
+    includeArtifacts: readBooleanValue(options.includeArtifacts) === true,
+  }
+}
+
+function boundedA2aPageSize(value) {
+  const parsed = readNumberValue(value)
+  if (parsed === undefined) return DEFAULT_A2A_TASK_LIST_PAGE_SIZE
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new A2aRestError(400, 'pageSize must be an integer from 1 to 100.', 'INVALID_ARGUMENT', 'INVALID_ARGUMENT')
+  }
+  return Math.min(parsed, MAX_A2A_TASK_LIST_PAGE_SIZE)
+}
+
+function parseA2aPageToken(value) {
+  const token = readStringValue(value).trim()
+  if (!token) return 0
+  if (!/^\d+$/.test(token)) {
+    throw new A2aRestError(400, 'pageToken must be a non-negative integer offset returned by ListTasks.', 'INVALID_ARGUMENT', 'INVALID_ARGUMENT')
+  }
+  return Number(token)
+}
+
+function parseA2aTaskStatusFilter(value) {
+  const status = readStringValue(value).trim()
+  if (!status) return ''
+  if (A2A_TASK_STATE_VALUES.has(status)) return status
+  const numericStatus = Number(status)
+  if (Number.isInteger(numericStatus)) {
+    const values = [
+      '',
+      A2A_TASK_STATE_SUBMITTED,
+      A2A_TASK_STATE_WORKING,
+      A2A_TASK_STATE_COMPLETED,
+      A2A_TASK_STATE_FAILED,
+      A2A_TASK_STATE_CANCELED,
+      'TASK_STATE_INPUT_REQUIRED',
+      A2A_TASK_STATE_REJECTED,
+      'TASK_STATE_AUTH_REQUIRED',
+    ]
+    if (values[numericStatus]) return values[numericStatus]
+  }
+  throw new A2aRestError(400, 'status must be a valid A2A task state.', 'INVALID_ARGUMENT', 'INVALID_ARGUMENT')
+}
+
+function parseA2aHistoryLength(value) {
+  if (value === undefined || value === null || value === '') return undefined
+  const parsed = readNumberValue(value)
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new A2aRestError(400, 'historyLength must be a non-negative integer.', 'INVALID_ARGUMENT', 'INVALID_ARGUMENT')
+  }
+  return Math.min(parsed, MAX_CONVERSATION_MESSAGES)
+}
+
+function parseA2aTimestampFilter(value) {
+  const text = readStringValue(value).trim()
+  if (!text) return undefined
+  const timestamp = Date.parse(text)
+  if (!Number.isFinite(timestamp)) {
+    throw new A2aRestError(400, 'statusTimestampAfter must be an ISO 8601 timestamp.', 'INVALID_ARGUMENT', 'INVALID_ARGUMENT')
+  }
+  return timestamp
+}
+
+function taskStatusTime(task) {
+  const timestamp = Date.parse(readStringValue(task?.status?.timestamp))
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+function taskForRead(task, { includeArtifacts = true, historyLength } = {}) {
+  const copy = cloneJson(task)
+  if (!includeArtifacts) copy.artifacts = []
+  if (!Array.isArray(copy.history)) copy.history = []
+  if (historyLength !== undefined) copy.history = copy.history.slice(-historyLength)
+  return copy
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value))
+}
 
 export function createAgentBridge(options = {}) {
   const config = bridgeConfig(options.env || process.env, options)
@@ -505,27 +713,94 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
       [MESSAGE_SEND_ROUTE]: {
         post: {
           summary: 'Run a grounded answer request through selected Knowledge Sources',
-          requestBody: {
-            required: true,
-            content: {
-              'application/json': {
-                schema: {
-                  oneOf: [
-                    { $ref: '#/components/schemas/MessageSendEnvelope' },
-                    { $ref: '#/components/schemas/MessageSendData' },
-                  ],
-                },
-              },
-            },
-          },
+          requestBody: messageSendRequestBody(),
           responses: {
-            200: jsonResponse('Completed bridge task', '#/components/schemas/MessageSendResponse'),
+            200: messageSendResponse('Completed bridge task'),
             400: jsonResponse('Bad request', '#/components/schemas/ErrorResponse'),
             401: jsonResponse('Unauthorized', '#/components/schemas/ErrorResponse'),
             403: jsonResponse('Origin not allowed', '#/components/schemas/ErrorResponse'),
             413: jsonResponse('Request body too large', '#/components/schemas/ErrorResponse'),
             500: jsonResponse('Unexpected bridge failure', '#/components/schemas/ErrorResponse'),
             502: jsonResponse('Runtime chat completions failure', '#/components/schemas/ErrorResponse'),
+          },
+        },
+      },
+      [MESSAGE_STREAM_ROUTE]: {
+        post: {
+          summary: 'Run a grounded answer request as A2A HTTP+JSON SSE events',
+          requestBody: messageSendRequestBody(),
+          responses: {
+            200: sseResponse('A2A task and status-update event stream'),
+            400: a2aJsonResponse('Bad A2A request', '#/components/schemas/A2aRestErrorResponse'),
+            401: jsonResponse('Unauthorized', '#/components/schemas/ErrorResponse'),
+            403: jsonResponse('Origin not allowed', '#/components/schemas/ErrorResponse'),
+            413: jsonResponse('Request body too large', '#/components/schemas/ErrorResponse'),
+            500: jsonResponse('Unexpected bridge failure', '#/components/schemas/ErrorResponse'),
+          },
+        },
+      },
+      [TASKS_ROUTE]: {
+        get: {
+          summary: 'List process-local A2A task snapshots',
+          parameters: a2aTaskListParameters(),
+          responses: {
+            200: a2aJsonResponse('Stored A2A task snapshots', '#/components/schemas/A2aTaskListResponse'),
+            400: a2aJsonResponse('Bad A2A task-list request', '#/components/schemas/A2aRestErrorResponse'),
+            401: jsonResponse('Unauthorized', '#/components/schemas/ErrorResponse'),
+            403: jsonResponse('Origin not allowed', '#/components/schemas/ErrorResponse'),
+          },
+        },
+      },
+      '/tasks/{id}': {
+        get: {
+          summary: 'Read one process-local A2A task snapshot',
+          parameters: [
+            pathParameter('id', 'A2A task id'),
+            queryParameter('historyLength', { type: 'integer', minimum: 0, maximum: MAX_CONVERSATION_MESSAGES }),
+          ],
+          responses: {
+            200: a2aJsonResponse('Stored A2A task', '#/components/schemas/A2aTask'),
+            400: a2aJsonResponse('Bad A2A task request', '#/components/schemas/A2aRestErrorResponse'),
+            401: jsonResponse('Unauthorized', '#/components/schemas/ErrorResponse'),
+            403: jsonResponse('Origin not allowed', '#/components/schemas/ErrorResponse'),
+            404: a2aJsonResponse('A2A task not found', '#/components/schemas/A2aRestErrorResponse'),
+          },
+        },
+      },
+      '/tasks/{id}:cancel': {
+        post: {
+          summary: 'Return the A2A task-not-cancelable error for local completed snapshots',
+          parameters: [pathParameter('id', 'A2A task id')],
+          responses: {
+            400: a2aJsonResponse('Task cannot be canceled', '#/components/schemas/A2aRestErrorResponse'),
+            401: jsonResponse('Unauthorized', '#/components/schemas/ErrorResponse'),
+            403: jsonResponse('Origin not allowed', '#/components/schemas/ErrorResponse'),
+            404: a2aJsonResponse('A2A task not found', '#/components/schemas/A2aRestErrorResponse'),
+          },
+        },
+      },
+      '/tasks/{id}:subscribe': {
+        get: a2aSubscribeOperation(),
+        post: a2aSubscribeOperation(),
+      },
+      '/tasks/{id}/pushNotificationConfigs': {
+        get: a2aPushNotificationUnsupportedOperation(),
+        post: a2aPushNotificationUnsupportedOperation(),
+        delete: a2aPushNotificationUnsupportedOperation(),
+      },
+      '/tasks/{id}/pushNotificationConfigs/{configId}': {
+        get: a2aPushNotificationUnsupportedOperation(true),
+        post: a2aPushNotificationUnsupportedOperation(true),
+        delete: a2aPushNotificationUnsupportedOperation(true),
+      },
+      [EXTENDED_AGENT_CARD_ROUTE]: {
+        get: {
+          summary: 'Return the extended A2A Agent Card for authenticated clients',
+          responses: {
+            200: a2aJsonResponse('Extended Agent Card', '#/components/schemas/AgentCardResponse'),
+            400: a2aJsonResponse('Bad A2A version', '#/components/schemas/A2aRestErrorResponse'),
+            401: jsonResponse('Unauthorized', '#/components/schemas/ErrorResponse'),
+            403: jsonResponse('Origin not allowed', '#/components/schemas/ErrorResponse'),
           },
         },
       },
@@ -573,27 +848,74 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
           name: { type: 'string' },
           description: { type: 'string' },
           protocol: { const: 'a2a' },
+          protocolVersion: { const: BRIDGE_A2A_PROTOCOL_VERSION },
           runtime: { type: 'string' },
           agentRuntime: { type: 'string' },
           provider: objectSchema({
+            url: { type: 'string' },
             organization: { type: 'string' },
-          }, ['organization']),
+          }, ['url', 'organization']),
+          version: { type: 'string' },
+          documentationUrl: { type: 'string' },
+          supportedInterfaces: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/A2aAgentInterface' },
+          },
           url: { const: MESSAGE_SEND_ROUTE },
           capabilities: objectSchema({
             streaming: { type: 'boolean' },
+            pushNotifications: { type: 'boolean' },
+            extensions: { type: 'array', items: { type: 'object', additionalProperties: true } },
+            extendedAgentCard: { type: 'boolean' },
             structuredArtifacts: { type: 'boolean' },
             localBridge: { type: 'boolean' },
             knowledgeSourceProtocols: {
               type: 'array',
               items: { enum: ['llmwiki-http', 'mcp', 'a2a'] },
             },
-          }, ['streaming', 'structuredArtifacts', 'localBridge', 'knowledgeSourceProtocols']),
+          }, ['streaming', 'pushNotifications', 'extensions', 'extendedAgentCard', 'structuredArtifacts', 'localBridge', 'knowledgeSourceProtocols']),
+          defaultInputModes: {
+            type: 'array',
+            items: { type: 'string' },
+          },
+          defaultOutputModes: {
+            type: 'array',
+            items: { type: 'string' },
+          },
+          skills: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/A2aAgentSkill' },
+          },
+          securitySchemes: {
+            type: 'object',
+            additionalProperties: { $ref: '#/components/schemas/A2aSecurityScheme' },
+          },
+          security: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/A2aSecurityRequirement' },
+          },
+          securityRequirements: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/A2aSecurityRequirement' },
+          },
+          signatures: {
+            type: 'array',
+            items: { type: 'object', additionalProperties: true },
+          },
           metadata: objectSchema({
             bridge: { const: 'llmwiki-agent-bridge' },
+            protocolVersion: { const: BRIDGE_A2A_PROTOCOL_VERSION },
+            supportedProtocolVersions: {
+              type: 'array',
+              items: { type: 'string' },
+            },
+            protocolVersionHeader: { const: BRIDGE_A2A_VERSION_HEADER },
+            preferredInterface: { $ref: '#/components/schemas/A2aAgentInterface' },
             runtimeProfile: { enum: ['hermes', 'deepagents', 'generic'] },
             runtimeAdapter: { enum: ['chat-completions', 'deepagents-acp'] },
             modelConfigured: { type: 'boolean' },
             hermesModelConfigured: { type: 'boolean' },
+            bridgeAuthRequired: { type: 'boolean' },
             runtimeConnection: { $ref: '#/components/schemas/PublicRuntimeConnection' },
             sourcePolicy: { enum: ['private-http', 'allowlist', 'public-https'] },
             settingsUrl: { const: SETTINGS_ROUTE },
@@ -602,8 +924,58 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
               mcp: { const: 'compatible' },
             }, ['a2a', 'mcp']),
             sourceRegistry: sourceRegistrySummarySchema(),
-          }, ['bridge', 'runtimeProfile', 'runtimeAdapter', 'modelConfigured', 'hermesModelConfigured', 'sourcePolicy', 'settingsUrl', 'protocolSurface', 'sourceRegistry']),
-        }, ['id', 'name', 'description', 'protocol', 'runtime', 'agentRuntime', 'provider', 'url', 'capabilities', 'metadata']),
+          }, ['bridge', 'protocolVersion', 'supportedProtocolVersions', 'protocolVersionHeader', 'preferredInterface', 'runtimeProfile', 'runtimeAdapter', 'modelConfigured', 'hermesModelConfigured', 'bridgeAuthRequired', 'sourcePolicy', 'settingsUrl', 'protocolSurface', 'sourceRegistry']),
+        }, ['id', 'name', 'description', 'protocol', 'protocolVersion', 'runtime', 'agentRuntime', 'provider', 'version', 'supportedInterfaces', 'url', 'capabilities', 'defaultInputModes', 'defaultOutputModes', 'skills', 'securitySchemes', 'securityRequirements', 'signatures', 'metadata']),
+        A2aAgentInterface: objectSchema({
+          url: { const: MESSAGE_SEND_ROUTE },
+          protocolBinding: { const: A2A_HTTP_JSON_BINDING },
+          protocolVersion: { const: BRIDGE_A2A_PROTOCOL_VERSION },
+          tenant: { type: 'string' },
+        }, ['url', 'protocolBinding', 'protocolVersion', 'tenant']),
+        A2aAgentSkill: objectSchema({
+          id: { type: 'string' },
+          name: { type: 'string' },
+          description: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          examples: { type: 'array', items: { type: 'string' } },
+          inputModes: { type: 'array', items: { type: 'string' } },
+          outputModes: { type: 'array', items: { type: 'string' } },
+          security: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/A2aSecurityRequirement' },
+          },
+          securityRequirements: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/A2aSecurityRequirement' },
+          },
+        }, ['id', 'name', 'description', 'tags', 'examples', 'inputModes', 'outputModes', 'securityRequirements']),
+        A2aSecurityScheme: objectSchema({
+          apiKeySecurityScheme: { type: 'object', additionalProperties: true },
+          httpAuthSecurityScheme: { $ref: '#/components/schemas/A2aHttpAuthSecurityScheme' },
+          oauth2SecurityScheme: { type: 'object', additionalProperties: true },
+          openIdConnectSecurityScheme: { type: 'object', additionalProperties: true },
+          mtlsSecurityScheme: { type: 'object', additionalProperties: true },
+        }),
+        A2aHttpAuthSecurityScheme: objectSchema({
+          description: { type: 'string' },
+          scheme: { type: 'string' },
+          bearerFormat: { type: 'string' },
+        }, ['scheme']),
+        A2aSecurityRequirement: {
+          type: 'object',
+          properties: {
+            schemes: {
+              type: 'object',
+              additionalProperties: { $ref: '#/components/schemas/A2aStringList' },
+            },
+          },
+        },
+        A2aStringList: objectSchema({
+          list: {
+            type: 'array',
+            items: { type: 'string' },
+          },
+        }),
         MessageSendEnvelope: objectSchema({
           data: { $ref: '#/components/schemas/MessageSendData' },
           message: { $ref: '#/components/schemas/A2aTextMessage' },
@@ -755,6 +1127,123 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
             items: { $ref: '#/components/schemas/Artifact' },
           },
         }, ['id', 'requestId', 'traceId', 'status', 'message', 'artifacts']),
+        A2aSendMessageResponse: objectSchema({
+          task: { $ref: '#/components/schemas/A2aTask' },
+          message: { $ref: '#/components/schemas/A2aMessage' },
+        }),
+        A2aTaskListResponse: objectSchema({
+          tasks: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/A2aTask' },
+          },
+          nextPageToken: { type: 'string' },
+          pageSize: { type: 'integer', minimum: 1, maximum: MAX_A2A_TASK_LIST_PAGE_SIZE },
+          totalSize: { type: 'integer', minimum: 0 },
+        }, ['tasks', 'nextPageToken', 'pageSize', 'totalSize']),
+        A2aStreamEvent: {
+          oneOf: [
+            objectSchema({
+              task: { $ref: '#/components/schemas/A2aTask' },
+            }, ['task']),
+            objectSchema({
+              statusUpdate: { $ref: '#/components/schemas/A2aTaskStatusUpdate' },
+            }, ['statusUpdate']),
+          ],
+        },
+        A2aTaskStatusUpdate: objectSchema({
+          taskId: { type: 'string' },
+          contextId: { type: 'string' },
+          status: { $ref: '#/components/schemas/A2aTaskStatus' },
+          metadata: { type: 'object', additionalProperties: true },
+        }, ['taskId', 'contextId', 'status']),
+        A2aRestErrorResponse: objectSchema({
+          error: objectSchema({
+            code: { type: 'integer' },
+            status: { type: 'string' },
+            message: { type: 'string' },
+            details: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/A2aRestErrorInfo' },
+            },
+          }, ['code', 'status', 'message', 'details']),
+        }, ['error']),
+        A2aRestErrorInfo: objectSchema({
+          '@type': { const: 'type.googleapis.com/google.rpc.ErrorInfo' },
+          reason: { type: 'string' },
+          domain: { const: 'a2a-protocol.org' },
+          metadata: { type: 'object', additionalProperties: true },
+        }, ['@type', 'reason', 'domain']),
+        A2aTask: objectSchema({
+          id: { type: 'string' },
+          contextId: { type: 'string' },
+          status: { $ref: '#/components/schemas/A2aTaskStatus' },
+          artifacts: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/A2aArtifact' },
+          },
+          history: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/A2aMessage' },
+          },
+          metadata: { type: 'object', additionalProperties: true },
+        }, ['id', 'contextId', 'status', 'artifacts', 'history']),
+        A2aTaskStatus: objectSchema({
+          state: { $ref: '#/components/schemas/A2aTaskState' },
+          message: { $ref: '#/components/schemas/A2aMessage' },
+          timestamp: { type: 'string', format: 'date-time' },
+        }, ['state']),
+        A2aTaskState: {
+          enum: [
+            'TASK_STATE_SUBMITTED',
+            'TASK_STATE_WORKING',
+            'TASK_STATE_COMPLETED',
+            'TASK_STATE_FAILED',
+            'TASK_STATE_CANCELED',
+            'TASK_STATE_INPUT_REQUIRED',
+            'TASK_STATE_REJECTED',
+            'TASK_STATE_AUTH_REQUIRED',
+          ],
+        },
+        A2aMessage: objectSchema({
+          messageId: { type: 'string' },
+          contextId: { type: 'string' },
+          taskId: { type: 'string' },
+          role: { enum: ['ROLE_USER', 'ROLE_AGENT'] },
+          parts: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/A2aPart' },
+          },
+          metadata: { type: 'object', additionalProperties: true },
+          extensions: {
+            type: 'array',
+            items: { type: 'string' },
+          },
+          referenceTaskIds: {
+            type: 'array',
+            items: { type: 'string' },
+          },
+        }, ['messageId', 'contextId', 'taskId', 'role', 'parts', 'extensions', 'referenceTaskIds']),
+        A2aArtifact: objectSchema({
+          artifactId: { type: 'string' },
+          name: { type: 'string' },
+          description: { type: 'string' },
+          parts: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/A2aPart' },
+          },
+          metadata: { type: 'object', additionalProperties: true },
+          extensions: {
+            type: 'array',
+            items: { type: 'string' },
+          },
+        }, ['artifactId', 'name', 'description', 'parts', 'extensions']),
+        A2aPart: objectSchema({
+          text: { type: 'string' },
+          data: {},
+          mediaType: { type: 'string' },
+          metadata: { type: 'object', additionalProperties: true },
+          filename: { type: 'string' },
+        }, ['mediaType']),
         TaskStatusMessage: objectSchema({
           parts: {
             type: 'array',
@@ -1132,6 +1621,8 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
         }, ['protocolVersion', 'capabilities', 'serverInfo']),
         McpServerDiscoverResult: objectSchema({
           resultType: { const: 'complete' },
+          ttlMs: { type: 'integer', minimum: 0 },
+          cacheScope: { enum: ['private', 'public'] },
           supportedVersions: {
             type: 'array',
             items: { type: 'string' },
@@ -1147,18 +1638,27 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
               version: { type: 'string' },
             }, ['name', 'version']),
           }, ['io.modelcontextprotocol/serverInfo']),
-        }, ['resultType', 'supportedVersions', 'capabilities', '_meta']),
+        }, ['resultType', 'ttlMs', 'cacheScope', 'supportedVersions', 'capabilities', '_meta']),
         McpPingResult: objectSchema({}),
         McpToolListResult: objectSchema({
+          resultType: { const: 'complete' },
+          ttlMs: { type: 'integer', minimum: 0 },
+          cacheScope: { enum: ['private', 'public'] },
           serverInfo: objectSchema({
             name: { type: 'string' },
             settingsUrl: { type: 'string' },
           }, ['name']),
+          _meta: objectSchema({
+            'io.modelcontextprotocol/serverInfo': objectSchema({
+              name: { type: 'string' },
+              version: { type: 'string' },
+            }, ['name', 'version']),
+          }, ['io.modelcontextprotocol/serverInfo']),
           tools: {
             type: 'array',
             items: { $ref: '#/components/schemas/McpToolDescriptor' },
           },
-        }, ['tools']),
+        }, ['resultType', 'ttlMs', 'cacheScope', 'tools']),
         McpToolDescriptor: objectSchema({
           name: {
             enum: [
@@ -1170,12 +1670,16 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
               'llmwiki_graph',
               'llmwiki_graph_neighbors',
               'llmwiki_source_bundle',
+              'llmwiki_gateway_search_tools',
+              'llmwiki_gateway_get_tool_details',
+              'llmwiki_gateway_call_tool',
             ],
           },
           description: { type: 'string' },
           inputSchema: { type: 'object', additionalProperties: true },
         }, ['name', 'description', 'inputSchema']),
         McpToolCallResult: objectSchema({
+          resultType: { const: 'complete' },
           content: {
             type: 'array',
             items: { $ref: '#/components/schemas/McpContentPart' },
@@ -1192,11 +1696,21 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
               llmwiki_graph: { type: 'object', additionalProperties: true },
               llmwiki_graph_neighbors: { type: 'object', additionalProperties: true },
               llmwiki_source_bundle: { type: 'object', additionalProperties: true },
+              llmwiki_gateway_tool_search: { type: 'object', additionalProperties: true },
+              llmwiki_gateway_tool_details: { type: 'object', additionalProperties: true },
+              llmwiki_gateway_tool_call: { type: 'object', additionalProperties: true },
+              llmwiki_gateway_tool_error: { type: 'object', additionalProperties: true },
               llmwiki_source_error: { type: 'object', additionalProperties: true },
             },
           },
           isError: { type: 'boolean' },
-        }, ['content', 'structuredContent', 'isError']),
+          _meta: objectSchema({
+            'io.modelcontextprotocol/serverInfo': objectSchema({
+              name: { type: 'string' },
+              version: { type: 'string' },
+            }, ['name', 'version']),
+          }, ['io.modelcontextprotocol/serverInfo']),
+        }, ['resultType', 'content', 'structuredContent', 'isError']),
         McpContentPart: objectSchema({
           type: { const: 'text' },
           text: { type: 'string' },
@@ -1422,6 +1936,128 @@ function jsonResponse(description, ref) {
   }
 }
 
+function a2aJsonResponse(description, ref) {
+  return {
+    description,
+    content: {
+      [BRIDGE_A2A_CONTENT_TYPE]: {
+        schema: { $ref: ref },
+      },
+    },
+  }
+}
+
+function sseResponse(description) {
+  return {
+    description,
+    content: {
+      'text/event-stream': {
+        schema: {
+          type: 'string',
+          description: 'Server-Sent Events; each data frame contains an A2A task or statusUpdate JSON object.',
+        },
+      },
+    },
+  }
+}
+
+function messageSendRequestBody() {
+  return {
+    required: true,
+    content: {
+      'application/json': {
+        schema: {
+          oneOf: [
+            { $ref: '#/components/schemas/MessageSendEnvelope' },
+            { $ref: '#/components/schemas/MessageSendData' },
+          ],
+        },
+      },
+      [BRIDGE_A2A_CONTENT_TYPE]: {
+        schema: {
+          oneOf: [
+            { $ref: '#/components/schemas/MessageSendEnvelope' },
+            { $ref: '#/components/schemas/MessageSendData' },
+          ],
+        },
+      },
+    },
+  }
+}
+
+function messageSendResponse(description) {
+  return {
+    description,
+    content: {
+      'application/json': {
+        schema: { $ref: '#/components/schemas/MessageSendResponse' },
+      },
+      [BRIDGE_A2A_CONTENT_TYPE]: {
+        schema: { $ref: '#/components/schemas/A2aSendMessageResponse' },
+      },
+    },
+  }
+}
+
+function pathParameter(name, description) {
+  return {
+    name,
+    in: 'path',
+    required: true,
+    schema: { type: 'string' },
+    description,
+  }
+}
+
+function queryParameter(name, schema) {
+  return {
+    name,
+    in: 'query',
+    required: false,
+    schema,
+  }
+}
+
+function a2aTaskListParameters() {
+  return [
+    queryParameter('contextId', { type: 'string' }),
+    queryParameter('status', { $ref: '#/components/schemas/A2aTaskState' }),
+    queryParameter('pageSize', { type: 'integer', minimum: 1, maximum: MAX_A2A_TASK_LIST_PAGE_SIZE }),
+    queryParameter('pageToken', { type: 'string' }),
+    queryParameter('historyLength', { type: 'integer', minimum: 0, maximum: MAX_CONVERSATION_MESSAGES }),
+    queryParameter('statusTimestampAfter', { type: 'string', format: 'date-time' }),
+    queryParameter('includeArtifacts', { type: 'boolean' }),
+  ]
+}
+
+function a2aSubscribeOperation() {
+  return {
+    summary: 'Return the A2A unsupported-operation error for local task subscription',
+    parameters: [pathParameter('id', 'A2A task id')],
+    responses: {
+      400: a2aJsonResponse('Task subscription is not available', '#/components/schemas/A2aRestErrorResponse'),
+      401: jsonResponse('Unauthorized', '#/components/schemas/ErrorResponse'),
+      403: jsonResponse('Origin not allowed', '#/components/schemas/ErrorResponse'),
+      404: a2aJsonResponse('A2A task not found', '#/components/schemas/A2aRestErrorResponse'),
+    },
+  }
+}
+
+function a2aPushNotificationUnsupportedOperation(withConfigId = false) {
+  return {
+    summary: 'Return the A2A push-notification-not-supported error',
+    parameters: [
+      pathParameter('id', 'A2A task id'),
+      ...(withConfigId ? [pathParameter('configId', 'A2A push notification config id')] : []),
+    ],
+    responses: {
+      400: a2aJsonResponse('Push notifications are not supported', '#/components/schemas/A2aRestErrorResponse'),
+      401: jsonResponse('Unauthorized', '#/components/schemas/ErrorResponse'),
+      403: jsonResponse('Origin not allowed', '#/components/schemas/ErrorResponse'),
+    },
+  }
+}
+
 function htmlResponse(description) {
   return {
     description,
@@ -1564,6 +2200,7 @@ function normalizedRunContext(input = {}) {
   return {
     requestId: safeRunIdentifier(input.requestId) || randomUUID(),
     traceId: safeRunIdentifier(input.traceId) || randomUUID(),
+    taskId: safeRunIdentifier(input.taskId) || undefined,
   }
 }
 
@@ -1600,7 +2237,29 @@ function queryFlag(searchParams, name) {
 }
 
 function bridgeRoutePattern(pathname) {
+  const taskRoute = a2aTaskRoutePattern(pathname)
+  if (taskRoute) return taskRoute
+  const pushRoute = a2aPushNotificationRoutePattern(pathname)
+  if (pushRoute) return pushRoute
   return auditedBridgeRoutes.has(pathname) ? pathname : undefined
+}
+
+function a2aTaskRoutePattern(pathname) {
+  if (pathname === TASKS_ROUTE) return TASKS_ROUTE
+  if (/^\/tasks\/[^/]+$/.test(pathname)) return '/tasks/{id}'
+  if (/^\/tasks\/[^/]+:cancel$/.test(pathname)) return '/tasks/{id}:cancel'
+  if (/^\/tasks\/[^/]+:subscribe$/.test(pathname)) return '/tasks/{id}:subscribe'
+  return ''
+}
+
+function a2aPushNotificationRoutePattern(pathname) {
+  if (/^\/tasks\/[^/]+\/pushNotificationConfigs$/.test(pathname)) {
+    return '/tasks/{id}/pushNotificationConfigs'
+  }
+  if (/^\/tasks\/[^/]+\/pushNotificationConfigs\/[^/]+$/.test(pathname)) {
+    return '/tasks/{id}/pushNotificationConfigs/{configId}'
+  }
+  return ''
 }
 
 function emitRequestAuditLog(config, input) {
@@ -1991,6 +2650,7 @@ function auditedMcpMethod(value) {
 function auditedMcpToolName(value) {
   if (!value) return undefined
   if (value === 'llmwiki_agent_run') return value
+  if (mcpGatewayToolNames().includes(value)) return value
   if (mcpSourceToolNames().includes(value)) return value
   return '[unknown]'
 }
@@ -2053,6 +2713,12 @@ async function handleBridgeRequest(request, response, config) {
       return
     }
 
+    if (request.method === 'GET' && url.pathname === EXTENDED_AGENT_CARD_ROUTE) {
+      assertCurrentA2aProtocolVersion(request, url)
+      writeA2aJson(response, 200, agentCard(config), config, request)
+      return
+    }
+
     if (request.method === 'GET' && url.pathname === SETTINGS_JSON_ROUTE) {
       writeJson(response, 200, redactedBridgeSettings(config, request), config, request)
       return
@@ -2107,7 +2773,11 @@ async function handleBridgeRequest(request, response, config) {
     }
 
     if (request.method === 'POST' && url.pathname === MESSAGE_SEND_ROUTE) {
-      messageRunContext = auditContext
+      const a2aProtocolVersion = assertSupportedA2aProtocolVersion(request, url)
+      messageRunContext = {
+        ...auditContext,
+        taskId: a2aProtocolVersion === BRIDGE_A2A_PROTOCOL_VERSION ? randomUUID() : undefined,
+      }
       const body = await readJsonBody(request)
       validateMessageSendRetrievalForIoLog(body)
       emitIoLog(config, {
@@ -2123,9 +2793,116 @@ async function handleBridgeRequest(request, response, config) {
           body,
         },
       })
-      const result = await runA2aMessage(body, config, messageRunContext, auditDetails)
-      writeJson(response, 200, result, config, request)
+      try {
+        const result = await runA2aMessage(body, config, messageRunContext, auditDetails)
+        if (a2aProtocolVersion === BRIDGE_A2A_PROTOCOL_VERSION) {
+          const task = latestA2aTaskFromLegacyResult(result)
+          config.a2aTaskStore.put(task)
+          writeA2aJson(response, 200, { task }, config, request)
+          return
+        }
+        writeJson(response, 200, a2aMessageSendResponseForProtocol(result, a2aProtocolVersion), config, request)
+      } catch (error) {
+        if (a2aProtocolVersion === BRIDGE_A2A_PROTOCOL_VERSION && isA2aAcceptedRunFailure(error)) {
+          const task = failedA2aTaskFromError(error, messageRunContext)
+          config.a2aTaskStore.put(task)
+          auditDetails.errorCode = error instanceof HttpError ? error.code : 'bridge_error'
+          recordA2aAuditDetails(auditDetails, {
+            artifactCount: task.artifacts.length,
+            diagnosticCount: task.artifacts[0]?.parts?.[0]?.data?.diagnostics?.length,
+          })
+          writeA2aJson(response, 200, { task }, config, request)
+          return
+        }
+        throw error
+      }
       return
+    }
+
+    if (request.method === 'POST' && url.pathname === MESSAGE_STREAM_ROUTE) {
+      assertCurrentA2aProtocolVersion(request, url)
+      messageRunContext = { ...auditContext, taskId: randomUUID() }
+      const body = await readJsonBody(request)
+      validateMessageSendRetrievalForIoLog(body)
+      parseA2aRunRequest(body, config)
+      await writeA2aMessageStream(response, {
+        body,
+        config,
+        request,
+        runContext: messageRunContext,
+        auditDetails,
+      })
+      return
+    }
+
+    if (request.method === 'GET' && url.pathname === TASKS_ROUTE) {
+      assertCurrentA2aProtocolVersion(request, url)
+      writeA2aJson(response, 200, config.a2aTaskStore.list({
+        contextId: url.searchParams.get('contextId'),
+        status: url.searchParams.get('status'),
+        pageSize: url.searchParams.get('pageSize'),
+        pageToken: url.searchParams.get('pageToken'),
+        historyLength: url.searchParams.get('historyLength'),
+        statusTimestampAfter: url.searchParams.get('statusTimestampAfter'),
+        includeArtifacts: url.searchParams.get('includeArtifacts'),
+      }), config, request)
+      return
+    }
+
+    const taskRoute = a2aTaskRouteMatch(url.pathname)
+    if (taskRoute) {
+      assertCurrentA2aProtocolVersion(request, url)
+      if (request.method === 'GET' && taskRoute.operation === 'get') {
+        writeA2aJson(response, 200, readStoredA2aTask(config, taskRoute.taskId, {
+          includeArtifacts: true,
+          historyLength: parseA2aHistoryLength(url.searchParams.get('historyLength')),
+        }), config, request)
+        return
+      }
+      if (request.method === 'POST' && taskRoute.operation === 'cancel') {
+        readStoredA2aTask(config, taskRoute.taskId)
+        throw new A2aRestError(
+          400,
+          `Task cannot be canceled by this synchronous local bridge: ${safeA2aErrorMetadataValue(taskRoute.taskId)}`,
+          'TASK_NOT_CANCELABLE',
+          'FAILED_PRECONDITION',
+          { taskId: safeA2aErrorMetadataValue(taskRoute.taskId) },
+        )
+      }
+      if ((request.method === 'POST' || request.method === 'GET') && taskRoute.operation === 'subscribe') {
+        const task = readStoredA2aTask(config, taskRoute.taskId)
+        if (A2A_TERMINAL_TASK_STATES.has(task.status?.state)) {
+          throw new A2aRestError(
+            400,
+            `Cannot subscribe to terminal task: ${safeA2aErrorMetadataValue(taskRoute.taskId)}`,
+            'UNSUPPORTED_OPERATION',
+            'FAILED_PRECONDITION',
+            { taskId: safeA2aErrorMetadataValue(taskRoute.taskId), state: task.status?.state },
+          )
+        }
+        throw new A2aRestError(
+          400,
+          `Task subscription is available only through the original ${MESSAGE_STREAM_ROUTE} response for this synchronous local bridge.`,
+          'UNSUPPORTED_OPERATION',
+          'FAILED_PRECONDITION',
+          { taskId: safeA2aErrorMetadataValue(taskRoute.taskId), state: task.status?.state },
+        )
+      }
+    }
+
+    const pushRoute = a2aPushNotificationRouteMatch(url.pathname)
+    if (pushRoute && ['POST', 'GET', 'DELETE'].includes(request.method)) {
+      assertCurrentA2aProtocolVersion(request, url)
+      throw new A2aRestError(
+        400,
+        'Push Notification is not supported by this local bridge.',
+        'PUSH_NOTIFICATION_NOT_SUPPORTED',
+        'FAILED_PRECONDITION',
+        removeUndefinedProperties({
+          taskId: safeA2aErrorMetadataValue(pushRoute.taskId),
+          configId: safeA2aErrorMetadataValue(pushRoute.configId),
+        }),
+      )
     }
 
     if (request.method === 'POST' && url.pathname === MCP_ROUTE) {
@@ -2159,6 +2936,10 @@ async function handleBridgeRequest(request, response, config) {
         },
         error: httpError,
       })
+    }
+    if (httpError instanceof A2aRestError) {
+      writeA2aJson(response, httpError.status, a2aRestErrorBody(httpError), config, request)
+      return
     }
     writeJson(response, httpError.status, body, config, request)
   } finally {
@@ -2360,7 +3141,7 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
   }
 
   const result = {
-    id: randomUUID(),
+    id: runContext.taskId || randomUUID(),
     requestId: runContext.requestId,
     traceId: runContext.traceId,
     status: {
@@ -2828,11 +3609,16 @@ async function handleMcpJsonRpc(body, config, runContextInput = {}, auditDetails
 
   if (request.method === 'tools/list') {
     return mcpJsonRpcSuccess(id, {
+      resultType: 'complete',
+      ...mcpCacheHints(),
       serverInfo: {
         name: 'llmwiki-agent-bridge',
         settingsUrl: SETTINGS_ROUTE,
       },
-      tools: mcpToolDescriptors(),
+      _meta: {
+        'io.modelcontextprotocol/serverInfo': mcpServerInfo(),
+      },
+      tools: mcpToolDescriptors(config),
     })
   }
 
@@ -2858,11 +3644,19 @@ function mcpInitializeResult(params) {
 function mcpServerDiscoverResult() {
   return {
     resultType: 'complete',
+    ...mcpCacheHints(),
     supportedVersions: [...SUPPORTED_MCP_PROTOCOL_VERSION_LIST],
     capabilities: mcpServerCapabilities(),
     _meta: {
       'io.modelcontextprotocol/serverInfo': mcpServerInfo(),
     },
+  }
+}
+
+function mcpCacheHints() {
+  return {
+    ttlMs: MCP_CACHE_TTL_MS,
+    cacheScope: MCP_CACHE_SCOPE,
   }
 }
 
@@ -2895,6 +3689,10 @@ async function handleMcpToolsCall(request, id, config, runContextInput = {}, aud
     return handleMcpAgentRunToolCall(params, id, config, runContextInput, auditDetails)
   }
 
+  if (mcpGatewayToolNames().includes(name)) {
+    return handleMcpGatewayToolCall(name, params, id, config)
+  }
+
   if (mcpSourceToolNames().includes(name)) {
     return handleMcpSourceToolCall(name, params, id, config)
   }
@@ -2909,6 +3707,7 @@ async function handleMcpAgentRunToolCall(params, id, config, runContextInput = {
     const a2a = await runA2aMessage(a2aBody, config, runContextInput, auditDetails)
     const agentResult = extractLlmwikiAgentResult(a2a)
     return mcpJsonRpcSuccess(id, {
+      resultType: 'complete',
       content: [
         {
           type: 'text',
@@ -2919,6 +3718,9 @@ async function handleMcpAgentRunToolCall(params, id, config, runContextInput = {
         llmwiki_agent_result: agentResult,
       },
       isError: false,
+      _meta: {
+        'io.modelcontextprotocol/serverInfo': mcpServerInfo(),
+      },
     })
   } catch (error) {
     if (error instanceof HttpError && error.status < 500) {
@@ -2944,7 +3746,324 @@ async function handleMcpSourceToolCall(name, params, id, config) {
   }
 }
 
-function mcpToolDescriptors() {
+async function handleMcpGatewayToolCall(name, params, id, config) {
+  const args = asRecord(params.arguments) || {}
+  try {
+    if (name === 'llmwiki_gateway_search_tools') {
+      const result = runMcpGatewaySearchTools(args, config)
+      return mcpToolCallSuccess(id, result.summary, result.structuredKey, result.structuredValue)
+    }
+
+    if (name === 'llmwiki_gateway_get_tool_details') {
+      const result = runMcpGatewayGetToolDetails(args, config)
+      return mcpToolCallSuccess(id, result.summary, result.structuredKey, result.structuredValue)
+    }
+
+    if (name === 'llmwiki_gateway_call_tool') {
+      const result = await runMcpGatewayCallTool(args, config)
+      return mcpToolCallSuccess(id, result.summary, result.structuredKey, result.structuredValue)
+    }
+
+    return mcpJsonRpcError(id, -32602, `Unknown MCP gateway tool: ${name}.`)
+  } catch (error) {
+    if (error instanceof HttpError && error.status < 500) {
+      return mcpJsonRpcError(id, -32602, error.message)
+    }
+    const message = redactGatewayErrorMessage(error)
+    return mcpToolCallSuccess(id, message, 'llmwiki_gateway_tool_error', {
+      tool: name,
+      message,
+    }, true)
+  }
+}
+
+function runMcpGatewaySearchTools(args, config) {
+  const query = readString(args, 'query').trim()
+  const toolName = gatewayRequestedToolName(args)
+  const sourceId = gatewayRequestedSourceId(args)
+  const catalog = gatewayToolCatalog(config, {
+    includeUnavailable: gatewayIncludeUnavailable(args),
+    sourceId,
+  })
+  const filtered = catalog.filter((entry) => (
+    (!toolName || entry.toolName === toolName)
+    && gatewayCatalogEntryMatches(entry, query)
+  ))
+  const limit = gatewayToolSearchLimit(args)
+  const tools = filtered.slice(0, limit).map((entry) => ({ ...entry }))
+  const result = removeUndefinedProperties({
+    schemaVersion: 'llmwiki.agent-bridge.gateway-tools.v1',
+    query: query || undefined,
+    toolName: toolName || undefined,
+    sourceId: sourceId || undefined,
+    schemasIncluded: false,
+    tools,
+    totalToolCount: catalog.length,
+    matchedToolCount: filtered.length,
+    returnedToolCount: tools.length,
+  })
+
+  return {
+    summary: gatewayToolSearchSummary(result),
+    structuredKey: 'llmwiki_gateway_tool_search',
+    structuredValue: result,
+  }
+}
+
+function runMcpGatewayGetToolDetails(args, config) {
+  const entry = resolveGatewaySelectedTool(args, config)
+  const descriptor = gatewaySourceToolDescriptor(entry.toolName)
+  const result = {
+    schemaVersion: 'llmwiki.agent-bridge.gateway-tools.v1',
+    schemasIncluded: true,
+    tool: {
+      ...entry,
+      inputSchema: cloneJsonValue(descriptor.inputSchema),
+    },
+  }
+
+  return {
+    summary: `Gateway tool details: ${entry.name}.`,
+    structuredKey: 'llmwiki_gateway_tool_details',
+    structuredValue: result,
+  }
+}
+
+async function runMcpGatewayCallTool(args, config) {
+  const entry = resolveGatewaySelectedTool(args, config)
+  const downstreamArgs = gatewayDownstreamToolArguments(args, entry)
+  const result = await runMcpSourceTool(entry.toolName, downstreamArgs, config)
+  const redactedStructuredValue = redactForIoLog(result.structuredValue)
+  return {
+    summary: redactIoString(`Gateway called ${entry.name}. ${result.summary}`),
+    structuredKey: 'llmwiki_gateway_tool_call',
+    structuredValue: {
+      schemaVersion: 'llmwiki.agent-bridge.gateway-tools.v1',
+      tool: { ...entry },
+      downstreamToolName: entry.toolName,
+      structuredKey: result.structuredKey,
+      result: {
+        [result.structuredKey]: redactedStructuredValue,
+      },
+      isError: false,
+      redacted: true,
+    },
+  }
+}
+
+function gatewayToolCatalog(config, { includeUnavailable = false, sourceId = '' } = {}) {
+  const sources = normalizeKnowledgeSourceDescriptors(config.registeredSources)
+  const descriptors = new Map(mcpSourceToolNames().map((toolName) => [
+    toolName,
+    gatewaySourceToolDescriptor(toolName),
+  ]))
+  const entries = []
+
+  if (!sourceId) {
+    entries.push(gatewayCatalogEntry(descriptors.get('llmwiki_list_sources')))
+  }
+
+  for (const source of sources) {
+    if (sourceId && source.id !== sourceId) continue
+    const readiness = knowledgeSourceReadiness(source, config)
+    if (!includeUnavailable && !readiness.ready) continue
+
+    for (const toolName of mcpSourceToolNames()) {
+      if (toolName === 'llmwiki_list_sources') continue
+      if (!sourceToolSupportsProtocol(toolName, source.protocol)) continue
+      entries.push(gatewayCatalogEntry(descriptors.get(toolName), source, readiness))
+    }
+  }
+
+  return entries
+}
+
+function gatewayCatalogEntry(descriptor, source = null, readiness = undefined) {
+  const sourceBound = Boolean(source)
+  return removeUndefinedProperties({
+    name: sourceBound ? `${source.id}/${descriptor.name}` : `bridge/${descriptor.name}`,
+    toolName: descriptor.name,
+    description: redactGatewayText(descriptor.description),
+    sourceId: source?.id,
+    sourceName: source ? redactGatewayText(source.name) : undefined,
+    sourceProtocol: source?.protocol,
+    sourceReadiness: readiness,
+    selected: source ? source.selected !== false : undefined,
+    resultKey: structuredKeyForMcpSourceTool(descriptor.name),
+    readOnly: true,
+    sourceBound,
+    ...gatewayToolRequirementSummary(descriptor.inputSchema),
+  })
+}
+
+function gatewaySourceToolDescriptor(toolName) {
+  const descriptor = mcpDirectToolDescriptors().find((tool) => tool.name === toolName)
+  if (!descriptor || !mcpSourceToolNames().includes(toolName)) {
+    throw new HttpError(400, 'Unknown gateway source tool.', 'bad_request')
+  }
+  return descriptor
+}
+
+function gatewayToolRequirementSummary(inputSchema) {
+  const schema = asRecord(inputSchema) || {}
+  const required = readStringArray(schema.required).filter(Boolean)
+  const requiredAnyOf = readRecordArray(schema.anyOf)
+    .map((item) => readStringArray(item.required).filter(Boolean))
+    .filter((item) => item.length)
+  return removeUndefinedProperties({
+    required: required.length ? required : undefined,
+    requiredAnyOf: requiredAnyOf.length ? requiredAnyOf : undefined,
+  })
+}
+
+function gatewayCatalogEntryMatches(entry, query) {
+  const normalizedQuery = normalizeGatewaySearchText(query)
+  if (!normalizedQuery) return true
+  const terms = normalizedQuery.split(/\s+/).filter(Boolean)
+  const haystack = normalizeGatewaySearchText([
+    entry.name,
+    entry.toolName,
+    entry.description,
+    entry.sourceId,
+    entry.sourceName,
+    entry.sourceProtocol,
+    entry.resultKey,
+  ].filter(Boolean).join(' '))
+  return haystack.includes(normalizedQuery) || terms.every((term) => haystack.includes(term))
+}
+
+function resolveGatewaySelectedTool(args, config) {
+  const reference = gatewayToolReference(args)
+  if (!reference.toolName) {
+    throw new HttpError(400, 'Gateway tool selection requires name, toolName, or tool_name.', 'bad_request')
+  }
+  if (!mcpSourceToolNames().includes(reference.toolName)) {
+    throw new HttpError(400, 'Gateway tool selection must target a source tool.', 'bad_request')
+  }
+
+  const catalog = gatewayToolCatalog(config, {
+    includeUnavailable: gatewayIncludeUnavailable(args),
+    sourceId: reference.sourceId && reference.sourceId !== 'bridge' ? reference.sourceId : '',
+  })
+  const matches = catalog.filter((entry) => gatewayToolReferenceMatches(entry, reference))
+
+  if (!matches.length) {
+    throw new HttpError(400, 'No gateway catalog tool matched the requested source/tool name.', 'bad_request')
+  }
+  if (matches.length > 1) {
+    throw new HttpError(400, 'Gateway tool selection matched more than one tool; pass sourceId or a source/tool name from llmwiki_gateway_search_tools.', 'bad_request')
+  }
+  return matches[0]
+}
+
+function gatewayToolReference(args) {
+  const rawName = readString(args, 'name').trim()
+  const explicitToolName = gatewayRequestedToolName(args)
+  const explicitSourceId = gatewayRequestedSourceId(args)
+  const parsed = parseGatewayToolName(rawName)
+
+  if (explicitToolName && parsed.toolName && explicitToolName !== parsed.toolName) {
+    throw new HttpError(400, 'Gateway tool name and toolName refer to different tools.', 'bad_request')
+  }
+  if (explicitSourceId && parsed.sourceId && explicitSourceId !== parsed.sourceId) {
+    throw new HttpError(400, 'Gateway tool name and sourceId refer to different sources.', 'bad_request')
+  }
+
+  return {
+    rawName,
+    sourceId: explicitSourceId || parsed.sourceId,
+    toolName: explicitToolName || parsed.toolName || rawName,
+  }
+}
+
+function parseGatewayToolName(value) {
+  const name = String(value || '').trim()
+  const slashIndex = name.indexOf('/')
+  if (slashIndex <= 0 || slashIndex >= name.length - 1) return { sourceId: '', toolName: '' }
+  return {
+    sourceId: name.slice(0, slashIndex).trim(),
+    toolName: name.slice(slashIndex + 1).trim(),
+  }
+}
+
+function gatewayToolReferenceMatches(entry, reference) {
+  if (reference.rawName && entry.name === reference.rawName) return true
+  if (entry.toolName !== reference.toolName) return false
+  if (!reference.sourceId) return true
+  if (!entry.sourceBound) return reference.sourceId === 'bridge'
+  return entry.sourceId === reference.sourceId
+}
+
+function gatewayDownstreamToolArguments(args, entry) {
+  const supplied = asRecord(args.arguments) || {}
+  const clean = { ...supplied }
+  delete clean.knowledgeSources
+  delete clean.knowledge_sources
+
+  if (entry.sourceBound) {
+    clean.sourceId = entry.sourceId
+    delete clean.source_id
+  } else {
+    delete clean.sourceId
+    delete clean.source_id
+  }
+
+  return clean
+}
+
+function gatewayRequestedToolName(args) {
+  return readString(args, 'toolName').trim() || readString(args, 'tool_name').trim()
+}
+
+function gatewayRequestedSourceId(args) {
+  return readString(args, 'sourceId').trim() || readString(args, 'source_id').trim()
+}
+
+function gatewayIncludeUnavailable(args) {
+  return readBoolean(args, 'includeUnavailable') ?? readBoolean(args, 'include_unavailable') ?? false
+}
+
+function gatewayToolSearchLimit(args) {
+  const value = readNumber(args, 'limit')
+  if (value === undefined) return 20
+  if (!Number.isFinite(value)) return 20
+  return Math.max(1, Math.min(MAX_GATEWAY_TOOL_SEARCH_RESULTS, Math.floor(value)))
+}
+
+function structuredKeyForMcpSourceTool(toolName) {
+  return toolName === 'llmwiki_list_sources' ? 'llmwiki_sources' : toolName
+}
+
+function gatewayToolSearchSummary(result) {
+  return `Gateway tool catalog: ${result.returnedToolCount} compact result(s) from ${result.matchedToolCount} match(es). Full schemas omitted.`
+}
+
+function normalizeGatewaySearchText(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9_:/.-]+/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function redactGatewayText(value) {
+  const text = readStringValue(value).trim()
+  return text ? redactIoString(text).slice(0, 500) : undefined
+}
+
+function redactGatewayErrorMessage(error) {
+  const message = error instanceof Error ? error.message : String(error)
+  return redactIoString(message).slice(0, 240)
+}
+
+function cloneJsonValue(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value))
+}
+
+function mcpToolDescriptors(config = null) {
+  const exposure = config?.mcpToolExposure || DEFAULT_MCP_TOOL_EXPOSURE
+  if (exposure === 'gateway') return mcpGatewayToolDescriptors()
+  if (exposure === 'both') return [...mcpDirectToolDescriptors(), ...mcpGatewayToolDescriptors()]
+  return mcpDirectToolDescriptors()
+}
+
+function mcpDirectToolDescriptors() {
   return [
     llmwikiAgentRunToolDescriptor(),
     llmwikiListSourcesToolDescriptor(),
@@ -2957,6 +4076,14 @@ function mcpToolDescriptors() {
   ]
 }
 
+function mcpGatewayToolDescriptors() {
+  return [
+    llmwikiGatewaySearchToolsToolDescriptor(),
+    llmwikiGatewayGetToolDetailsToolDescriptor(),
+    llmwikiGatewayCallToolDescriptor(),
+  ]
+}
+
 function mcpSourceToolNames() {
   return [
     'llmwiki_list_sources',
@@ -2966,6 +4093,14 @@ function mcpSourceToolNames() {
     'llmwiki_graph',
     'llmwiki_graph_neighbors',
     'llmwiki_source_bundle',
+  ]
+}
+
+function mcpGatewayToolNames() {
+  return [
+    'llmwiki_gateway_search_tools',
+    'llmwiki_gateway_get_tool_details',
+    'llmwiki_gateway_call_tool',
   ]
 }
 
@@ -3142,6 +4277,81 @@ function llmwikiSourceBundleToolDescriptor() {
         include_drafts: { type: 'boolean' },
       },
     },
+  }
+}
+
+function llmwikiGatewaySearchToolsToolDescriptor() {
+  return {
+    name: 'llmwiki_gateway_search_tools',
+    description: 'Search the bridge gateway catalog for compact source-tool entries without returning full input schemas.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        query: { type: 'string', minLength: 1, description: 'Optional text to match against source ids, source names, tool names, and descriptions.' },
+        toolName: { enum: mcpSourceToolNames(), description: 'Optional downstream source tool name filter.' },
+        tool_name: { enum: mcpSourceToolNames(), description: 'Alias for toolName.' },
+        sourceId: { type: 'string', description: 'Optional registered Knowledge Source id filter.' },
+        source_id: { type: 'string', description: 'Alias for sourceId.' },
+        includeUnavailable: { type: 'boolean', default: false },
+        include_unavailable: { type: 'boolean', default: false },
+        limit: { type: 'integer', minimum: 1, maximum: MAX_GATEWAY_TOOL_SEARCH_RESULTS, default: 20 },
+      },
+    },
+  }
+}
+
+function llmwikiGatewayGetToolDetailsToolDescriptor() {
+  return {
+    name: 'llmwiki_gateway_get_tool_details',
+    description: 'Inspect exactly one compact gateway catalog entry and return its full downstream input schema.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      anyOf: [
+        { required: ['name'] },
+        { required: ['toolName'] },
+        { required: ['tool_name'] },
+      ],
+      properties: gatewayToolReferenceInputProperties(),
+    },
+  }
+}
+
+function llmwikiGatewayCallToolDescriptor() {
+  return {
+    name: 'llmwiki_gateway_call_tool',
+    description: 'Call one registered source tool selected by source/tool name through the bridge and return a redacted result.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      anyOf: [
+        { required: ['name'] },
+        { required: ['toolName'] },
+        { required: ['tool_name'] },
+      ],
+      properties: {
+        ...gatewayToolReferenceInputProperties(),
+        arguments: {
+          type: 'object',
+          additionalProperties: true,
+          default: {},
+          description: 'Arguments for the selected downstream source tool.',
+        },
+      },
+    },
+  }
+}
+
+function gatewayToolReferenceInputProperties() {
+  return {
+    name: { type: 'string', minLength: 1, description: 'Catalog entry name from search results, usually sourceId/toolName.' },
+    toolName: { enum: mcpSourceToolNames(), description: 'Downstream source tool name.' },
+    tool_name: { enum: mcpSourceToolNames(), description: 'Alias for toolName.' },
+    sourceId: { type: 'string', description: 'Registered Knowledge Source id when name is not source-qualified.' },
+    source_id: { type: 'string', description: 'Alias for sourceId.' },
+    includeUnavailable: { type: 'boolean', default: false },
+    include_unavailable: { type: 'boolean', default: false },
   }
 }
 
@@ -3369,6 +4579,7 @@ function mcpJsonRpcError(id, code, message) {
 
 function mcpToolCallSuccess(id, text, structuredKey, structuredValue, isError = false) {
   return mcpJsonRpcSuccess(id, {
+    resultType: 'complete',
     content: [
       {
         type: 'text',
@@ -3379,6 +4590,9 @@ function mcpToolCallSuccess(id, text, structuredKey, structuredValue, isError = 
       [structuredKey]: structuredValue,
     },
     isError,
+    _meta: {
+      'io.modelcontextprotocol/serverInfo': mcpServerInfo(),
+    },
   })
 }
 
@@ -4188,11 +5402,11 @@ async function callMcpTool(source, name, args, config, runContext = {}, options 
     jsonrpc: '2.0',
     id: ++mcpRequestId,
     method: 'tools/call',
-    params: { name, arguments: args },
+    params: { _meta: modernMcpRequestMeta(), name, arguments: args },
   }, `mcp ${name}`, config, {
     ...ioLogSourceContext(source, runContext, `mcp ${name}`),
     ...(asRecord(options.ioLogContext) || {}),
-  })
+  }, modernMcpRequestHeaders(name))
   const error = asRecord(envelope.error)
   if (error) throw new Error('MCP tool returned a JSON-RPC error.')
   const result = asRecord(envelope.result)
@@ -6478,6 +7692,337 @@ function safeRetrievalFieldName(value) {
   return text || 'unknown'
 }
 
+function assertSupportedA2aProtocolVersion(request, url) {
+  const requestedVersion = requestedA2aProtocolVersion(request, url)
+  if (BRIDGE_A2A_SUPPORTED_PROTOCOL_VERSIONS.includes(requestedVersion)) return requestedVersion
+
+  throw new HttpError(
+    400,
+    `A2A protocol version ${safeA2aProtocolVersionLabel(requestedVersion)} is not supported by this bridge.`,
+    'a2a_version_not_supported',
+  )
+}
+
+function assertCurrentA2aProtocolVersion(request, url) {
+  const requestedVersion = requestedA2aProtocolVersion(request, url)
+  if (requestedVersion === BRIDGE_A2A_PROTOCOL_VERSION) return requestedVersion
+
+  throw new A2aRestError(
+    400,
+    `A2A protocol version ${safeA2aProtocolVersionLabel(requestedVersion)} is not supported for this A2A 1.0 route.`,
+    'VERSION_NOT_SUPPORTED',
+    'FAILED_PRECONDITION',
+    { requestedVersion: safeA2aProtocolVersionLabel(requestedVersion) },
+  )
+}
+
+function requestedA2aProtocolVersion(request, url) {
+  const header = Array.isArray(request?.headers?.[BRIDGE_A2A_VERSION_HEADER.toLowerCase()])
+    ? request.headers[BRIDGE_A2A_VERSION_HEADER.toLowerCase()][0]
+    : request?.headers?.[BRIDGE_A2A_VERSION_HEADER.toLowerCase()]
+  const queryValue = url?.searchParams?.get(BRIDGE_A2A_VERSION_HEADER)
+    ?? url?.searchParams?.get(BRIDGE_A2A_VERSION_HEADER.toLowerCase())
+  const raw = header ?? queryValue
+  const value = typeof raw === 'string' ? raw.trim() : ''
+  return value || '0.3'
+}
+
+function a2aMessageSendResponseForProtocol(result, protocolVersion) {
+  if (protocolVersion !== BRIDGE_A2A_PROTOCOL_VERSION) return result
+  return { task: latestA2aTaskFromLegacyResult(result) }
+}
+
+function latestA2aTaskFromLegacyResult(result) {
+  const artifactData = result?.artifacts?.[0]?.parts?.[0]?.data
+  const answer = readStringValue(artifactData?.answer || result?.message?.parts?.[0]?.text)
+  const taskId = readStringValue(result?.id) || randomUUID()
+  const contextId = readStringValue(artifactData?.requestId || result?.requestId) || taskId
+  const traceId = readStringValue(artifactData?.traceId || result?.traceId)
+  const message = {
+    messageId: randomUUID(),
+    contextId,
+    taskId,
+    role: 'ROLE_AGENT',
+    parts: [
+      {
+        text: answer,
+        mediaType: 'text/markdown',
+      },
+    ],
+    metadata: removeUndefinedProperties({
+      requestId: artifactData?.requestId || result?.requestId,
+      traceId,
+    }),
+    extensions: [],
+    referenceTaskIds: [],
+  }
+
+  return {
+    id: taskId,
+    contextId,
+    status: {
+      state: A2A_TASK_STATE_COMPLETED,
+      message,
+      timestamp: new Date().toISOString(),
+    },
+    artifacts: [
+      {
+        artifactId: 'llmwiki_agent_result',
+        name: 'llmwiki_agent_result',
+        description: 'Normalized LLMWiki grounded answer artifact.',
+        parts: [
+          {
+            data: artifactData || {},
+            mediaType: 'application/json',
+          },
+        ],
+        metadata: removeUndefinedProperties({
+          requestId: artifactData?.requestId || result?.requestId,
+          traceId,
+        }),
+        extensions: [],
+      },
+    ],
+    history: [],
+    metadata: removeUndefinedProperties({
+      requestId: artifactData?.requestId || result?.requestId,
+      traceId,
+      legacyResponseShape: 'llmwiki-agent-bridge-task-direct',
+    }),
+  }
+}
+
+function submittedA2aTask(runContext) {
+  return taskStatusOnlyA2aTask(runContext, A2A_TASK_STATE_SUBMITTED, 'Task submitted.')
+}
+
+function workingA2aTask(runContext) {
+  return taskStatusOnlyA2aTask(runContext, A2A_TASK_STATE_WORKING, 'Task is working.')
+}
+
+function taskStatusOnlyA2aTask(runContext, state, text) {
+  const taskId = runContext.taskId || randomUUID()
+  const contextId = runContext.requestId || taskId
+  const traceId = runContext.traceId
+  const message = {
+    messageId: randomUUID(),
+    contextId,
+    taskId,
+    role: 'ROLE_AGENT',
+    parts: [
+      {
+        text,
+        mediaType: 'text/plain',
+      },
+    ],
+    metadata: removeUndefinedProperties({
+      requestId: runContext.requestId,
+      traceId,
+    }),
+    extensions: [],
+    referenceTaskIds: [],
+  }
+  return {
+    id: taskId,
+    contextId,
+    status: {
+      state,
+      message,
+      timestamp: new Date().toISOString(),
+    },
+    artifacts: [],
+    history: [],
+    metadata: removeUndefinedProperties({
+      requestId: runContext.requestId,
+      traceId,
+    }),
+  }
+}
+
+function failedA2aTaskFromError(error, runContext = {}) {
+  const httpError = error instanceof HttpError
+    ? error
+    : new HttpError(500, 'Bridge request failed.', 'bridge_error')
+  const taskId = runContext.taskId || randomUUID()
+  const contextId = httpError.requestId || runContext.requestId || taskId
+  const traceId = httpError.traceId || runContext.traceId
+  const answer = `Task failed: ${httpError.message}`
+  const message = {
+    messageId: randomUUID(),
+    contextId,
+    taskId,
+    role: 'ROLE_AGENT',
+    parts: [
+      {
+        text: answer,
+        mediaType: 'text/markdown',
+      },
+    ],
+    metadata: removeUndefinedProperties({
+      requestId: contextId,
+      traceId,
+      errorCode: httpError.code,
+      httpStatus: httpError.status,
+    }),
+    extensions: [],
+    referenceTaskIds: [],
+  }
+  const artifactData = {
+    requestId: contextId,
+    traceId,
+    answer,
+    orchestrationMode: DEFAULT_ORCHESTRATION_MODE,
+    citations: [],
+    graph: emptyGraph(),
+    steps: Array.isArray(httpError.steps) ? httpError.steps : [],
+    sourceBundles: [],
+    diagnostics: Array.isArray(httpError.diagnostics) ? httpError.diagnostics : [],
+    error: {
+      code: httpError.code,
+      message: httpError.message,
+      httpStatus: httpError.status,
+    },
+  }
+  return {
+    id: taskId,
+    contextId,
+    status: {
+      state: A2A_TASK_STATE_FAILED,
+      message,
+      timestamp: new Date().toISOString(),
+    },
+    artifacts: [
+      {
+        artifactId: 'llmwiki_agent_result',
+        name: 'llmwiki_agent_result',
+        description: 'Normalized LLMWiki grounded answer artifact.',
+        parts: [
+          {
+            data: artifactData,
+            mediaType: 'application/json',
+          },
+        ],
+        metadata: removeUndefinedProperties({
+          requestId: contextId,
+          traceId,
+        }),
+        extensions: [],
+      },
+    ],
+    history: [],
+    metadata: removeUndefinedProperties({
+      requestId: contextId,
+      traceId,
+      legacyResponseShape: 'llmwiki-agent-bridge-task-direct',
+      failedHttpStatus: httpError.status,
+      failedErrorCode: httpError.code,
+    }),
+  }
+}
+
+function a2aTaskStatusUpdate(task) {
+  return {
+    taskId: task.id,
+    contextId: task.contextId,
+    status: task.status,
+    metadata: removeUndefinedProperties({
+      requestId: task.metadata?.requestId,
+      traceId: task.metadata?.traceId,
+    }),
+  }
+}
+
+function isA2aAcceptedRunFailure(error) {
+  if (error instanceof A2aRestError) return false
+  if (error instanceof HttpError) return error.status >= 500
+  return true
+}
+
+function readStoredA2aTask(config, taskId, options = {}) {
+  const task = config.a2aTaskStore.get(taskId, options)
+  if (task) return task
+  throw new A2aRestError(
+    404,
+    `Task not found: ${safeA2aErrorMetadataValue(taskId)}`,
+    'TASK_NOT_FOUND',
+    'NOT_FOUND',
+    { taskId: safeA2aErrorMetadataValue(taskId) },
+  )
+}
+
+function a2aTaskRouteMatch(pathname) {
+  let match = /^\/tasks\/([^/]+):cancel$/.exec(pathname)
+  if (match) return { operation: 'cancel', taskId: decodeA2aPathSegment(match[1], 'taskId') }
+  match = /^\/tasks\/([^/]+):subscribe$/.exec(pathname)
+  if (match) return { operation: 'subscribe', taskId: decodeA2aPathSegment(match[1], 'taskId') }
+  match = /^\/tasks\/([^/]+)$/.exec(pathname)
+  if (match) return { operation: 'get', taskId: decodeA2aPathSegment(match[1], 'taskId') }
+  return null
+}
+
+function a2aPushNotificationRouteMatch(pathname) {
+  const match = /^\/tasks\/([^/]+)\/pushNotificationConfigs(?:\/([^/]+))?$/.exec(pathname)
+  if (!match) return null
+  return {
+    taskId: decodeA2aPathSegment(match[1], 'taskId'),
+    configId: match[2] ? decodeA2aPathSegment(match[2], 'configId') : '',
+  }
+}
+
+function decodeA2aPathSegment(value, label) {
+  try {
+    const decoded = decodeURIComponent(value)
+    if (decoded) return decoded
+  } catch {
+    // Fall through to the clean A2A error below.
+  }
+  throw new A2aRestError(400, `${label} path segment is invalid.`, 'INVALID_ARGUMENT', 'INVALID_ARGUMENT')
+}
+
+function safeA2aErrorMetadataValue(value) {
+  const text = readStringValue(value).trim()
+  return /^[A-Za-z0-9._:-]{1,128}$/.test(text) ? text : 'redacted'
+}
+
+async function writeA2aMessageStream(response, {
+  body,
+  config,
+  request,
+  runContext,
+  auditDetails,
+}) {
+  writeSseHeaders(response, 200, config, request)
+  const submittedTask = submittedA2aTask(runContext)
+  writeSseEvent(response, { task: submittedTask })
+  const workingTask = workingA2aTask(runContext)
+  writeSseEvent(response, { statusUpdate: a2aTaskStatusUpdate(workingTask) })
+
+  try {
+    const result = await runA2aMessage(body, config, runContext, auditDetails)
+    const task = latestA2aTaskFromLegacyResult(result)
+    config.a2aTaskStore.put(task)
+    writeSseEvent(response, { statusUpdate: a2aTaskStatusUpdate(task) })
+    writeSseEvent(response, { task })
+  } catch (error) {
+    const task = failedA2aTaskFromError(error, runContext)
+    config.a2aTaskStore.put(task)
+    auditDetails.errorCode = error instanceof HttpError ? error.code : 'bridge_error'
+    recordA2aAuditDetails(auditDetails, {
+      artifactCount: task.artifacts.length,
+      diagnosticCount: task.artifacts[0]?.parts?.[0]?.data?.diagnostics?.length,
+    })
+    writeSseEvent(response, { statusUpdate: a2aTaskStatusUpdate(task) })
+    writeSseEvent(response, { task })
+  } finally {
+    response.end()
+  }
+}
+
+function safeA2aProtocolVersionLabel(value) {
+  const text = String(value || '').trim()
+  return /^[0-9]+(?:\.[0-9]+)?$/.test(text) ? text : 'unsupported'
+}
+
 function parseA2aRunRequest(body, config) {
   const envelope = asRecord(body)
   const data = asRecord(envelope?.data) || envelope
@@ -6566,8 +8111,8 @@ function normalizeConversationPayload(data, envelope, query, a2aMessage = null) 
 function normalizeA2aMessage(value) {
   const message = asRecord(value)
   if (!message) return null
-  const role = readString(message, 'role').trim().toLowerCase()
-  if (role !== 'user' && role !== 'agent') return null
+  const role = normalizedA2aRole(readString(message, 'role'))
+  if (!role) return null
   const text = a2aMessageText(message)
   const messageId = conversationIdentifier(readString(message, 'messageId'))
   const contextId = conversationIdentifier(readString(message, 'contextId'))
@@ -6580,12 +8125,27 @@ function normalizeA2aMessage(value) {
   })
 }
 
+function normalizedA2aRole(value) {
+  const role = String(value || '').trim().toLowerCase()
+  if (role === 'user' || role === 'role_user') return 'user'
+  if (role === 'agent' || role === 'role_agent') return 'agent'
+  return ''
+}
+
 function a2aMessageText(message) {
   const parts = readRecordArray(message?.parts)
   return parts
-    .filter((part) => readString(part, 'kind') === 'text' && typeof part.text === 'string')
-    .map((part) => part.text)
+    .map(a2aTextPartValue)
+    .filter(Boolean)
     .join('\n')
+}
+
+function a2aTextPartValue(part) {
+  if (typeof part?.text === 'string') return part.text
+  if (readString(part, 'kind') === 'text' && typeof part.text === 'string') return part.text
+  const content = asRecord(part?.content)
+  if (content?.$case === 'text' && typeof content.value === 'string') return content.value
+  return ''
 }
 
 function emptyConversationContext() {
@@ -6787,29 +8347,51 @@ function isSelectedSource(source) {
 }
 
 function agentCard(config) {
+  const supportedInterfaces = a2aSupportedInterfaces()
+  const security = a2aSecurityMetadata(config)
   return {
     id: config.runtimeId,
     name: config.runtimeName,
     description: 'Local A2A-compatible bridge for OpenAI-compatible chat-completions gateways and LLMWiki Knowledge Source tools.',
     protocol: 'a2a',
+    protocolVersion: BRIDGE_A2A_PROTOCOL_VERSION,
     runtime: config.runtime,
     agentRuntime: config.agentRuntime,
     provider: {
+      url: DEFAULT_PROVIDER_URL,
       organization: config.providerOrganization,
     },
-    url: '/message:send',
+    version: PACKAGE_VERSION,
+    documentationUrl: DEFAULT_PROVIDER_URL,
+    supportedInterfaces,
+    url: MESSAGE_SEND_ROUTE,
     capabilities: {
-      streaming: false,
+      streaming: true,
+      pushNotifications: false,
+      extensions: [],
+      extendedAgentCard: true,
       structuredArtifacts: true,
       localBridge: true,
       knowledgeSourceProtocols: ['llmwiki-http', 'mcp', 'a2a'],
     },
+    defaultInputModes: [...A2A_DEFAULT_INPUT_MODES],
+    defaultOutputModes: [...A2A_DEFAULT_OUTPUT_MODES],
+    skills: a2aAgentSkills(security.skillSecurityRequirements),
+    securitySchemes: security.securitySchemes,
+    security: security.legacySecurity,
+    securityRequirements: security.securityRequirements,
+    signatures: [],
     metadata: {
       bridge: 'llmwiki-agent-bridge',
+      protocolVersion: BRIDGE_A2A_PROTOCOL_VERSION,
+      supportedProtocolVersions: [...BRIDGE_A2A_SUPPORTED_PROTOCOL_VERSIONS],
+      protocolVersionHeader: BRIDGE_A2A_VERSION_HEADER,
+      preferredInterface: supportedInterfaces[0],
       runtimeProfile: config.runtimeProfile,
       runtimeAdapter: config.runtimeAdapter,
       modelConfigured: Boolean(config.model),
       hermesModelConfigured: Boolean(config.hermesModel),
+      bridgeAuthRequired: Boolean(config.bridgeBearerToken),
       sourcePolicy: config.sourcePolicy,
       settingsUrl: SETTINGS_ROUTE,
       runtimeConnection: publicRuntimeConnection(config, runtimeReachabilityNotProbed()),
@@ -6820,6 +8402,61 @@ function agentCard(config) {
       sourceRegistry: sourceRegistrySummary(config),
     },
   }
+}
+
+function a2aSupportedInterfaces() {
+  return [
+    {
+      url: MESSAGE_SEND_ROUTE,
+      protocolBinding: A2A_HTTP_JSON_BINDING,
+      protocolVersion: BRIDGE_A2A_PROTOCOL_VERSION,
+      tenant: '',
+    },
+  ]
+}
+
+function a2aSecurityMetadata(config) {
+  if (!config.bridgeBearerToken) {
+    return {
+      securitySchemes: {},
+      legacySecurity: [],
+      securityRequirements: [],
+      skillSecurityRequirements: [],
+    }
+  }
+
+  const requirement = { bearerAuth: [] }
+  const latestRequirement = { schemes: { bearerAuth: { list: [] } } }
+  return {
+    securitySchemes: {
+      bearerAuth: {
+        httpAuthSecurityScheme: {
+          scheme: 'Bearer',
+          bearerFormat: 'opaque',
+          description: 'Bridge bearer token supplied in the Authorization header.',
+        },
+      },
+    },
+    legacySecurity: [requirement],
+    securityRequirements: [latestRequirement],
+    skillSecurityRequirements: [latestRequirement],
+  }
+}
+
+function a2aAgentSkills(securityRequirements = []) {
+  return [
+    {
+      id: 'llmwiki-grounded-answer',
+      name: 'LLMWiki grounded answer',
+      description: 'Gather evidence from selected LLMWiki Knowledge Sources and return one completed grounded answer artifact.',
+      tags: ['llmwiki', 'knowledge-source', 'grounded-answer', 'citations'],
+      examples: ['What should I know before releasing?'],
+      inputModes: [...A2A_DEFAULT_INPUT_MODES],
+      outputModes: [...A2A_DEFAULT_OUTPUT_MODES],
+      security: securityRequirements,
+      securityRequirements,
+    },
+  ]
 }
 
 function sourceRegistrySummary(config) {
@@ -9940,6 +11577,10 @@ function bridgeConfig(env, options = {}) {
     ?? runtimeAdapterOption(env.HERMES_A2A_BRIDGE_RUNTIME_ADAPTER)
     ?? runtimeAdapterOption(persistentConfig.runtimeAdapter)
     ?? DEFAULT_RUNTIME_ADAPTER
+  const mcpToolExposure = mcpToolExposureOption(options.mcpToolExposure)
+    ?? mcpToolExposureOption(env[MCP_TOOL_EXPOSURE_ENV])
+    ?? mcpToolExposureOption(persistentConfig.mcpToolExposure)
+    ?? DEFAULT_MCP_TOOL_EXPOSURE
   const deepagentsAcpDefaults = defaultDeepAgentsAcpLauncher()
   const deepagentsAcpCommandOverride = stringOption(options.deepagentsAcpCommand)
     || stringOption(env[DEEPAGENTS_ACP_COMMAND_ENV])
@@ -9985,6 +11626,7 @@ function bridgeConfig(env, options = {}) {
     ?? sourceRegistryOption(options.sources)
     ?? sourceRegistryOption(persistentSettings.sources)
     ?? []
+  const a2aTaskStoreLimit = numberOption(options.a2aTaskStoreLimit) ?? DEFAULT_A2A_TASK_STORE_LIMIT
 
   assertBridgeStartupPolicy({
     host,
@@ -10019,6 +11661,7 @@ function bridgeConfig(env, options = {}) {
     ioLogPath,
     runtimeProfile,
     runtimeAdapter,
+    mcpToolExposure,
     deepagentsAcpCommand,
     deepagentsAcpArgs,
     deepagentsAcpCwd,
@@ -10029,6 +11672,7 @@ function bridgeConfig(env, options = {}) {
     providerOrganization,
     configPath,
     registeredSources,
+    a2aTaskStore: options.a2aTaskStore || createA2aTaskStore(a2aTaskStoreLimit),
     runtimeAdapters: asRecord(options.runtimeAdapters) || {},
     logger,
   }
@@ -10212,6 +11856,15 @@ function runtimeAdapterOption(value) {
   throw new Error(`Unsupported LLMWiki Agent Bridge runtime adapter: ${value}.`)
 }
 
+function mcpToolExposureOption(value) {
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, '')
+  if (!normalized) return undefined
+  const exposure = mcpToolExposureAliases.get(normalized)
+  if (exposure) return exposure
+  throw new Error(`Unsupported LLMWiki Agent Bridge MCP tool exposure: ${value}.`)
+}
+
 function ioLogModeOption(value) {
   if (typeof value === 'boolean') return value ? DEFAULT_IO_LOG_MODE : OFF_IO_LOG_MODE
   if (typeof value !== 'string') return undefined
@@ -10285,10 +11938,10 @@ async function postJson(url, body, label, config) {
   }, label, config)
 }
 
-async function postKnowledgeSourceJson(url, body, label, config, ioLogContext = {}) {
+async function postKnowledgeSourceJson(url, body, label, config, ioLogContext = {}, headers = {}) {
   return fetchKnowledgeSourceJson(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify(body),
   }, label, config, { ...ioLogContext, requestBody: body })
 }
@@ -10776,7 +12429,28 @@ function normalizeSourceOriginText(value) {
 
 function mcpEndpointUrl(url) {
   const clean = trimTrailingSlashes(url.trim())
-  return pathName(clean).endsWith('/mcp') ? clean : `${clean}/mcp`
+  const path = pathName(clean)
+  return path.endsWith('/mcp') || path.endsWith('/mcp/stream') ? clean : `${clean}/mcp`
+}
+
+function modernMcpRequestHeaders(method) {
+  return removeUndefinedProperties({
+    Accept: 'application/json, text/event-stream',
+    'MCP-Protocol-Version': MODERN_MCP_PROTOCOL_VERSION,
+    'Mcp-Method': 'tools/call',
+    'Mcp-Name': method,
+  })
+}
+
+function modernMcpRequestMeta() {
+  return {
+    'io.modelcontextprotocol/protocolVersion': MODERN_MCP_PROTOCOL_VERSION,
+    'io.modelcontextprotocol/clientInfo': {
+      name: PACKAGE_NAME,
+      version: PACKAGE_VERSION,
+    },
+    'io.modelcontextprotocol/clientCapabilities': {},
+  }
 }
 
 function chatCompletionsUrl(baseUrl) {
@@ -11033,11 +12707,66 @@ function corsHeadersForRequest(config, request) {
 }
 
 function writeJson(response, status, value, config, request) {
-  response.writeHead(status, {
+  const headers = {
     ...corsHeadersForRequest(config, request),
-    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Type': jsonContentTypeForRequest(request),
+  }
+  applyProtocolResponseHeaders(headers, request)
+  response.writeHead(status, {
+    ...headers,
   })
   response.end(value === null ? '' : JSON.stringify(value))
+}
+
+function writeA2aJson(response, status, value, config, request) {
+  const headers = {
+    ...corsHeadersForRequest(config, request),
+    'Content-Type': `${BRIDGE_A2A_CONTENT_TYPE}; charset=utf-8`,
+  }
+  applyProtocolResponseHeaders(headers, request)
+  response.writeHead(status, {
+    ...headers,
+  })
+  response.end(value === null ? '' : JSON.stringify(value))
+}
+
+function writeSseHeaders(response, status, config, request) {
+  const headers = {
+    ...corsHeadersForRequest(config, request),
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  }
+  applyProtocolResponseHeaders(headers, request)
+  response.writeHead(status, {
+    ...headers,
+  })
+}
+
+function writeSseEvent(response, value) {
+  response.write(`data: ${JSON.stringify(value)}\n\n`)
+}
+
+function a2aRestErrorBody(error) {
+  return {
+    error: {
+      code: error.status,
+      status: error.statusName,
+      message: error.message,
+      details: [
+        {
+          '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+          reason: error.reason,
+          domain: 'a2a-protocol.org',
+          metadata: removeUndefinedProperties({
+            ...(asRecord(error.metadata) || {}),
+            timestamp: new Date().toISOString(),
+          }),
+        },
+      ],
+    },
+  }
 }
 
 function writeHtml(response, status, value, config, request) {
@@ -11046,6 +12775,59 @@ function writeHtml(response, status, value, config, request) {
     'Content-Type': 'text/html; charset=utf-8',
   })
   response.end(value)
+}
+
+function applyProtocolResponseHeaders(headers, request) {
+  if (!isA2aProtocolRoutePath(requestPathName(request))) return
+  headers[BRIDGE_A2A_VERSION_HEADER] = BRIDGE_A2A_PROTOCOL_VERSION
+  headers.Vary = appendHeaderValue(headers.Vary, BRIDGE_A2A_VERSION_HEADER)
+}
+
+function jsonContentTypeForRequest(request) {
+  if (isA2aProtocolRoutePath(requestPathName(request)) && prefersA2aContentType(request)) {
+    return `${BRIDGE_A2A_CONTENT_TYPE}; charset=utf-8`
+  }
+  return 'application/json; charset=utf-8'
+}
+
+function isA2aProtocolRoutePath(pathname) {
+  return A2A_PROTOCOL_ROUTES.has(pathname)
+    || Boolean(a2aTaskRoutePattern(pathname))
+    || Boolean(a2aPushNotificationRoutePattern(pathname))
+}
+
+function prefersA2aContentType(request) {
+  return headerIncludes(request, 'accept', BRIDGE_A2A_CONTENT_TYPE)
+    || headerIncludes(request, 'content-type', BRIDGE_A2A_CONTENT_TYPE)
+    || requestA2aVersionHeaderValue(request) === BRIDGE_A2A_PROTOCOL_VERSION
+}
+
+function headerIncludes(request, name, value) {
+  const raw = requestHeaderValue(request, name)
+  return raw.split(',').some((item) => item.trim().toLowerCase().startsWith(value.toLowerCase()))
+}
+
+function requestA2aVersionHeaderValue(request) {
+  return requestHeaderValue(request, BRIDGE_A2A_VERSION_HEADER).trim()
+}
+
+function requestHeaderValue(request, name) {
+  const raw = request?.headers?.[name.toLowerCase()]
+  if (Array.isArray(raw)) return String(raw[0] || '')
+  return typeof raw === 'string' ? raw : ''
+}
+
+function appendHeaderValue(current, value) {
+  const values = String(current || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+  if (!values.some((item) => item.toLowerCase() === value.toLowerCase())) values.push(value)
+  return values.join(', ')
+}
+
+function requestPathName(request) {
+  return textBeforeQueryOrFragment(request?.url || '')
 }
 
 class HttpError extends Error {
@@ -11058,6 +12840,19 @@ class HttpError extends Error {
     this.steps = details.steps
     this.diagnostics = details.diagnostics
   }
+}
+
+class A2aRestError extends HttpError {
+  constructor(status, message, reason, statusName, metadata = {}) {
+    super(status, message, a2aRestErrorCode(reason))
+    this.reason = reason
+    this.statusName = statusName
+    this.metadata = metadata
+  }
+}
+
+function a2aRestErrorCode(reason) {
+  return readStringValue(reason).toLowerCase()
 }
 
 export function runAgentBridgeCli(argv = process.argv.slice(2), options = {}) {

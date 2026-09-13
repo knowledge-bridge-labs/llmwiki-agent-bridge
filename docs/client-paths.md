@@ -42,6 +42,10 @@ that:
   `llmwiki_context`, `llmwiki_search`, `llmwiki_read`, and `llmwiki_graph` for
   progressive source exploration, plus `llmwiki_graph_neighbors` for bounded
   relationship traversal.
+- Can opt into MCP gateway tool exposure with
+  `LLMWIKI_AGENT_BRIDGE_MCP_TOOL_EXPOSURE=gateway`, where `tools/list` returns
+  only compact search, one-tool detail, and call meta-tools for progressive
+  discovery.
 - Calls selected `llmwiki-serve` Knowledge Sources over `llmwiki-http`, MCP-style JSON-RPC, or A2A-style HTTP.
 - Sends the evidence bundle to Hermes, DeepAgents, or a generic OpenAI-compatible runtime.
 - Returns one structured runtime synthesis artifact with citations, graph data,
@@ -56,6 +60,9 @@ Benefits:
 - Tool-oriented clients can either run `llmwiki_agent_run` for a full grounded
   answer or use source tools to list, search, read, inspect graph
   neighborhoods, and graph Knowledge Sources before deciding what to ask next.
+- MCP hosts with many connected tools can use `gateway` exposure to keep the
+  initial listed schema surface small, then search the bridge catalog and
+  inspect only the selected LLMWiki source tool before execution.
 - Discovery clients can read source-registry counts and readiness from
   `/health` or the agent card without receiving local Knowledge Source URLs.
   Workbenches that need selectable bridge-managed source descriptors can call
@@ -187,7 +194,10 @@ Bind `host` and `port` changes are persisted for the next start and reported as
 restart-required fields.
 
 The agent card includes `metadata.settingsUrl` so clients can link operators to
-the local settings screen without hard-coding the path.
+the local settings screen without hard-coding the path. It also preserves the
+legacy `/message:send` `url` while adding the current A2A
+`supportedInterfaces` entry, protocol version metadata, default media modes,
+skills, and bearer-auth security metadata when bridge auth is configured.
 
 ## Rule of Thumb
 

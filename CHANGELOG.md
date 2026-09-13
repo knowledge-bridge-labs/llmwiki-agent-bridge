@@ -8,6 +8,30 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 No unreleased changes.
 
+## [0.6.0] - 2026-09-13
+
+### Added
+
+- Added opt-in progressive MCP gateway tool exposure through
+  `LLMWIKI_AGENT_BRIDGE_MCP_TOOL_EXPOSURE=gateway`, listing only
+  `llmwiki_gateway_search_tools`, `llmwiki_gateway_get_tool_details`, and
+  `llmwiki_gateway_call_tool` for clients that should discover source tools
+  incrementally.
+- Added gateway meta-tool dispatch for registered or inline read-only
+  Knowledge Source tools while preserving direct `tools/call` support for the
+  existing bridge tools and source tools.
+- Added output-schema and metadata coverage for progressive source-tool
+  discovery so MCP clients can fetch one selected source-tool schema instead
+  of receiving every registered source schema during `tools/list`.
+
+### Changed
+
+- Kept direct MCP exposure as the default while documenting `direct`, `gateway`,
+  and `both` exposure modes for external MCP gateways and token-sensitive
+  clients.
+- Redacted URL, local path, and secret-like values from gateway catalog,
+  detail, and call outputs before returning source registry metadata.
+
 ## [0.5.0] - 2026-09-12
 
 ### Added
