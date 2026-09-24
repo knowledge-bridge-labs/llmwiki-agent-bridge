@@ -7034,20 +7034,20 @@ function externalJudgmentEvidenceRelevanceQuestions(citationCount) {
     evidence_relevance_overall: {
       type: 'score',
       instructions: 'Score how directly the masked citation set supports answering the query.',
-      criteria: {
-        0: 'The citation set is irrelevant, contradictory, or too weak for the query.',
-        1: 'The citation set directly supports a grounded answer to the query.',
-      },
+      criteria: externalJudgmentScoreCriteria(
+        '0 means the citation set is irrelevant, contradictory, or too weak for the query.',
+        '1 means the citation set directly supports a grounded answer to the query.',
+      ),
     },
   }
   for (let index = 0; index < limit; index += 1) {
     questions[`citation_${index}_relevance_score`] = {
       type: 'score',
       instructions: `Score how directly masked citation ${index} supports answering the query.`,
-      criteria: {
-        0: 'The citation is unrelated, adjacent-only, contradictory, or too vague for the query.',
-        1: 'The citation directly supports at least one answerable claim for the query.',
-      },
+      criteria: externalJudgmentScoreCriteria(
+        '0 means the citation is unrelated, adjacent-only, contradictory, or too vague for the query.',
+        '1 means the citation directly supports at least one answerable claim for the query.',
+      ),
     }
     questions[`citation_${index}_direct_support`] = {
       type: 'noul',
@@ -7067,10 +7067,10 @@ function externalJudgmentCitationSupportQuestions(citedAnchorCount) {
     citation_support: {
       type: 'score',
       instructions: 'Score whether the masked runtime answer citations directly support the claims they cite.',
-      criteria: {
-        0: 'The answer has missing, weak, contradictory, or unsupported citations for its cited claims.',
-        1: 'The cited claims are directly and sufficiently supported by the cited evidence snippets.',
-      },
+      criteria: externalJudgmentScoreCriteria(
+        '0 means the answer has missing, weak, contradictory, or unsupported citations for its cited claims.',
+        '1 means the cited claims are directly and sufficiently supported by the cited evidence snippets.',
+      ),
     },
   }
   for (let index = 0; index < limit; index += 1) {
@@ -7085,10 +7085,10 @@ function externalJudgmentCitationSupportQuestions(citedAnchorCount) {
     questions[`cited_anchor_${index}_support_score`] = {
       type: 'score',
       instructions: `Score how strongly cited answer anchor ${index} supports the nearby answer claim.`,
-      criteria: {
-        0: 'The cited evidence does not support the nearby answer claim.',
-        1: 'The cited evidence fully supports the nearby answer claim.',
-      },
+      criteria: externalJudgmentScoreCriteria(
+        '0 means the cited evidence does not support the nearby answer claim.',
+        '1 means the cited evidence fully supports the nearby answer claim.',
+      ),
     }
   }
   return questions
@@ -7113,10 +7113,10 @@ function externalJudgmentProgressiveDisclosureQuestions(actions = []) {
     evidence_sufficiency_score: {
       type: 'score',
       instructions: 'Score whether the current masked source-tool result appears sufficient without more source-tool exploration.',
-      criteria: {
-        0: 'The result is likely insufficient or needs clarification or more source-tool exploration.',
-        1: 'The result is likely sufficient to stop source-tool exploration for now.',
-      },
+      criteria: externalJudgmentScoreCriteria(
+        '0 means the result is likely insufficient or needs clarification or more source-tool exploration.',
+        '1 means the result is likely sufficient to stop source-tool exploration for now.',
+      ),
     },
   }
 }
@@ -7153,12 +7153,16 @@ function externalJudgmentGraphExpansionQuestions() {
     graph_expansion_score: {
       type: 'score',
       instructions: 'Score how useful graph expansion or multi-source dependency review appears from the masked structural state.',
-      criteria: {
-        0: 'No useful graph expansion or multi-source dependency signal is present.',
-        1: 'Strong structural signal suggests graph expansion or multi-source dependency review would likely help.',
-      },
+      criteria: externalJudgmentScoreCriteria(
+        '0 means no useful graph expansion or multi-source dependency signal is present.',
+        '1 means strong structural signal suggests graph expansion or multi-source dependency review would likely help.',
+      ),
     },
   }
+}
+
+function externalJudgmentScoreCriteria(minimum, maximum) {
+  return [minimum, maximum]
 }
 
 function progressiveDisclosureQuestionActions(actions) {

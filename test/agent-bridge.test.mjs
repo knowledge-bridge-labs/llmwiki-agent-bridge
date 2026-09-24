@@ -346,6 +346,74 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(providerBodyText, /192\.168\.70\.10/)
   })
 
+  it('uses live-compatible score criteria arrays for evidence-relevance judgments', async (t) => {
+    const source = await startFixtureServer(async ({ url, response }) => {
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        evidence: [{
+          page_id: 'score-criteria-page',
+          title: 'Score Criteria Evidence',
+          snippet: 'Score criteria evidence supports the runtime answer.',
+        }],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    const provider = await startFixtureServer(async ({ body, response }) => {
+      assert.equal(body.state.gate, 'evidence_relevance')
+      assertLiveCompatibleScoreCriteria(body.questions.evidence_relevance_overall)
+      assertLiveCompatibleScoreCriteria(body.questions.citation_0_relevance_score)
+      writeJson(response, 200, {
+        answers: {
+          evidence_relevance_overall: { type: 'score', score: 0.81 },
+          citation_0_relevance_score: { type: 'score', score: 0.83 },
+          citation_0_direct_support: { type: 'noul', noul: 1 },
+        },
+      })
+    })
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'Score criteria runtime answer. [1](#citation-1)' } }],
+      })
+    })
+    const bridge = await startAgentBridge({
+      port: 0,
+      baseUrl: `${runtime.url}/v1`,
+      systemOneApiKey: 'score-criteria-key',
+      systemOneEndpoint: `${provider.url}/systemone`,
+      systemOneEvidenceRelevanceMode: 'report-only',
+      logger: silentLogger,
+    })
+    t.after(async () => {
+      await closeServer(bridge.server)
+      await closeServer(source.server)
+      await closeServer(provider.server)
+      await closeServer(runtime.server)
+    })
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Check evidence relevance score criteria shape.',
+          knowledgeSources: [knowledgeSource('score-criteria-source', 'Score Criteria Source', 'llmwiki-http', source.url)],
+        },
+      }),
+    })
+    const artifact = (await response.json()).artifacts[0].parts[0].data
+    const diagnostic = artifact.diagnostics.find((item) => item.phase === 'external-judgment-evidence-relevance')
+
+    assert.equal(response.status, 200)
+    assert.equal(provider.requests.length, 1)
+    assert.equal(runtime.requests.length, 1)
+    assert(diagnostic)
+    assert.equal(observationValue(diagnostic, 'overallEvidenceRelevance'), '0.81')
+  })
+
   it('enforces external judgment by skipping runtime when evidence support is too low', async (t) => {
     const source = await startFixtureServer(async ({ url, response }) => {
       if (url.pathname === '/search') {
@@ -588,6 +656,7 @@ describe('llmwiki-agent-bridge', () => {
     })
     const provider = await startFixtureServer(async ({ body, response }) => {
       assert.equal(body.state.gate, 'graph_expansion_multi_source_dependency')
+      assertLiveCompatibleScoreCriteria(body.questions.graph_expansion_score)
       writeJson(response, 200, {
         answers: {
           graph_expansion_action: { type: 'choice', choice: 'inspect_graph', confidence: 0.84 },
@@ -665,7 +734,9 @@ describe('llmwiki-agent-bridge', () => {
       events.push('citation-support')
       assert.equal(body.state.gate, 'citation_support')
       assert.equal(body.questions.citation_support.type, 'score')
+      assertLiveCompatibleScoreCriteria(body.questions.citation_support)
       assert.equal(body.questions.cited_anchor_0_direct_support.type, 'noul')
+      assertLiveCompatibleScoreCriteria(body.questions.cited_anchor_0_support_score)
       writeJson(response, 200, {
         answers: {
           citation_support: { type: 'score', score: 0.86 },
@@ -806,6 +877,7 @@ describe('llmwiki-agent-bridge', () => {
     const provider = await startFixtureServer(async ({ body, headers, response }) => {
       assert.equal(headers.authorization, 'Bearer progressive-key')
       assert.equal(body.state.gate, 'progressive_disclosure_continuation')
+      assertLiveCompatibleScoreCriteria(body.questions.evidence_sufficiency_score)
       writeJson(response, 200, {
         answers: {
           next_action: { type: 'choice', choice: 'stop', confidence: 0.91 },
@@ -12615,6 +12687,13 @@ function knowledgeSource(id, name, protocol, url) {
 
 function observationValue(diagnostic, name) {
   return diagnostic.observations?.find((observation) => observation.name === name)?.value
+}
+
+function assertLiveCompatibleScoreCriteria(question) {
+  assert.equal(question?.type, 'score')
+  assert(Array.isArray(question.criteria), 'score criteria must be an array for the live System-One API')
+  assert.equal(question.criteria.length >= 2, true)
+  assert.equal(question.criteria.every((item) => typeof item === 'string' && item.length > 0), true)
 }
 
 function retrievalIntent(searchMode, {

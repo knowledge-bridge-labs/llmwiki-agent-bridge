@@ -3,7 +3,7 @@
 Run:
 
 ```sh
-node --test --test-name-pattern "external judgment|System-One|progressive-disclosure|graph-expansion|citation-support|source-policy blocked|masked|default-off|no evaluable" test/agent-bridge.test.mjs
+node --test --test-name-pattern "external judgment|System-One|progressive-disclosure|graph-expansion|citation-support|evidence-relevance|source-policy blocked|masked|default-off|no evaluable|score criteria" test/agent-bridge.test.mjs
 npm run contracts:check
 npm run check
 npm run audit
@@ -23,6 +23,8 @@ Acceptance criteria:
 - Source display names, page titles, page headings/snippets, graph labels, graph
   relations, and raw answer text are summarized structurally before provider
   calls.
+- Provider `score` questions use criteria arrays that are accepted by the live
+  System-One API.
 - MCP progressive-disclosure provider state omits the raw source-tool query.
 - Graph-expansion report-only diagnostics do not add graph/source calls or
   alter runtime output.

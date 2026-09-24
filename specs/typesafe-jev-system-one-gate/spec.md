@@ -70,6 +70,9 @@ agent or leaking private source details.
 - `REQ-012`: Report-only graph-expansion and citation-support judgments skip
   provider calls when the current request has no structural graph/multi-source
   or cited-anchor state to evaluate.
+- `REQ-013`: Provider `score` questions use live System-One compatible
+  criteria arrays, not object maps, so all judgment phases can call the live
+  API successfully.
 
 ## Compatibility
 

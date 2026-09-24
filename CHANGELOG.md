@@ -33,6 +33,9 @@ No unreleased changes.
 - Reduced external-judgment source/page/graph/answer wording to structural
   signals before provider calls and skipped graph-expansion/citation-support
   provider calls when there is no evaluable state.
+- Sent System-One `score` question criteria as arrays so evidence-relevance,
+  citation-support, graph-expansion, and progressive-disclosure diagnostics are
+  accepted by the live provider API.
 
 ## [0.6.0] - 2026-09-13
 
