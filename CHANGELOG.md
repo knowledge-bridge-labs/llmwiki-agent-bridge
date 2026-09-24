@@ -19,7 +19,8 @@ No unreleased changes.
 - Added deterministic external-judgment state masking and minimization through
   the exported `prepareExternalJudgmentState` helper.
 - Added focused regression coverage for source-policy blocked source
-  minimization and raw-query-free progressive-disclosure provider state.
+  minimization, structural provider state, citation-support preservation, and
+  raw-query-free progressive-disclosure provider state.
 
 ### Changed
 
@@ -29,6 +30,9 @@ No unreleased changes.
 - Prevented source-policy blocked source descriptors from being sent to the
   external judgment provider, while preserving bridge trace diagnostics for
   blocked sources.
+- Reduced external-judgment source/page/graph/answer wording to structural
+  signals before provider calls and skipped graph-expansion/citation-support
+  provider calls when there is no evaluable state.
 
 ## [0.6.0] - 2026-09-13
 

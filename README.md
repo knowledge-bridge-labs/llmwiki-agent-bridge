@@ -737,8 +737,11 @@ System-One modes are report-only diagnostics.
 The bridge masks credentials, URLs, local paths, hostnames, emails, phone-like
 strings, source ids, page ids, graph identifiers, and similar identifiers
 before provider calls. Source-policy blocked source descriptors are not sent to
-the provider. MCP source-tool progressive-disclosure judgments receive only
-structural query/result counts, not the raw source-tool query.
+the provider. Source names/descriptions, page titles/snippets, graph labels and
+relations, answer text, and cited claim snippets are reduced to structural
+signals such as counts before provider calls. MCP source-tool
+progressive-disclosure judgments receive only structural query/result counts,
+not the raw source-tool query.
 
 The implementation keeps Hermes defaults for backward compatibility. For a new
 OSS install, set `LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE=generic` explicitly

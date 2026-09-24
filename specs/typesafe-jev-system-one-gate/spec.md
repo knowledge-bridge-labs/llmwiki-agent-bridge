@@ -64,6 +64,12 @@ agent or leaking private source details.
 - `REQ-010`: Diagnostics are redacted and omit provider request/response bodies,
   endpoint URLs, API keys, raw source ids, raw source URLs, local paths, graph
   labels, page text, and raw answer text.
+- `REQ-011`: Provider state uses structural text and graph signals for source
+  display names, source descriptions, page titles, page snippets, graph labels,
+  graph relations, answer text, and cited claim snippets instead of raw wording.
+- `REQ-012`: Report-only graph-expansion and citation-support judgments skip
+  provider calls when the current request has no structural graph/multi-source
+  or cited-anchor state to evaluate.
 
 ## Compatibility
 

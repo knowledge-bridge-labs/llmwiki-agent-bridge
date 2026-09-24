@@ -6023,6 +6023,7 @@ async function runExternalGraphExpansionJudgment(input) {
 
   const started = performance.now()
   const state = externalJudgmentGraphExpansionState(input)
+  if (!hasExternalGraphExpansionEvaluableState(state)) return null
   const prepared = prepareExternalJudgmentState(state)
   if (!config.externalJudgmentApiKey) {
     return {
@@ -6071,13 +6072,14 @@ async function runExternalCitationSupportJudgment(input) {
 
   const started = performance.now()
   const citedAnchors = externalJudgmentCitedAnchors(answer, citations)
+  const citationCount = Array.isArray(citations) ? citations.length : 0
+  const citedAnchorCount = citedAnchors.length
+  const evaluatedAnchorCount = Math.min(citedAnchorCount, MAX_CITATION_DIGEST_ITEMS)
+  if (citedAnchorCount === 0) return null
   const prepared = prepareExternalJudgmentState(externalJudgmentCitationSupportState({
     ...input,
     citedAnchors,
   }))
-  const citationCount = Array.isArray(citations) ? citations.length : 0
-  const citedAnchorCount = citedAnchors.length
-  const evaluatedAnchorCount = Math.min(citedAnchorCount, MAX_CITATION_DIGEST_ITEMS)
   if (!config.externalJudgmentApiKey) {
     return {
       step: externalCitationSupportJudgmentStep({
@@ -6268,6 +6270,18 @@ function externalJudgmentGraphExpansionState({
     answerTextPreserved: true,
     artifactPreserved: true,
   })
+}
+
+function hasExternalGraphExpansionEvaluableState(state) {
+  if (!state) return false
+  return Boolean(
+    state.sourceCount > 1
+      || state.sourceFailureCount
+      || state.citationCount
+      || state.graphNodeCount
+      || state.graphEdgeCount
+      || state.sourceBundleCount,
+  )
 }
 
 function externalJudgmentCitationSupportState({ query, conversation, answer, sourceResults = [], sourceFailures = [], citations = [], citedAnchors }) {
@@ -6647,8 +6661,7 @@ function externalJudgmentAnswerSummary(answer, citationCount, anchorMatches = an
   const text = readStringValue(answer)
   const uniqueValidAnchors = uniqueCitationAnchorIndexes(anchorMatches.valid)
   return removeUndefinedProperties({
-    textCharCount: text.length,
-    answerSnippet: truncateExternalJudgmentText(text),
+    answerText: externalJudgmentTextSignal(text),
     citedAnchorIndexes: uniqueValidAnchors.slice(0, MAX_CITATION_DIGEST_ITEMS),
     citedAnchorCount: uniqueValidAnchors.length,
     invalidCitationAnchorCount: anchorMatches.invalid.length,
@@ -6669,7 +6682,7 @@ function externalJudgmentCitedAnchors(answer, citations = []) {
       answerAnchor: `citation-${match.citationIndex}`,
       citationIndex: match.citationIndex,
       occurrence: match.occurrence,
-      claimSnippet: match.claimSnippet,
+      claim: externalJudgmentTextSignal(match.claimSnippet),
       citation: externalJudgmentCitation(citation, match.citationIndex - 1),
     }))
   }
@@ -6726,6 +6739,8 @@ function answerClaimSnippet(text, anchorStart, anchorEnd) {
 function externalJudgmentEvidenceSummary(item, index, citationIndexById) {
   const result = asRecord(item.result) || {}
   const resultCitations = readRecordArray(result.citations)
+  const resultText = readString(result, 'answer') || readString(result, 'text')
+  const limitations = readStringArray(result.limitations)
   const citationIndexes = resultCitations
     .map((citation) => citationIndexById.get(citation.id))
     .filter(isFiniteNumber)
@@ -6737,14 +6752,12 @@ function externalJudgmentEvidenceSummary(item, index, citationIndexById) {
     status: item.source?.status,
     pageCount: item.source?.pageCount,
     approvedPageCount: item.source?.approvedPageCount,
-    answerSnippet: truncateExternalJudgmentText(readString(result, 'answer') || readString(result, 'text')),
+    answerText: externalJudgmentTextSignal(resultText),
     orientationCount: readRecordArray(result.orientation).length,
     citationCount: resultCitations.length,
     citationIndexes,
-    limitations: readStringArray(result.limitations)
-      .slice(0, 3)
-      .map(truncateExternalJudgmentText)
-      .filter(Boolean),
+    limitationCount: limitations.length,
+    limitationText: externalJudgmentCombinedTextSignal(limitations),
     graph: externalJudgmentGraph(result.graph),
   })
 }
@@ -6762,14 +6775,14 @@ function externalJudgmentSourceCandidate(source, index) {
   return removeUndefinedProperties({
     index,
     sourceId: source.id,
-    label: externalJudgmentSourceDescriptor(source.name || source.title, source),
-    description: externalJudgmentSourceDescriptor(source.description, source),
+    label: externalJudgmentSourceDescriptorSignal(source.name || source.title),
+    description: externalJudgmentSourceDescriptorSignal(source.description),
     protocol: source.protocol,
     status: source.status,
     selected: source.selected !== false,
     capabilities: readStringArray(source.capabilities).slice(0, MAX_SOURCE_TOOL_LIMIT),
-    adapter: externalJudgmentSourceDescriptor(source.adapter, source),
-    implementation: externalJudgmentSourceDescriptor(source.implementation, source),
+    adapter: externalJudgmentSourceDescriptorSignal(source.adapter),
+    implementation: externalJudgmentSourceDescriptorSignal(source.implementation),
     pageCount: source.pageCount,
     approvedPageCount: source.approvedPageCount,
     bundleId: source.bundleId,
@@ -6777,30 +6790,19 @@ function externalJudgmentSourceCandidate(source, index) {
   })
 }
 
-function externalJudgmentSourceDescriptor(value, source) {
-  let text = truncateExternalJudgmentText(value)
-  if (!text) return undefined
-  const rawValues = [
-    source?.id,
-    source?.bundleId,
-    source?.publicUri,
-    source?.url,
-    source?.root,
-  ].map(readStringValue).filter(Boolean).sort((left, right) => right.length - left.length)
-  for (const rawValue of rawValues) {
-    text = text.split(rawValue).join('[source-identifier]')
-  }
-  return text
+function externalJudgmentSourceDescriptorSignal(value) {
+  return externalJudgmentTextSignal(value)
 }
 
 function externalJudgmentSourceResult(item, index) {
   const source = asRecord(item.source) || {}
   const result = asRecord(item.result) || {}
   const resultCitations = readRecordArray(result.citations)
+  const resultText = readString(result, 'answer') || readString(result, 'text')
   return removeUndefinedProperties({
     index,
     source: externalJudgmentSourceSummary(source),
-    answerSnippet: truncateExternalJudgmentText(readString(result, 'answer') || readString(result, 'text')),
+    answerText: externalJudgmentTextSignal(resultText),
     citationCount: resultCitations.length,
     citations: resultCitations.slice(0, MAX_CITATION_DIGEST_ITEMS).map((citation, citationIndex) => externalJudgmentCitation(citation, citationIndex)),
     graph: externalJudgmentGraph(result.graph),
@@ -6843,7 +6845,7 @@ function isSourcePolicyBlockedDiagnostic(diagnosticRecord) {
 function externalJudgmentSourceSummary(source) {
   return removeUndefinedProperties({
     id: source.id,
-    name: source.name,
+    name: externalJudgmentTextSignal(source.name),
     protocol: source.protocol,
     status: source.status,
     selected: source.selected !== false,
@@ -6856,39 +6858,24 @@ function externalJudgmentSourceSummary(source) {
 
 function externalJudgmentCitation(citation, index) {
   const record = asRecord(citation) || {}
+  const text = readString(record, 'text') || readString(record, 'snippet') || readString(record, 'content')
   return removeUndefinedProperties({
     index,
     sourceId: record.sourceId,
     sourceRef: record.sourceRef,
     pageId: record.pageId,
     id: record.id,
-    title: record.title,
-    heading: record.heading,
+    title: externalJudgmentTextSignal(record.title),
+    heading: externalJudgmentTextSignal(record.heading),
     path: record.path,
     uri: record.uri,
     url: record.url,
-    text: truncateExternalJudgmentText(readString(record, 'text') || readString(record, 'snippet') || readString(record, 'content')),
+    text: externalJudgmentTextSignal(text),
   })
 }
 
 function externalJudgmentGraph(graph) {
-  const record = asRecord(graph)
-  if (!record) return undefined
-  return removeUndefinedProperties({
-    nodeCount: readRecordArray(record.nodes).length,
-    edgeCount: readRecordArray(record.edges).length,
-    nodes: readRecordArray(record.nodes).slice(0, MAX_CITATION_DIGEST_ITEMS).map((node) => removeUndefinedProperties({
-      id: node.id,
-      label: node.label,
-      type: node.type,
-    })),
-    edges: readRecordArray(record.edges).slice(0, MAX_CITATION_DIGEST_ITEMS).map((edge) => removeUndefinedProperties({
-      source: edge.source,
-      target: edge.target,
-      relation: edge.relation,
-      label: edge.label,
-    })),
-  })
+  return externalJudgmentGraphStructuralSummary(graph)
 }
 
 function externalJudgmentSourceBundle(bundle, index) {
@@ -6910,6 +6897,57 @@ function truncateExternalJudgmentText(value) {
   return text.length <= MAX_CITATION_DIGEST_SNIPPET_CHARS
     ? text
     : `${text.slice(0, MAX_CITATION_DIGEST_SNIPPET_CHARS)}...`
+}
+
+function externalJudgmentTextSignal(value) {
+  const text = readStringValue(value)
+  if (!text) return undefined
+  return removeUndefinedProperties({
+    present: true,
+    charCount: text.length,
+    wordCount: externalJudgmentWordCount(text),
+    lineCount: externalJudgmentLineCount(text),
+  })
+}
+
+function externalJudgmentCombinedTextSignal(values) {
+  const texts = Array.isArray(values)
+    ? values.map(readStringValue).filter(Boolean)
+    : []
+  if (!texts.length) return undefined
+  return removeUndefinedProperties({
+    itemCount: texts.length,
+    charCount: texts.reduce((sum, text) => sum + text.length, 0),
+    wordCount: texts.reduce((sum, text) => sum + externalJudgmentWordCount(text), 0),
+    maxCharCount: Math.max(...texts.map((text) => text.length)),
+  })
+}
+
+function externalJudgmentWordCount(value) {
+  const text = readStringValue(value).trim()
+  if (!text) return 0
+  let count = 0
+  let inWord = false
+  for (const char of text) {
+    const whitespace = char === ' ' || char === '\t' || char === '\n' || char === '\r' || char === '\f' || char === '\v'
+    if (whitespace) {
+      inWord = false
+    } else if (!inWord) {
+      count += 1
+      inWord = true
+    }
+  }
+  return count
+}
+
+function externalJudgmentLineCount(value) {
+  const text = readStringValue(value)
+  if (!text) return 0
+  let count = 1
+  for (const char of text) {
+    if (char === '\n') count += 1
+  }
+  return count
 }
 
 async function callExternalJudgmentProvider(prepared, config, runContext = {}, questions = externalJudgmentQuestions()) {

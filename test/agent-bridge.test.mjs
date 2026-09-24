@@ -178,13 +178,13 @@ describe('llmwiki-agent-bridge', () => {
       writeJson(response, 200, {
         evidence: [{
           page_id: 'sensitive-page',
-          title: 'Masked Evidence',
+          title: 'PrivatePageTitleCanary',
           path: 'C:\\redaction-fixture\\private\\source.md',
-          snippet: 'Masked report-only evidence supports the answer.',
+          snippet: 'PrivateHeadingCanary: PrivateSnippetCanary supports the answer.',
         }],
         graph: {
-          nodes: [{ id: 'sensitive-node', label: 'Masked Node', type: 'claim' }],
-          edges: [],
+          nodes: [{ id: 'sensitive-node', label: 'PrivateGraphLabelCanary', type: 'claim' }],
+          edges: [{ source: 'sensitive-node', target: 'sensitive-node', relation: 'privateGraphRelationCanary' }],
         },
       })
     })
@@ -230,7 +230,7 @@ describe('llmwiki-agent-bridge', () => {
       body: JSON.stringify({
         data: {
           query: 'Use masked report-only evidence.',
-          knowledgeSources: [knowledgeSource('sensitive-source-id', 'Masked Source', 'llmwiki-http', source.url)],
+          knowledgeSources: [knowledgeSource('sensitive-source-id', 'PrivateSourceNameCanary', 'llmwiki-http', source.url)],
         },
       }),
     })
@@ -250,6 +250,12 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(providerBodyText, /sensitive-source-id/)
     assert.doesNotMatch(providerBodyText, /sensitive-page/)
     assert.doesNotMatch(providerBodyText, /sensitive-node/)
+    assert.doesNotMatch(providerBodyText, /PrivateSourceNameCanary/)
+    assert.doesNotMatch(providerBodyText, /PrivatePageTitleCanary/)
+    assert.doesNotMatch(providerBodyText, /PrivateHeadingCanary/)
+    assert.doesNotMatch(providerBodyText, /PrivateSnippetCanary/)
+    assert.doesNotMatch(providerBodyText, /PrivateGraphLabelCanary/)
+    assert.doesNotMatch(providerBodyText, /privateGraphRelationCanary/)
     assert.doesNotMatch(providerBodyText, /127\.0\.0\.1/)
     assert.doesNotMatch(providerBodyText, /C:\\\\redaction-fixture\\\\private\\\\source\.md/)
   })
@@ -636,6 +642,152 @@ describe('llmwiki-agent-bridge', () => {
     assert.doesNotMatch(providerBodyText, /Private Node/)
     assert.doesNotMatch(providerBodyText, /private-node/)
     assert.doesNotMatch(providerBodyText, /private_relation/)
+  })
+
+  it('runs citation-support report-only without changing answer artifacts or exposing raw content', async (t) => {
+    const events = []
+    const source = await startFixtureServer(async ({ url, response }) => {
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        evidence: [{
+          page_id: 'citation-support-private-page',
+          title: 'CitationSupportPrivateTitleCanary',
+          snippet: 'CitationSupportPrivateHeadingCanary: CitationSupportPrivateSnippetCanary is enough for the cited answer.',
+        }],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    const provider = await startFixtureServer(async ({ body, response }) => {
+      events.push('citation-support')
+      assert.equal(body.state.gate, 'citation_support')
+      assert.equal(body.questions.citation_support.type, 'score')
+      assert.equal(body.questions.cited_anchor_0_direct_support.type, 'noul')
+      writeJson(response, 200, {
+        answers: {
+          citation_support: { type: 'score', score: 0.86 },
+          cited_anchor_0_direct_support: { type: 'noul', noul: 1 },
+          cited_anchor_0_support_score: { type: 'score', score: 0.88 },
+        },
+      })
+    })
+    const runtime = await startFixtureServer(async ({ response }) => {
+      events.push('runtime')
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'CitationSupportPrivateAnswerCanary is supported. [1](#citation-1)' } }],
+      })
+    })
+    const bridge = await startAgentBridge({
+      port: 0,
+      baseUrl: `${runtime.url}/v1`,
+      systemOneApiKey: 'citation-support-key',
+      systemOneEndpoint: `${provider.url}/systemone`,
+      systemOneCitationSupportMode: 'report-only',
+      logger: silentLogger,
+    })
+    t.after(async () => {
+      await closeServer(bridge.server)
+      await closeServer(source.server)
+      await closeServer(provider.server)
+      await closeServer(runtime.server)
+    })
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Check cited answer support.',
+          knowledgeSources: [knowledgeSource('citation-support-source', 'CitationSupportPrivateSourceNameCanary', 'llmwiki-http', source.url)],
+        },
+      }),
+    })
+    const artifact = (await response.json()).artifacts[0].parts[0].data
+    const diagnostic = artifact.diagnostics.find((item) => item.phase === 'external-judgment-citation-support')
+    const providerBodyText = JSON.stringify(provider.requests[0].body)
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(events, ['runtime', 'citation-support'])
+    assert.equal(runtime.requests.length, 1)
+    assert.equal(provider.requests.length, 1)
+    assert.equal(artifact.answer, 'CitationSupportPrivateAnswerCanary is supported. [1](#citation-1)')
+    assert.deepEqual(artifact.citations.map((citation) => citation.id), ['citation-support-source:citation-support-private-page'])
+    assert.equal(artifact.citations[0].title, 'CitationSupportPrivateTitleCanary')
+    assert.match(artifact.citations[0].snippet, /CitationSupportPrivateSnippetCanary/)
+    assert(diagnostic)
+    assert.equal(observationValue(diagnostic, 'citationCount'), '1')
+    assert.equal(observationValue(diagnostic, 'citedAnchorCount'), '1')
+    assert.equal(observationValue(diagnostic, 'evaluatedAnchorCount'), '1')
+    assert.equal(observationValue(diagnostic, 'answerTextPreserved'), 'true')
+    assert.equal(observationValue(diagnostic, 'citationOrderPreserved'), 'true')
+    assert.equal(observationValue(diagnostic, 'artifactPreserved'), 'true')
+    assert.doesNotMatch(providerBodyText, /citation-support-key/)
+    assert.doesNotMatch(providerBodyText, /citation-support-source/)
+    assert.doesNotMatch(providerBodyText, /citation-support-private-page/)
+    assert.doesNotMatch(providerBodyText, /CitationSupportPrivateSourceNameCanary/)
+    assert.doesNotMatch(providerBodyText, /CitationSupportPrivateTitleCanary/)
+    assert.doesNotMatch(providerBodyText, /CitationSupportPrivateHeadingCanary/)
+    assert.doesNotMatch(providerBodyText, /CitationSupportPrivateSnippetCanary/)
+    assert.doesNotMatch(providerBodyText, /CitationSupportPrivateAnswerCanary/)
+  })
+
+  it('skips report-only judgments when there is no evaluable graph or citation-support state', async (t) => {
+    const source = await startFixtureServer(async ({ url, response }) => {
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        evidence: [],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    const provider = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, { answers: {} })
+    })
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'No citation anchors are available.' } }],
+      })
+    })
+    const bridge = await startAgentBridge({
+      port: 0,
+      baseUrl: `${runtime.url}/v1`,
+      systemOneApiKey: 'empty-state-key',
+      systemOneEndpoint: `${provider.url}/systemone`,
+      systemOneGraphExpansionMode: 'report-only',
+      systemOneCitationSupportMode: 'report-only',
+      logger: silentLogger,
+    })
+    t.after(async () => {
+      await closeServer(bridge.server)
+      await closeServer(source.server)
+      await closeServer(provider.server)
+      await closeServer(runtime.server)
+    })
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Return a response when no source evidence is available.',
+          knowledgeSources: [knowledgeSource('empty-judgment-source', 'Empty Judgment Source', 'llmwiki-http', source.url)],
+        },
+      }),
+    })
+    const artifact = (await response.json()).artifacts[0].parts[0].data
+
+    assert.equal(response.status, 200)
+    assert.equal(runtime.requests.length, 1)
+    assert.equal(provider.requests.length, 0)
+    assert.equal(artifact.answer, 'No citation anchors are available.')
+    assert.equal(artifact.diagnostics.some((item) => item.phase === 'external-judgment-graph-expansion'), false)
+    assert.equal(artifact.diagnostics.some((item) => item.phase === 'external-judgment-citation-support'), false)
   })
 
   it('records progressive-disclosure diagnostics for MCP source tools without changing tool results', async (t) => {

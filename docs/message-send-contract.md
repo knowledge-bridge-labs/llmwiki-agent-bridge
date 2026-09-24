@@ -736,7 +736,10 @@ Optional System-One external judgment diagnostics use phases such as
 `external-judgment-graph-expansion`. They are disabled by default. Report-only
 phases preserve source calls, runtime prompts, answer text, citations, graph
 payloads, and artifacts. `external-judgment` can skip runtime synthesis only
-when the runtime-route mode is explicitly set to `enforce`.
+when the runtime-route mode is explicitly set to `enforce`. Provider state
+uses structural signals for source/page/graph/answer wording and skips
+report-only graph-expansion or citation-support provider calls when the request
+has no graph/multi-source or cited-anchor state to evaluate.
 
 The runtime evidence bundle sent to Hermes/DeepAgents also preserves per-source
 corpus metadata from LLMWiki context responses, including `pageCount`,

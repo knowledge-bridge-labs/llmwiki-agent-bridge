@@ -272,9 +272,11 @@ The additional source-routing, evidence-relevance, citation-support,
 progressive-disclosure, and graph-expansion modes are report-only. They do not
 prune sources, add source calls, reorder citations, mutate runtime prompts, or
 change answers. Provider state is minimized and masked before every call.
-Source-policy blocked descriptors are omitted from provider state; MCP
-progressive-disclosure state uses structural counts rather than the raw
-source-tool query.
+Source-policy blocked descriptors are omitted from provider state. Source
+names/descriptions, page titles/snippets, graph labels and relations, answer
+text, and cited claim snippets are reduced to structural signals such as
+counts before provider calls. MCP progressive-disclosure state uses structural
+counts rather than the raw source-tool query.
 
 ## Persistent Settings
 

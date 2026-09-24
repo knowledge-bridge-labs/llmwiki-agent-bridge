@@ -24,6 +24,12 @@ layer:
   progressive-disclosure, and graph-expansion judgments are report-only.
 - Provider state is minimized and masked before every call.
 - Source-policy blocked source descriptors are excluded from provider state.
+- Source/page/graph/answer wording is summarized as structural signals before
+  provider calls; provider state must not depend on source-specific labels or
+  page text.
+- Report-only graph-expansion and citation-support calls are skipped when the
+  current request has no structural graph/multi-source or cited-anchor state to
+  evaluate.
 - MCP progressive-disclosure uses structural query/result counts instead of the
   raw source-tool query.
 - `llmwiki-serve` remains provider-free; only the bridge owns this integration.
