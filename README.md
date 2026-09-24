@@ -701,6 +701,17 @@ testing an explicit adapter integration:
 | `LLMWIKI_AGENT_BRIDGE_ALLOWED_ORIGINS` | unset | Extra browser CORS origins allowed to call the bridge. |
 | `LLMWIKI_AGENT_BRIDGE_SOURCE_POLICY` | `private-http` | Outbound Knowledge Source URL policy. |
 | `LLMWIKI_AGENT_BRIDGE_ALLOWED_SOURCE_ORIGINS` | unset | Exact Knowledge Source origins for allowlist or stricter policies. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_MODE` | `off` | Optional TypeSafe Jev/System-One runtime-route judgment. Set `report-only` to record redacted diagnostics, or `enforce` to skip runtime synthesis when the judgment rejects the gathered evidence. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_MODE`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_API_KEY` | unset | Optional System-One provider API key. Aliases: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_API_KEY`, `TYPESAFE_API_KEY`, `JEV_API_KEY`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_ENDPOINT` | `https://api.typesafe.ai/v1/systemone` | System-One endpoint. `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_BASE_URL` is also accepted and appends `/systemone` when needed. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_ENDPOINT`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_MODEL` | `jev-latest` | System-One model id sent to the provider. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_MODEL`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_SOURCE_ROUTING_MODE` | `off` | Optional report-only source-routing diagnostic before source fan-out. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_SOURCE_ROUTING_MODE`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_EVIDENCE_RELEVANCE_MODE` | `off` | Optional report-only citation/evidence relevance diagnostic after source fan-out. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_EVIDENCE_RELEVANCE_MODE`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_CITATION_SUPPORT_MODE` | `off` | Optional report-only citation-support diagnostic after runtime synthesis. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_CITATION_SUPPORT_MODE`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_PROGRESSIVE_DISCLOSURE_MODE` | `off` | Optional report-only MCP source-tool continuation diagnostic. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_PROGRESSIVE_DISCLOSURE_MODE`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_GRAPH_EXPANSION_MODE` | `off` | Optional report-only graph-expansion and multi-source dependency diagnostic. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_GRAPH_EXPANSION_MODE`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_MIN_EVIDENCE_SUPPORT` | `0.5` | Runtime-route enforce threshold. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_MIN_EVIDENCE_SUPPORT`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_MIN_ROUTE_CONFIDENCE` | `0.5` | Runtime-route enforce threshold. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_MIN_ROUTE_CONFIDENCE`. |
 | `LLMWIKI_AGENT_BRIDGE_IO_LOG` | `file` | Default-on I/O debug logging. Set `off` to disable, `logger`/`stdout` to route through process logs, or `file` to append JSONL to a file sink. |
 | `LLMWIKI_AGENT_BRIDGE_IO_LOG_PATH` | `.runtime-logs/llmwiki-agent-bridge-io.jsonl` | Optional file path for I/O JSONL logs. |
 | `LLMWIKI_AGENT_BRIDGE_ALLOW_PUBLIC_BIND` | unset | Set to `1` before binding to a non-loopback host. |
@@ -709,6 +720,25 @@ testing an explicit adapter integration:
 Source policy, CORS, bind-host, and migration alias details are documented in
 [runtime profiles](./docs/runtime-profiles.md) and
 [client paths](./docs/client-paths.md).
+
+### Optional System-One judgment
+
+System-One integration is disabled unless explicitly configured. The bridge
+uses it as a first-stage typed judgment provider, not as final authority. In
+`report-only` modes, it sends a minimized and masked state to the configured
+provider, records redacted diagnostics, and preserves source selection, source
+calls, runtime prompts, answer text, and artifacts.
+
+`LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_MODE=enforce` applies only to the runtime-route
+gate. It can skip runtime synthesis when the provider rejects the gathered
+evidence or falls below configured support/confidence thresholds. Other
+System-One modes are report-only diagnostics.
+
+The bridge masks credentials, URLs, local paths, hostnames, emails, phone-like
+strings, source ids, page ids, graph identifiers, and similar identifiers
+before provider calls. Source-policy blocked source descriptors are not sent to
+the provider. MCP source-tool progressive-disclosure judgments receive only
+structural query/result counts, not the raw source-tool query.
 
 The implementation keeps Hermes defaults for backward compatibility. For a new
 OSS install, set `LLMWIKI_AGENT_BRIDGE_RUNTIME_PROFILE=generic` explicitly
