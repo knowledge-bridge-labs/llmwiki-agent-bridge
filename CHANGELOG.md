@@ -8,6 +8,35 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 No unreleased changes.
 
+## [0.6.1] - 2026-09-24
+
+### Added
+
+- Added opt-in TypeSafe Jev/System-One external judgment integration for
+  runtime-route gating, source-routing diagnostics, evidence-relevance
+  diagnostics, citation-support diagnostics, MCP source-tool progressive
+  disclosure diagnostics, and graph-expansion diagnostics.
+- Added deterministic external-judgment state masking and minimization through
+  the exported `prepareExternalJudgmentState` helper.
+- Added focused regression coverage for source-policy blocked source
+  minimization, structural provider state, citation-support preservation, and
+  raw-query-free progressive-disclosure provider state.
+
+### Changed
+
+- Kept System-One disabled by default. Report-only modes record redacted
+  diagnostics without changing source calls, runtime prompts, answer text, or
+  artifacts; `enforce` applies only to the runtime-route gate.
+- Prevented source-policy blocked source descriptors from being sent to the
+  external judgment provider, while preserving bridge trace diagnostics for
+  blocked sources.
+- Reduced external-judgment source/page/graph/answer wording to structural
+  signals before provider calls and skipped graph-expansion/citation-support
+  provider calls when there is no evaluable state.
+- Sent System-One `score` question criteria as arrays so evidence-relevance,
+  citation-support, graph-expansion, and progressive-disclosure diagnostics are
+  accepted by the live provider API.
+
 ## [0.6.0] - 2026-09-13
 
 ### Added

@@ -29,6 +29,16 @@ const DEFAULT_SOURCE_POLICY = 'private-http'
 const DEFAULT_ORCHESTRATION_MODE = 'delegated-runtime'
 const DEFAULT_RUNTIME_PROFILE = 'hermes'
 const DEFAULT_RUNTIME_ADAPTER = 'chat-completions'
+const DEFAULT_EXTERNAL_JUDGMENT_MODE = 'off'
+const DEFAULT_EXTERNAL_JUDGMENT_SOURCE_ROUTING_MODE = 'off'
+const DEFAULT_EXTERNAL_JUDGMENT_EVIDENCE_RELEVANCE_MODE = 'off'
+const DEFAULT_EXTERNAL_JUDGMENT_CITATION_SUPPORT_MODE = 'off'
+const DEFAULT_EXTERNAL_JUDGMENT_PROGRESSIVE_DISCLOSURE_MODE = 'off'
+const DEFAULT_EXTERNAL_JUDGMENT_GRAPH_EXPANSION_MODE = 'off'
+const DEFAULT_EXTERNAL_JUDGMENT_ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
+const DEFAULT_EXTERNAL_JUDGMENT_MODEL = 'jev-latest'
+const DEFAULT_EXTERNAL_JUDGMENT_MIN_EVIDENCE_SUPPORT = 0.5
+const DEFAULT_EXTERNAL_JUDGMENT_MIN_ROUTE_CONFIDENCE = 0.5
 const DEFAULT_DEEPAGENTS_ACP_ARGS = ['--yes', 'deepagents-acp']
 const FALLBACK_WINDOWS_DEEPAGENTS_ACP_COMMAND = 'npx.cmd'
 const DEFAULT_DEEPAGENTS_ACP_COMMAND = 'npx'
@@ -98,6 +108,29 @@ const MCP_TOOL_EXPOSURE_ENV = 'LLMWIKI_AGENT_BRIDGE_MCP_TOOL_EXPOSURE'
 const DEEPAGENTS_ACP_COMMAND_ENV = 'LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_COMMAND'
 const DEEPAGENTS_ACP_ARGS_ENV = 'LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_ARGS'
 const DEEPAGENTS_ACP_CWD_ENV = 'LLMWIKI_AGENT_BRIDGE_DEEPAGENTS_ACP_CWD'
+const EXTERNAL_JUDGMENT_MODE_ENV = 'LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_MODE'
+const EXTERNAL_JUDGMENT_SOURCE_ROUTING_MODE_ENV = 'LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_SOURCE_ROUTING_MODE'
+const EXTERNAL_JUDGMENT_EVIDENCE_RELEVANCE_MODE_ENV = 'LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_EVIDENCE_RELEVANCE_MODE'
+const EXTERNAL_JUDGMENT_CITATION_SUPPORT_MODE_ENV = 'LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_CITATION_SUPPORT_MODE'
+const EXTERNAL_JUDGMENT_PROGRESSIVE_DISCLOSURE_MODE_ENV = 'LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_PROGRESSIVE_DISCLOSURE_MODE'
+const EXTERNAL_JUDGMENT_GRAPH_EXPANSION_MODE_ENV = 'LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_GRAPH_EXPANSION_MODE'
+const EXTERNAL_JUDGMENT_ENDPOINT_ENV = 'LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_ENDPOINT'
+const EXTERNAL_JUDGMENT_API_KEY_ENV = 'LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_API_KEY'
+const EXTERNAL_JUDGMENT_MODEL_ENV = 'LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_MODEL'
+const EXTERNAL_JUDGMENT_MIN_EVIDENCE_SUPPORT_ENV = 'LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_MIN_EVIDENCE_SUPPORT'
+const EXTERNAL_JUDGMENT_MIN_ROUTE_CONFIDENCE_ENV = 'LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_MIN_ROUTE_CONFIDENCE'
+const SYSTEM_ONE_MODE_ENV = 'LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_MODE'
+const SYSTEM_ONE_SOURCE_ROUTING_MODE_ENV = 'LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_SOURCE_ROUTING_MODE'
+const SYSTEM_ONE_EVIDENCE_RELEVANCE_MODE_ENV = 'LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_EVIDENCE_RELEVANCE_MODE'
+const SYSTEM_ONE_CITATION_SUPPORT_MODE_ENV = 'LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_CITATION_SUPPORT_MODE'
+const SYSTEM_ONE_PROGRESSIVE_DISCLOSURE_MODE_ENV = 'LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_PROGRESSIVE_DISCLOSURE_MODE'
+const SYSTEM_ONE_GRAPH_EXPANSION_MODE_ENV = 'LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_GRAPH_EXPANSION_MODE'
+const SYSTEM_ONE_ENDPOINT_ENV = 'LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_ENDPOINT'
+const SYSTEM_ONE_BASE_URL_ENV = 'LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_BASE_URL'
+const SYSTEM_ONE_API_KEY_ENV = 'LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_API_KEY'
+const SYSTEM_ONE_MODEL_ENV = 'LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_MODEL'
+const SYSTEM_ONE_MIN_EVIDENCE_SUPPORT_ENV = 'LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_MIN_EVIDENCE_SUPPORT'
+const SYSTEM_ONE_MIN_ROUTE_CONFIDENCE_ENV = 'LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_MIN_ROUTE_CONFIDENCE'
 const DEPRECATED_CONFIG_PATH_ENV = 'HERMES_A2A_BRIDGE_CONFIG_PATH'
 const PUBLIC_BIND_OPT_IN_ENV = 'LLMWIKI_AGENT_BRIDGE_ALLOW_PUBLIC_BIND'
 const INSECURE_PUBLIC_BIND_OPT_IN_ENV = 'LLMWIKI_AGENT_BRIDGE_ALLOW_INSECURE_PUBLIC_BIND'
@@ -107,6 +140,7 @@ const AUDIT_LOG_SCHEMA_VERSION = 'llmwiki.agent-bridge.audit.v1'
 const REQUEST_AUDIT_EVENT = 'llmwiki.agent_bridge.request'
 const IO_LOG_SCHEMA_VERSION = 'llmwiki.agent-bridge.io.v1'
 const IO_LOG_EVENT = 'llmwiki.agent_bridge.io'
+const EXTERNAL_JUDGMENT_STATE_SCHEMA_VERSION = 'llmwiki.agent-bridge.external-judgment-state.v1'
 const FILE_IO_LOG_MODE = 'file'
 const LOGGER_IO_LOG_MODE = 'logger'
 const OFF_IO_LOG_MODE = 'off'
@@ -166,6 +200,10 @@ const MAX_CONVERSATION_DESCRIPTOR_DEPTH = 3
 const MAX_CONVERSATION_DESCRIPTOR_KEYS = 40
 const MAX_CONVERSATION_DESCRIPTOR_ARRAY_ITEMS = 20
 const MAX_CONVERSATION_DESCRIPTOR_STRING_CHARS = 1000
+const MAX_EXTERNAL_JUDGMENT_DEPTH = 8
+const MAX_EXTERNAL_JUDGMENT_ARRAY_ITEMS = 80
+const MAX_EXTERNAL_JUDGMENT_OBJECT_KEYS = 80
+const MAX_EXTERNAL_JUDGMENT_STRING_CHARS = 4000
 const relevanceStopWords = new Set([
   'a',
   'an',
@@ -271,6 +309,27 @@ const runtimeAdapterAliases = new Map([
   ['openaicompatible', 'chat-completions'],
   ['deepagentsacp', 'deepagents-acp'],
   ['acp', 'deepagents-acp'],
+])
+const externalJudgmentModeAliases = new Map([
+  ['0', 'off'],
+  ['false', 'off'],
+  ['no', 'off'],
+  ['off', 'off'],
+  ['disable', 'off'],
+  ['disabled', 'off'],
+  ['none', 'off'],
+  ['1', 'report-only'],
+  ['true', 'report-only'],
+  ['yes', 'report-only'],
+  ['on', 'report-only'],
+  ['report', 'report-only'],
+  ['reportonly', 'report-only'],
+  ['diagnostic', 'report-only'],
+  ['diagnosticsonly', 'report-only'],
+  ['enforce', 'enforce'],
+  ['enforced', 'enforce'],
+  ['strict', 'enforce'],
+  ['gate', 'enforce'],
 ])
 const mcpToolExposureAliases = new Map([
   ['direct', 'direct'],
@@ -570,6 +629,33 @@ export async function startAgentBridge(options = {}) {
     server,
     config,
     url: `http://${hostForUrl(config.host)}:${selectedPort}`,
+  }
+}
+
+export function prepareExternalJudgmentState(value, options = {}) {
+  const context = externalJudgmentMaskingContext(options)
+  const state = maskExternalJudgmentValue(value, context, 0, '')
+  return {
+    schemaVersion: EXTERNAL_JUDGMENT_STATE_SCHEMA_VERSION,
+    state,
+    redactions: removeUndefinedProperties({
+      secrets: context.counts.secret || 0,
+      urls: context.counts.url || 0,
+      paths: context.counts.path || 0,
+      emails: context.counts.email || 0,
+      phones: context.counts.phone || 0,
+      hosts: context.counts.host || 0,
+      identifiers: context.counts.identifier || 0,
+      truncatedStrings: context.counts.truncatedString || 0,
+      truncatedArrays: context.counts.truncatedArray || 0,
+      truncatedObjects: context.counts.truncatedObject || 0,
+      truncatedDepth: context.counts.truncatedDepth || 0,
+    }),
+    policy: {
+      rawStateRetained: false,
+      stablePlaceholders: true,
+      intendedUse: 'external-system-one-judgment',
+    },
   }
 }
 
@@ -1700,6 +1786,7 @@ export function agentBridgeOpenApi({ version = PACKAGE_VERSION } = {}) {
               llmwiki_gateway_tool_details: { type: 'object', additionalProperties: true },
               llmwiki_gateway_tool_call: { type: 'object', additionalProperties: true },
               llmwiki_gateway_tool_error: { type: 'object', additionalProperties: true },
+              llmwiki_external_judgment_progressive_disclosure: { type: 'object', additionalProperties: true },
               llmwiki_source_error: { type: 'object', additionalProperties: true },
             },
           },
@@ -2514,6 +2601,133 @@ function isUrlLikeKey(key) {
     || normalized.endsWith('endpoint')
 }
 
+function externalJudgmentMaskingContext(options = {}) {
+  return {
+    maxDepth: integerOption(options.maxDepth) ?? MAX_EXTERNAL_JUDGMENT_DEPTH,
+    maxArrayItems: integerOption(options.maxArrayItems) ?? MAX_EXTERNAL_JUDGMENT_ARRAY_ITEMS,
+    maxObjectKeys: integerOption(options.maxObjectKeys) ?? MAX_EXTERNAL_JUDGMENT_OBJECT_KEYS,
+    maxStringChars: integerOption(options.maxStringChars) ?? MAX_EXTERNAL_JUDGMENT_STRING_CHARS,
+    placeholders: new Map(),
+    nextIndexes: new Map(),
+    counts: {},
+  }
+}
+
+function maskExternalJudgmentValue(value, context, depth, key) {
+  if (value === undefined || value === null) return value
+  if (typeof value === 'string') {
+    const masked = maskExternalJudgmentString(value, context)
+    return isExternalJudgmentIdentifierKey(key)
+      ? externalJudgmentPlaceholder(context, 'identifier', masked)
+      : masked
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return value
+  if (typeof value === 'bigint') return String(value)
+  if (typeof value !== 'object') return undefined
+
+  if (depth >= context.maxDepth) {
+    incrementExternalJudgmentCount(context, 'truncatedDepth')
+    return '[truncated-depth]'
+  }
+
+  if (Array.isArray(value)) {
+    const output = []
+    for (const item of value.slice(0, context.maxArrayItems)) {
+      output.push(maskExternalJudgmentValue(item, context, depth + 1, key))
+    }
+    if (value.length > context.maxArrayItems) {
+      incrementExternalJudgmentCount(context, 'truncatedArray')
+      output.push(`[${value.length - context.maxArrayItems} item(s) truncated]`)
+    }
+    return output.filter((item) => item !== undefined)
+  }
+
+  const output = {}
+  const keys = Object.keys(value)
+  for (const [entryKey, rawValue] of Object.entries(value).slice(0, context.maxObjectKeys)) {
+    if (rawValue === undefined) continue
+    if (isCredentialLikeKey(entryKey)) {
+      output[entryKey] = '[secret]'
+      incrementExternalJudgmentCount(context, 'secret')
+      continue
+    }
+    output[entryKey] = maskExternalJudgmentValue(rawValue, context, depth + 1, entryKey)
+  }
+  if (keys.length > context.maxObjectKeys) {
+    incrementExternalJudgmentCount(context, 'truncatedObject')
+    output.__truncatedKeys = keys.length - context.maxObjectKeys
+  }
+  return output
+}
+
+function maskExternalJudgmentString(value, context) {
+  let text = String(value)
+  text = text
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, () => {
+      incrementExternalJudgmentCount(context, 'secret')
+      return 'Bearer [secret]'
+    })
+    .replace(/\bBasic\s+[A-Za-z0-9+/=-]+/gi, () => {
+      incrementExternalJudgmentCount(context, 'secret')
+      return 'Basic [secret]'
+    })
+    .replace(/\b(?:sk|sk-proj|sk-ant|hf)_[A-Za-z0-9._~+/=-]+/g, () => externalJudgmentSecret(context))
+    .replace(/\b(?:sk|sk-proj)-[A-Za-z0-9._~+/=-]+/g, () => externalJudgmentSecret(context))
+    .replace(/([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|key|secret|client[_-]?secret|password|credential|code|sig|signature)=)[^&\s"'<>]+/gi, (_, prefix) => {
+      incrementExternalJudgmentCount(context, 'secret')
+      return `${prefix}[secret]`
+    })
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, (match) => externalJudgmentPlaceholder(context, 'email', match))
+    .replace(/https?:\/\/[^\s"'<>]+/gi, (match) => externalJudgmentPlaceholder(context, 'url', match))
+    .replace(/\b[A-Za-z]:\\[^\s"'<>]+/g, (match) => externalJudgmentPlaceholder(context, 'path', match))
+    .replace(/\\\\[^\\\s"'<>]+\\[^\s"'<>]+/g, (match) => externalJudgmentPlaceholder(context, 'path', match))
+    .replace(/\/(?:Users|home|var\/folders|var\/tmp|tmp)\/[^\s"'<>]+/g, (match) => externalJudgmentPlaceholder(context, 'path', match))
+    .replace(/\b(?:localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(?::\d{2,5})?\b/gi, (match) => externalJudgmentPlaceholder(context, 'host', match))
+    .replace(/\+?\b(?:\d[\s().-]?){9,}\d\b/g, (match) => externalJudgmentPlaceholder(context, 'phone', match))
+
+  if (text.length > context.maxStringChars) {
+    incrementExternalJudgmentCount(context, 'truncatedString')
+    text = `${text.slice(0, context.maxStringChars - 3)}...`
+  }
+  return text
+}
+
+function externalJudgmentSecret(context) {
+  incrementExternalJudgmentCount(context, 'secret')
+  return '[secret]'
+}
+
+function externalJudgmentPlaceholder(context, kind, rawValue) {
+  const key = `${kind}:${rawValue}`
+  if (context.placeholders.has(key)) return context.placeholders.get(key)
+  const next = (context.nextIndexes.get(kind) || 0) + 1
+  context.nextIndexes.set(kind, next)
+  const placeholder = `[${kind}-${next}]`
+  context.placeholders.set(key, placeholder)
+  incrementExternalJudgmentCount(context, kind)
+  return placeholder
+}
+
+function incrementExternalJudgmentCount(context, kind) {
+  context.counts[kind] = (context.counts[kind] || 0) + 1
+}
+
+function isExternalJudgmentIdentifierKey(key) {
+  const normalized = String(key || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+  return normalized === 'id'
+    || normalized === 'sourceid'
+    || normalized === 'bundleid'
+    || normalized === 'pageid'
+    || normalized === 'nodeid'
+    || normalized === 'edgeid'
+    || normalized === 'source'
+    || normalized === 'target'
+    || normalized === 'publicuri'
+    || normalized === 'uri'
+    || normalized === 'sourceref'
+    || normalized === 'sourcerefs'
+}
+
 function redactedHeaderSummary(headers = {}) {
   const entries = headers instanceof Headers
     ? [...headers.entries()]
@@ -2982,6 +3196,22 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
   const sourceResults = []
   const sourceFailures = []
   const sourceBundles = []
+
+  const sourceRoutingOutcome = await runExternalSourceRoutingJudgment({
+    query,
+    conversation,
+    sources: policyReadySources,
+    config,
+    runContext,
+  })
+  if (sourceRoutingOutcome) {
+    steps.push(sourceRoutingOutcome.step)
+    diagnostics.push(sourceRoutingOutcome.diagnostic)
+    recordA2aAuditDetails(auditDetails, {
+      diagnosticCount: diagnostics.length,
+    })
+  }
+
   const retrievalPlans = retrieval
     ? await resolveRetrievalForSources(readySources, retrieval, config, runContext)
     : new Map()
@@ -3064,6 +3294,81 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
       detail: 'Built an evidence-only result without calling the configured runtime.',
     }))
   } else {
+    const evidenceRelevanceOutcome = await runExternalEvidenceRelevanceJudgment({
+      query,
+      conversation,
+      sourceResults,
+      sourceFailures,
+      citations,
+      graph,
+      sourceBundles,
+      config,
+      runContext,
+    })
+    if (evidenceRelevanceOutcome) {
+      steps.push(evidenceRelevanceOutcome.step)
+      diagnostics.push(evidenceRelevanceOutcome.diagnostic)
+      recordA2aAuditDetails(auditDetails, {
+        diagnosticCount: diagnostics.length,
+      })
+    }
+
+    const graphExpansionOutcome = await runExternalGraphExpansionJudgment({
+      query,
+      conversation,
+      sourceResults,
+      sourceFailures,
+      citations,
+      graph,
+      sourceBundles,
+      config,
+      runContext,
+    })
+    if (graphExpansionOutcome) {
+      steps.push(graphExpansionOutcome.step)
+      diagnostics.push(graphExpansionOutcome.diagnostic)
+      recordA2aAuditDetails(auditDetails, {
+        diagnosticCount: diagnostics.length,
+      })
+    }
+
+    const judgmentOutcome = await runExternalJudgmentGate({
+      query,
+      conversation,
+      sourceResults,
+      sourceFailures,
+      citations,
+      graph,
+      sourceBundles,
+      config,
+      runContext,
+    })
+    if (judgmentOutcome) {
+      steps.push(judgmentOutcome.step)
+      diagnostics.push(judgmentOutcome.diagnostic)
+      recordA2aAuditDetails(auditDetails, {
+        diagnosticCount: diagnostics.length,
+      })
+    }
+
+    if (judgmentOutcome?.decision?.runtimeAllowed === false) {
+      answer = externalJudgmentBlockedAnswer({
+        decision: judgmentOutcome.decision,
+        citations,
+        sourceResults,
+        sourceFailures,
+      })
+      steps.push(step({
+        id: 'external-judgment-runtime-skipped',
+        label: 'Skip runtime synthesis',
+        status: 'done',
+        detail: externalJudgmentRuntimeSkippedDetail(judgmentOutcome.decision),
+      }))
+      recordA2aAuditDetails(auditDetails, {
+        runtimeCalled: false,
+        diagnosticCount: diagnostics.length,
+      })
+    } else {
     const runtimeStep = step({
       ...runtimeCallStepTemplate(config),
       status: 'running',
@@ -3095,6 +3400,25 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
         detail: runtimeSuccessStepDetail(config, citationFallback.applied),
         latencyMs: Math.round(performance.now() - runtimeStarted),
       })
+      const citationSupportOutcome = await runExternalCitationSupportJudgment({
+        query,
+        conversation,
+        answer,
+        sourceResults,
+        sourceFailures,
+        citations,
+        graph,
+        sourceBundles,
+        config,
+        runContext,
+      })
+      if (citationSupportOutcome) {
+        steps.push(citationSupportOutcome.step)
+        diagnostics.push(citationSupportOutcome.diagnostic)
+        recordA2aAuditDetails(auditDetails, {
+          diagnosticCount: diagnostics.length,
+        })
+      }
     } catch (error) {
       const failure = runtimeFailureContract(config)
       config.logger.error(redactedLogLine(failure.logPrefix, error))
@@ -3118,6 +3442,7 @@ async function runA2aMessage(body, config, runContextInput = {}, auditDetails = 
         steps,
         diagnostics,
       })
+    }
     }
   }
 
@@ -3734,7 +4059,20 @@ async function handleMcpSourceToolCall(name, params, id, config) {
   const args = asRecord(params.arguments) || {}
   try {
     const result = await runMcpSourceTool(name, args, config)
-    return mcpToolCallSuccess(id, result.summary, result.structuredKey, result.structuredValue)
+    const progressiveDisclosure = await runExternalProgressiveDisclosureJudgment({
+      toolName: name,
+      args,
+      result,
+      config,
+    })
+    return mcpToolCallSuccess(
+      id,
+      result.summary,
+      result.structuredKey,
+      result.structuredValue,
+      false,
+      progressiveDisclosureStructuredContent(progressiveDisclosure),
+    )
   } catch (error) {
     if (error instanceof HttpError && error.status < 500) {
       return mcpJsonRpcError(id, -32602, error.message)
@@ -3761,7 +4099,7 @@ async function handleMcpGatewayToolCall(name, params, id, config) {
 
     if (name === 'llmwiki_gateway_call_tool') {
       const result = await runMcpGatewayCallTool(args, config)
-      return mcpToolCallSuccess(id, result.summary, result.structuredKey, result.structuredValue)
+      return mcpToolCallSuccess(id, result.summary, result.structuredKey, result.structuredValue, false, result.extraStructuredContent)
     }
 
     return mcpJsonRpcError(id, -32602, `Unknown MCP gateway tool: ${name}.`)
@@ -3833,10 +4171,17 @@ async function runMcpGatewayCallTool(args, config) {
   const entry = resolveGatewaySelectedTool(args, config)
   const downstreamArgs = gatewayDownstreamToolArguments(args, entry)
   const result = await runMcpSourceTool(entry.toolName, downstreamArgs, config)
+  const progressiveDisclosure = await runExternalProgressiveDisclosureJudgment({
+    toolName: entry.toolName,
+    args: downstreamArgs,
+    result,
+    config,
+  })
   const redactedStructuredValue = redactForIoLog(result.structuredValue)
   return {
     summary: redactIoString(`Gateway called ${entry.name}. ${result.summary}`),
     structuredKey: 'llmwiki_gateway_tool_call',
+    extraStructuredContent: progressiveDisclosureStructuredContent(progressiveDisclosure),
     structuredValue: {
       schemaVersion: 'llmwiki.agent-bridge.gateway-tools.v1',
       tool: { ...entry },
@@ -4577,7 +4922,7 @@ function mcpJsonRpcError(id, code, message) {
   }
 }
 
-function mcpToolCallSuccess(id, text, structuredKey, structuredValue, isError = false) {
+function mcpToolCallSuccess(id, text, structuredKey, structuredValue, isError = false, extraStructuredContent = null) {
   return mcpJsonRpcSuccess(id, {
     resultType: 'complete',
     content: [
@@ -4588,6 +4933,7 @@ function mcpToolCallSuccess(id, text, structuredKey, structuredValue, isError = 
     ],
     structuredContent: {
       [structuredKey]: structuredValue,
+      ...(asRecord(extraStructuredContent) || {}),
     },
     isError,
     _meta: {
@@ -5491,6 +5837,2044 @@ function sourceFailClosedAnswer({ sourceFailures }) {
     'The bridge did not call the configured runtime because no selected Knowledge Source returned evidence.',
     'See trace steps and diagnostics for redacted source failure details.',
   ].join('\n')
+}
+
+function externalJudgmentBlockedAnswer({ decision, citations, sourceResults, sourceFailures }) {
+  const route = decision.runtimeRoute || 'unknown'
+  const support = Number.isFinite(decision.evidenceSupport) ? decision.evidenceSupport.toFixed(2) : 'unknown'
+  const reasons = Array.isArray(decision.blockReasons) && decision.blockReasons.length
+    ? decision.blockReasons.join(', ')
+    : 'external_judgment_blocked'
+  return [
+    'External System-One evidence gate skipped runtime synthesis.',
+    `Decision: runtime_route=${route}; evidence_support=${support}; reason=${reasons}.`,
+    `Evidence gathered: ${citations.length} citation(s) from ${sourceResults.length} Knowledge Source(s); source failures=${sourceFailures.length}.`,
+    'The bridge returned this guarded result instead of asking the runtime to synthesize an answer from insufficient or risky evidence.',
+  ].join('\n')
+}
+
+function externalJudgmentRuntimeSkippedDetail(decision) {
+  const route = decision.runtimeRoute || 'unknown'
+  const support = Number.isFinite(decision.evidenceSupport) ? decision.evidenceSupport.toFixed(2) : 'unknown'
+  const reason = decision.blockReason || 'external_judgment_blocked'
+  return `Skipped runtime synthesis because external judgment returned runtime_route=${route}, evidence_support=${support}, blockReason=${reason}.`
+}
+
+async function runExternalJudgmentGate(input) {
+  const { config } = input
+  if (config.externalJudgmentMode === 'off') return null
+
+  const started = performance.now()
+  const prepared = prepareExternalJudgmentState(externalJudgmentRuntimeState(input))
+  if (!config.externalJudgmentApiKey) {
+    const decision = externalJudgmentFallbackDecision(config, 'provider_unconfigured')
+    return {
+      step: externalJudgmentStep({
+        mode: config.externalJudgmentMode,
+        status: 'warning',
+        detail: 'Skipped external System-One judgment because no provider API key is configured.',
+        latencyMs: Math.round(performance.now() - started),
+      }),
+      diagnostic: externalJudgmentSkippedDiagnostic(config, prepared, decision),
+      decision,
+    }
+  }
+
+  try {
+    const result = await callExternalJudgmentProvider(prepared, config, input.runContext)
+    const latencyMs = Math.round(performance.now() - started)
+    const decision = externalJudgmentDecision(result, config)
+    return {
+      step: externalJudgmentStep({
+        mode: config.externalJudgmentMode,
+        status: 'done',
+        detail: externalJudgmentStepDetail(result, prepared, decision, config),
+        latencyMs,
+      }),
+      diagnostic: externalJudgmentSuccessDiagnostic(result, config, prepared, latencyMs, decision),
+      decision,
+    }
+  } catch (error) {
+    config.logger.warn?.(redactedLogLine('external judgment failed', error))
+    const latencyMs = Math.round(performance.now() - started)
+    const decision = externalJudgmentFallbackDecision(config, 'provider_failed')
+    return {
+      step: externalJudgmentStep({
+        mode: config.externalJudgmentMode,
+        status: 'warning',
+        detail: config.externalJudgmentMode === 'enforce'
+          ? 'External System-One judgment failed in enforce mode; runtime synthesis was skipped.'
+          : 'External System-One judgment failed in report-only mode; runtime synthesis continued.',
+        latencyMs,
+      }),
+      diagnostic: externalJudgmentFailureDiagnostic(error, config, prepared, latencyMs, decision),
+      decision,
+    }
+  }
+}
+
+async function runExternalSourceRoutingJudgment(input) {
+  const { config, sources } = input
+  if (config.externalJudgmentSourceRoutingMode !== 'report-only') return null
+  if (!Array.isArray(sources) || sources.length === 0) return null
+
+  const started = performance.now()
+  const prepared = prepareExternalJudgmentState(externalJudgmentSourceRoutingState(input))
+  if (!config.externalJudgmentApiKey) {
+    return {
+      step: externalSourceRoutingJudgmentStep({
+        status: 'warning',
+        detail: 'Skipped external System-One source-routing judgment because no provider API key is configured.',
+        latencyMs: Math.round(performance.now() - started),
+      }),
+      diagnostic: externalSourceRoutingJudgmentSkippedDiagnostic(config, prepared, sources.length),
+    }
+  }
+
+  try {
+    const result = await callExternalJudgmentProvider(
+      prepared,
+      config,
+      input.runContext,
+      externalJudgmentSourceRoutingQuestions(sources.length),
+    )
+    const latencyMs = Math.round(performance.now() - started)
+    return {
+      step: externalSourceRoutingJudgmentStep({
+        status: 'done',
+        detail: externalSourceRoutingJudgmentStepDetail(result, prepared, sources.length),
+        latencyMs,
+      }),
+      diagnostic: externalSourceRoutingJudgmentSuccessDiagnostic(result, config, prepared, latencyMs, sources.length),
+    }
+  } catch (error) {
+    config.logger.warn?.(redactedLogLine('external source-routing judgment failed', error))
+    const latencyMs = Math.round(performance.now() - started)
+    return {
+      step: externalSourceRoutingJudgmentStep({
+        status: 'warning',
+        detail: 'External System-One source-routing judgment failed in report-only mode; source fan-out continued.',
+        latencyMs,
+      }),
+      diagnostic: externalSourceRoutingJudgmentFailureDiagnostic(error, config, prepared, latencyMs, sources.length),
+    }
+  }
+}
+
+async function runExternalEvidenceRelevanceJudgment(input) {
+  const { citations, config } = input
+  if (config.externalJudgmentEvidenceRelevanceMode !== 'report-only') return null
+  if (!Array.isArray(citations) || citations.length === 0) return null
+
+  const started = performance.now()
+  const prepared = prepareExternalJudgmentState(externalJudgmentEvidenceRelevanceState(input))
+  const evaluatedCitationCount = Math.min(citations.length, MAX_CITATION_DIGEST_ITEMS)
+  if (!config.externalJudgmentApiKey) {
+    return {
+      step: externalEvidenceRelevanceJudgmentStep({
+        status: 'warning',
+        detail: 'Skipped external System-One evidence-relevance judgment because no provider API key is configured.',
+        latencyMs: Math.round(performance.now() - started),
+      }),
+      diagnostic: externalEvidenceRelevanceJudgmentSkippedDiagnostic(config, prepared, citations.length, evaluatedCitationCount),
+    }
+  }
+
+  try {
+    const result = await callExternalJudgmentProvider(
+      prepared,
+      config,
+      input.runContext,
+      externalJudgmentEvidenceRelevanceQuestions(evaluatedCitationCount),
+    )
+    const latencyMs = Math.round(performance.now() - started)
+    return {
+      step: externalEvidenceRelevanceJudgmentStep({
+        status: 'done',
+        detail: externalEvidenceRelevanceJudgmentStepDetail(result, prepared, citations.length, evaluatedCitationCount),
+        latencyMs,
+      }),
+      diagnostic: externalEvidenceRelevanceJudgmentSuccessDiagnostic(
+        result,
+        config,
+        prepared,
+        latencyMs,
+        citations.length,
+        evaluatedCitationCount,
+      ),
+    }
+  } catch (error) {
+    config.logger.warn?.(redactedLogLine('external evidence-relevance judgment failed', error))
+    const latencyMs = Math.round(performance.now() - started)
+    return {
+      step: externalEvidenceRelevanceJudgmentStep({
+        status: 'warning',
+        detail: 'External System-One evidence-relevance judgment failed in report-only mode; runtime synthesis continued.',
+        latencyMs,
+      }),
+      diagnostic: externalEvidenceRelevanceJudgmentFailureDiagnostic(error, config, prepared, latencyMs, citations.length, evaluatedCitationCount),
+    }
+  }
+}
+
+async function runExternalGraphExpansionJudgment(input) {
+  const { config } = input
+  if (config.externalJudgmentGraphExpansionMode !== 'report-only') return null
+
+  const started = performance.now()
+  const state = externalJudgmentGraphExpansionState(input)
+  if (!hasExternalGraphExpansionEvaluableState(state)) return null
+  const prepared = prepareExternalJudgmentState(state)
+  if (!config.externalJudgmentApiKey) {
+    return {
+      step: externalGraphExpansionJudgmentStep({
+        status: 'warning',
+        detail: 'Skipped external System-One graph-expansion judgment because no provider API key is configured.',
+        latencyMs: Math.round(performance.now() - started),
+      }),
+      diagnostic: externalGraphExpansionJudgmentSkippedDiagnostic(config, prepared, state),
+    }
+  }
+
+  try {
+    const result = await callExternalJudgmentProvider(
+      prepared,
+      config,
+      input.runContext,
+      externalJudgmentGraphExpansionQuestions(),
+    )
+    const latencyMs = Math.round(performance.now() - started)
+    return {
+      step: externalGraphExpansionJudgmentStep({
+        status: 'done',
+        detail: externalGraphExpansionJudgmentStepDetail(result, prepared),
+        latencyMs,
+      }),
+      diagnostic: externalGraphExpansionJudgmentSuccessDiagnostic(result, config, prepared, latencyMs, state),
+    }
+  } catch (error) {
+    config.logger.warn?.(redactedLogLine('external graph-expansion judgment failed', error))
+    const latencyMs = Math.round(performance.now() - started)
+    return {
+      step: externalGraphExpansionJudgmentStep({
+        status: 'warning',
+        detail: 'External System-One graph-expansion judgment failed in report-only mode; runtime synthesis continued unchanged.',
+        latencyMs,
+      }),
+      diagnostic: externalGraphExpansionJudgmentFailureDiagnostic(error, config, prepared, latencyMs, state),
+    }
+  }
+}
+
+async function runExternalCitationSupportJudgment(input) {
+  const { answer, citations, config } = input
+  if (config.externalJudgmentCitationSupportMode !== 'report-only') return null
+
+  const started = performance.now()
+  const citedAnchors = externalJudgmentCitedAnchors(answer, citations)
+  const citationCount = Array.isArray(citations) ? citations.length : 0
+  const citedAnchorCount = citedAnchors.length
+  const evaluatedAnchorCount = Math.min(citedAnchorCount, MAX_CITATION_DIGEST_ITEMS)
+  if (citedAnchorCount === 0) return null
+  const prepared = prepareExternalJudgmentState(externalJudgmentCitationSupportState({
+    ...input,
+    citedAnchors,
+  }))
+  if (!config.externalJudgmentApiKey) {
+    return {
+      step: externalCitationSupportJudgmentStep({
+        status: 'warning',
+        detail: 'Skipped external System-One citation-support judgment because no provider API key is configured.',
+        latencyMs: Math.round(performance.now() - started),
+      }),
+      diagnostic: externalCitationSupportJudgmentSkippedDiagnostic(config, prepared, citationCount, citedAnchorCount, evaluatedAnchorCount),
+    }
+  }
+
+  try {
+    const result = await callExternalJudgmentProvider(
+      prepared,
+      config,
+      input.runContext,
+      externalJudgmentCitationSupportQuestions(evaluatedAnchorCount),
+    )
+    const latencyMs = Math.round(performance.now() - started)
+    return {
+      step: externalCitationSupportJudgmentStep({
+        status: 'done',
+        detail: externalCitationSupportJudgmentStepDetail(result, prepared, citedAnchorCount, evaluatedAnchorCount),
+        latencyMs,
+      }),
+      diagnostic: externalCitationSupportJudgmentSuccessDiagnostic(
+        result,
+        config,
+        prepared,
+        latencyMs,
+        citationCount,
+        citedAnchorCount,
+        evaluatedAnchorCount,
+      ),
+    }
+  } catch (error) {
+    config.logger.warn?.(redactedLogLine('external citation-support judgment failed', error))
+    const latencyMs = Math.round(performance.now() - started)
+    return {
+      step: externalCitationSupportJudgmentStep({
+        status: 'warning',
+        detail: 'External System-One citation-support judgment failed in report-only mode; final artifact continued unchanged.',
+        latencyMs,
+      }),
+      diagnostic: externalCitationSupportJudgmentFailureDiagnostic(error, config, prepared, latencyMs, citationCount, citedAnchorCount, evaluatedAnchorCount),
+    }
+  }
+}
+
+async function runExternalProgressiveDisclosureJudgment(input) {
+  const { config, toolName } = input
+  if (config.externalJudgmentProgressiveDisclosureMode !== 'report-only') return null
+  if (!isProgressiveDisclosureSourceTool(toolName)) return null
+
+  const started = performance.now()
+  const state = externalJudgmentProgressiveDisclosureState(input)
+  const prepared = prepareExternalJudgmentState(state)
+  const actions = readStringArray(state.availableNextActions)
+  if (!config.externalJudgmentApiKey) {
+    return {
+      step: externalProgressiveDisclosureJudgmentStep({
+        status: 'warning',
+        detail: 'Skipped external System-One progressive-disclosure judgment because no provider API key is configured.',
+        latencyMs: Math.round(performance.now() - started),
+      }),
+      diagnostic: externalProgressiveDisclosureJudgmentSkippedDiagnostic(config, prepared, state),
+    }
+  }
+
+  try {
+    const result = await callExternalJudgmentProvider(
+      prepared,
+      config,
+      input.runContext,
+      externalJudgmentProgressiveDisclosureQuestions(actions),
+    )
+    const latencyMs = Math.round(performance.now() - started)
+    return {
+      step: externalProgressiveDisclosureJudgmentStep({
+        status: 'done',
+        detail: externalProgressiveDisclosureJudgmentStepDetail(result, prepared, state),
+        latencyMs,
+      }),
+      diagnostic: externalProgressiveDisclosureJudgmentSuccessDiagnostic(result, config, prepared, latencyMs, state),
+    }
+  } catch (error) {
+    config.logger.warn?.(redactedLogLine('external progressive-disclosure judgment failed', error))
+    const latencyMs = Math.round(performance.now() - started)
+    return {
+      step: externalProgressiveDisclosureJudgmentStep({
+        status: 'warning',
+        detail: 'External System-One progressive-disclosure judgment failed in report-only mode; source-tool result continued unchanged.',
+        latencyMs,
+      }),
+      diagnostic: externalProgressiveDisclosureJudgmentFailureDiagnostic(error, config, prepared, latencyMs, state),
+    }
+  }
+}
+
+function progressiveDisclosureStructuredContent(judgment) {
+  if (!judgment) return null
+  return {
+    llmwiki_external_judgment_progressive_disclosure: {
+      schemaVersion: 'llmwiki.agent-bridge.external-judgment-progressive-disclosure.v1',
+      step: judgment.step,
+      diagnostics: [judgment.diagnostic].filter(Boolean),
+    },
+  }
+}
+
+function externalJudgmentRuntimeState({ query, conversation, sourceResults, sourceFailures, citations, graph, sourceBundles }) {
+  return removeUndefinedProperties({
+    gate: 'runtime_route',
+    objective: 'Classify whether the bridge should proceed to runtime synthesis using the masked retrieved evidence.',
+    query,
+    conversation: externalJudgmentConversationSummary(conversation),
+    evidence: sourceResults.slice(0, DEFAULT_SOURCE_TOOL_LIMIT).map((item, index) => externalJudgmentSourceResult(item, index)),
+    sourceFailures: sourceFailures.slice(0, DEFAULT_SOURCE_TOOL_LIMIT).map((item, index) => externalJudgmentSourceFailure(item, index)),
+    citations: citations.slice(0, MAX_CITATION_DIGEST_ITEMS).map((item, index) => externalJudgmentCitation(item, index)),
+    graph: externalJudgmentGraph(graph),
+    sourceBundles: sourceBundles.slice(0, MAX_CITATION_DIGEST_ITEMS).map((item, index) => externalJudgmentSourceBundle(item, index)),
+  })
+}
+
+function externalJudgmentEvidenceRelevanceState({ query, conversation, sourceResults, sourceFailures, citations }) {
+  const citationIndexById = new Map(citations.map((citation, index) => [citation.id, index + 1]))
+  const evaluatedCitationCount = Math.min(citations.length, MAX_CITATION_DIGEST_ITEMS)
+  return removeUndefinedProperties({
+    gate: 'evidence_relevance',
+    objective: 'Score whether each masked citation is directly relevant to the query. This is report-only; citation order, runtime prompts, and final artifacts are preserved.',
+    query,
+    conversation: externalJudgmentConversationSummary(conversation),
+    citationCount: citations.length,
+    evaluatedCitationCount,
+    sourceCount: sourceResults.length,
+    sourceFailureCount: sourceFailures.length,
+    citationOrderPreserved: true,
+    citations: citations.slice(0, evaluatedCitationCount).map((item, index) => externalJudgmentCitation(item, index)),
+    evidence: sourceResults
+      .slice(0, DEFAULT_SOURCE_TOOL_LIMIT)
+      .map((item, index) => externalJudgmentEvidenceSummary(item, index, citationIndexById)),
+  })
+}
+
+function externalJudgmentGraphExpansionState({
+  query,
+  conversation,
+  sourceResults = [],
+  sourceFailures = [],
+  citations = [],
+  graph,
+  sourceBundles = [],
+}) {
+  const sourceCount = sourceResults.length + sourceFailures.length
+  const graphSummary = externalJudgmentGraphStructuralSummary(graph)
+  return removeUndefinedProperties({
+    gate: 'graph_expansion_multi_source_dependency',
+    objective: 'Diagnose whether already gathered structural evidence suggests inspecting graph context, expanding graph neighbors, reviewing multiple sources, or asking for clarification. This is report-only; source selection, source calls, citations, graph payloads, sourceBundles, runtime prompts, answer text, artifacts, and public schemas are preserved.',
+    query,
+    conversation: externalJudgmentConversationSummary(conversation),
+    sourceCount,
+    successfulSourceCount: sourceResults.length,
+    sourceFailureCount: sourceFailures.length,
+    citationCount: citations.length,
+    graphNodeCount: graphSummary.nodeCount,
+    graphEdgeCount: graphSummary.edgeCount,
+    sourceBundleCount: sourceBundles.length,
+    multiSourceEvidencePresent: sourceCount > 1,
+    graph: graphSummary,
+    sources: sourceResults
+      .slice(0, DEFAULT_SOURCE_TOOL_LIMIT)
+      .map((item, index) => externalJudgmentGraphExpansionSourceSummary(item, index)),
+    sourceBundles: sourceBundles
+      .slice(0, DEFAULT_SOURCE_TOOL_LIMIT)
+      .map((bundle, index) => externalJudgmentGraphExpansionSourceBundleSummary(bundle, index)),
+    citations: citations
+      .slice(0, MAX_CITATION_DIGEST_ITEMS)
+      .map((citation, index) => externalJudgmentGraphExpansionCitationSummary(citation, index, sourceResults)),
+    sourceFailures: sourceFailures
+      .slice(0, DEFAULT_SOURCE_TOOL_LIMIT)
+      .map((failure, index) => externalJudgmentGraphExpansionSourceFailureSummary(failure, index)),
+    sourceSelectionPreserved: true,
+    sourceCallsPreserved: true,
+    citationOrderPreserved: true,
+    graphPayloadPreserved: true,
+    sourceBundlesPreserved: true,
+    runtimePromptPreserved: true,
+    answerTextPreserved: true,
+    artifactPreserved: true,
+  })
+}
+
+function hasExternalGraphExpansionEvaluableState(state) {
+  if (!state) return false
+  return Boolean(
+    state.sourceCount > 1
+      || state.sourceFailureCount
+      || state.citationCount
+      || state.graphNodeCount
+      || state.graphEdgeCount
+      || state.sourceBundleCount,
+  )
+}
+
+function externalJudgmentCitationSupportState({ query, conversation, answer, sourceResults = [], sourceFailures = [], citations = [], citedAnchors }) {
+  const anchorMatches = answerCitationAnchorMatches(answer, citations.length)
+  const anchors = Array.isArray(citedAnchors)
+    ? citedAnchors
+    : externalJudgmentCitedAnchors(answer, citations)
+  const evaluatedAnchorCount = Math.min(anchors.length, MAX_CITATION_DIGEST_ITEMS)
+  return removeUndefinedProperties({
+    gate: 'citation_support',
+    objective: 'Score whether the runtime answer citations directly support the cited claims. This is report-only; answer text, citation order, artifacts, source calls, and runtime prompts are preserved.',
+    query,
+    conversation: externalJudgmentConversationSummary(conversation),
+    answer: externalJudgmentAnswerSummary(answer, citations.length, anchorMatches),
+    citationCount: citations.length,
+    citedAnchorCount: anchors.length,
+    evaluatedAnchorCount,
+    invalidCitationAnchorCount: anchorMatches.invalid.length,
+    sourceCount: sourceResults.length,
+    sourceFailureCount: sourceFailures.length,
+    answerTextPreserved: true,
+    citationOrderPreserved: true,
+    artifactPreserved: true,
+    citedAnchors: anchors.slice(0, evaluatedAnchorCount),
+  })
+}
+
+function externalJudgmentSourceRoutingState({ query, conversation, sources }) {
+  return removeUndefinedProperties({
+    gate: 'source_routing',
+    objective: 'Classify likely source usefulness before fan-out. This is report-only; the bridge will still call every selected ready source.',
+    query,
+    conversation: externalJudgmentConversationSummary(conversation),
+    candidateCount: sources.length,
+    candidates: sources.slice(0, DEFAULT_SOURCE_TOOL_LIMIT).map((source, index) => externalJudgmentSourceCandidate(source, index)),
+  })
+}
+
+function externalJudgmentProgressiveDisclosureState({ toolName, args = {}, result = {} }) {
+  const value = asRecord(result.structuredValue) || {}
+  const resultSummary = progressiveDisclosureResultSummary(toolName, value)
+  const querySummary = progressiveDisclosureQuerySummary(toolName, args, value)
+  return removeUndefinedProperties({
+    gate: 'progressive_disclosure_continuation',
+    objective: 'Recommend the next generic source-tool exploration action after a read-only LLMWiki source-tool result. This is report-only; tool results, source calls, citation order, graph payloads, and runtime prompts are preserved.',
+    query: querySummary,
+    currentTool: progressiveDisclosureToolPhase(toolName),
+    limit: progressiveDisclosureLimit(args, value),
+    resultSummary,
+    sourceFailurePresent: resultSummary.sourceFailurePresent,
+    availableNextActions: progressiveDisclosureAvailableNextActions(toolName),
+    toolResultPreserved: true,
+    sourceCallsPreserved: true,
+    runtimePromptPreserved: true,
+  })
+}
+
+function isProgressiveDisclosureSourceTool(toolName) {
+  return [
+    'llmwiki_context',
+    'llmwiki_search',
+    'llmwiki_read',
+    'llmwiki_graph',
+    'llmwiki_graph_neighbors',
+  ].includes(toolName)
+}
+
+function progressiveDisclosureToolPhase(toolName) {
+  if (toolName === 'llmwiki_context') return 'context'
+  if (toolName === 'llmwiki_search') return 'search'
+  if (toolName === 'llmwiki_read') return 'read'
+  if (toolName === 'llmwiki_graph') return 'graph'
+  if (toolName === 'llmwiki_graph_neighbors') return 'graph_neighbors'
+  return 'source_tool'
+}
+
+function progressiveDisclosureAvailableNextActions(toolName) {
+  if (toolName === 'llmwiki_context') return ['stop', 'search', 'read', 'graph', 'ask_clarification']
+  if (toolName === 'llmwiki_search') return ['stop', 'read', 'search', 'graph', 'ask_clarification']
+  if (toolName === 'llmwiki_read') return ['stop', 'search', 'read', 'graph', 'ask_clarification']
+  if (toolName === 'llmwiki_graph') return ['stop', 'read', 'graph', 'search', 'ask_clarification']
+  if (toolName === 'llmwiki_graph_neighbors') return ['stop', 'read', 'graph', 'search', 'ask_clarification']
+  return ['stop', 'search', 'read', 'graph', 'ask_clarification']
+}
+
+function progressiveDisclosureQuerySummary(toolName, args, value) {
+  if (toolName === 'llmwiki_context' || toolName === 'llmwiki_search') {
+    const query = readString(args, 'query') || readString(value, 'query')
+    if (!query) return undefined
+    return {
+      provided: true,
+      charCount: query.length,
+      wordLikeTokenCount: query.trim().split(/\s+/).filter(Boolean).length,
+    }
+  }
+  return undefined
+}
+
+function progressiveDisclosureLimit(args, value) {
+  const limit = readNumber(value, 'limit') ?? readNumber(args, 'limit')
+  return Number.isFinite(limit) ? Math.trunc(limit) : undefined
+}
+
+function progressiveDisclosureResultSummary(toolName, value) {
+  if (toolName === 'llmwiki_context') return progressiveDisclosureContextSummary(value)
+  if (toolName === 'llmwiki_search') return progressiveDisclosureSearchSummary(value)
+  if (toolName === 'llmwiki_read') return progressiveDisclosureReadSummary(value)
+  if (toolName === 'llmwiki_graph') return progressiveDisclosureGraphSummary(value)
+  if (toolName === 'llmwiki_graph_neighbors') return progressiveDisclosureGraphNeighborsSummary(value)
+  return progressiveDisclosureGenericSummary(value)
+}
+
+function progressiveDisclosureContextSummary(value) {
+  const citations = readRecordArray(value.citations)
+  const orientation = readRecordArray(value.orientation)
+  const graph = progressiveDisclosureGraphCounts(value.graph)
+  return removeUndefinedProperties({
+    resultCount: citations.length,
+    orientationCount: orientation.length,
+    citationCount: citations.length,
+    graphNodeCount: graph.nodeCount,
+    graphEdgeCount: graph.edgeCount,
+    sourceFailureCount: progressiveDisclosureSourceFailureCount(value),
+    sourceFailurePresent: progressiveDisclosureSourceFailureCount(value) > 0,
+    evidenceSummaries: progressiveDisclosureEvidenceSummaries(citations),
+  })
+}
+
+function progressiveDisclosureSearchSummary(value) {
+  const results = readRecordArray(value.results)
+  return removeUndefinedProperties({
+    resultCount: results.length,
+    citationCount: 0,
+    graphNodeCount: 0,
+    graphEdgeCount: 0,
+    sourceFailureCount: progressiveDisclosureSourceFailureCount(value),
+    sourceFailurePresent: progressiveDisclosureSourceFailureCount(value) > 0,
+    evidenceSummaries: progressiveDisclosureEvidenceSummaries(results),
+  })
+}
+
+function progressiveDisclosureReadSummary(value) {
+  const page = asRecord(value.page) || {}
+  const textCharCount = progressiveDisclosureTextCharCount(page)
+  const found = page.found === false ? false : Object.keys(page).length > 0
+  return removeUndefinedProperties({
+    resultCount: found ? 1 : 0,
+    citationCount: 0,
+    graphNodeCount: 0,
+    graphEdgeCount: 0,
+    pageFound: found,
+    pageTextCharCount: textCharCount,
+    sourceFailureCount: progressiveDisclosureSourceFailureCount(value),
+    sourceFailurePresent: progressiveDisclosureSourceFailureCount(value) > 0,
+    evidenceSummaries: [
+      removeUndefinedProperties({
+        index: 0,
+        kind: 'page',
+        found,
+        textCharCount,
+      }),
+    ],
+  })
+}
+
+function progressiveDisclosureGraphSummary(value) {
+  const graph = progressiveDisclosureGraphCounts(value.graph)
+  return removeUndefinedProperties({
+    resultCount: graph.nodeCount,
+    citationCount: readRecordArray(value.citations).length,
+    graphNodeCount: graph.nodeCount,
+    graphEdgeCount: graph.edgeCount,
+    sourceFailureCount: progressiveDisclosureSourceFailureCount(value),
+    sourceFailurePresent: progressiveDisclosureSourceFailureCount(value) > 0,
+    evidenceSummaries: [removeUndefinedProperties({ index: 0, kind: 'graph', nodeCount: graph.nodeCount, edgeCount: graph.edgeCount })],
+  })
+}
+
+function progressiveDisclosureGraphNeighborsSummary(value) {
+  const graph = progressiveDisclosureGraphCounts(value.graph)
+  const citations = readRecordArray(value.citations)
+  const neighborhoods = readRecordArray(value.neighborhoods)
+  return removeUndefinedProperties({
+    resultCount: neighborhoods.length || graph.nodeCount,
+    sourceCount: readRecordArray(value.sources).length,
+    requestedNodeCount: readStringArray(value.nodeIds).length,
+    neighborhoodCount: neighborhoods.length,
+    citationCount: citations.length,
+    graphNodeCount: graph.nodeCount,
+    graphEdgeCount: graph.edgeCount,
+    sourceFailureCount: progressiveDisclosureSourceFailureCount(value),
+    sourceFailurePresent: progressiveDisclosureSourceFailureCount(value) > 0,
+    evidenceSummaries: progressiveDisclosureEvidenceSummaries(citations),
+  })
+}
+
+function progressiveDisclosureGenericSummary(value) {
+  const graph = progressiveDisclosureGraphCounts(value.graph)
+  const citations = readRecordArray(value.citations)
+  return removeUndefinedProperties({
+    resultCount: citations.length || graph.nodeCount,
+    citationCount: citations.length,
+    graphNodeCount: graph.nodeCount,
+    graphEdgeCount: graph.edgeCount,
+    sourceFailureCount: progressiveDisclosureSourceFailureCount(value),
+    sourceFailurePresent: progressiveDisclosureSourceFailureCount(value) > 0,
+    evidenceSummaries: progressiveDisclosureEvidenceSummaries(citations),
+  })
+}
+
+function progressiveDisclosureEvidenceSummaries(items) {
+  return readRecordArray(items).slice(0, MAX_CITATION_DIGEST_ITEMS).map((item, index) => removeUndefinedProperties({
+    index,
+    hasSnippet: Boolean(readString(item, 'snippet') || readString(item, 'text') || readString(item, 'content')),
+    snippetCharCount: progressiveDisclosureTextCharCount(item),
+    score: readNumber(item, 'score'),
+    sourceRefCount: readStringArray(item.sourceRefs ?? item.source_refs).length,
+  }))
+}
+
+function progressiveDisclosureTextCharCount(record) {
+  return [
+    readString(record, 'snippet'),
+    readString(record, 'text'),
+    readString(record, 'content'),
+    readString(record, 'markdown'),
+    readString(record, 'body'),
+  ].find((value) => value.length)?.length || 0
+}
+
+function progressiveDisclosureGraphCounts(value) {
+  const graph = asRecord(value) || {}
+  return {
+    nodeCount: readRecordArray(graph.nodes).length,
+    edgeCount: readRecordArray(graph.edges).length,
+  }
+}
+
+function progressiveDisclosureSourceFailureCount(value) {
+  const directFailures = readRecordArray(value.sourceFailures).length
+  const diagnosticFailures = readRecordArray(value.diagnostics)
+    .filter((item) => ['warning', 'error'].includes(readString(item, 'severity')))
+    .length
+  return directFailures + diagnosticFailures
+}
+
+function externalJudgmentGraphExpansionSourceSummary(item, index) {
+  const source = asRecord(item.source) || {}
+  const result = asRecord(item.result) || {}
+  const citations = readRecordArray(result.citations)
+  const orientation = readRecordArray(result.orientation)
+  const graph = externalJudgmentGraphStructuralSummary(result.graph)
+  return removeUndefinedProperties({
+    index,
+    protocol: source.protocol,
+    status: source.status,
+    citationCount: citations.length,
+    orientationCount: orientation.length,
+    limitationCount: readStringArray(result.limitations).length,
+    sourceBundleAvailable: Boolean(item.sourceBundle),
+    graphNodeCount: graph.nodeCount,
+    graphEdgeCount: graph.edgeCount,
+    graphNodeTypeCategoryCount: graph.nodeTypeCategoryCount,
+    graphRelationCategoryCount: graph.graphRelationCategoryCount,
+  })
+}
+
+function externalJudgmentGraphExpansionSourceBundleSummary(bundle, index) {
+  const record = asRecord(bundle) || {}
+  const projection = asRecord(record.projection) || {}
+  const pages = readRecordArray(record.pages)
+  const sourceRefs = [
+    ...readRecordArray(record.sourceRefs),
+    ...readRecordArray(record.source_refs),
+  ]
+  return removeUndefinedProperties({
+    index,
+    schemaVersionPresent: Boolean(readString(record, 'schemaVersion') || readString(record, 'schema_version')),
+    capabilityCount: readStringArray(record.capabilities).length,
+    pageCount: pages.length || readNumber(record, 'pageCount') || readNumber(record, 'page_count') || readNumber(projection, 'pageCount'),
+    approvedPageCount: readNumber(record, 'approvedPageCount') || readNumber(record, 'approved_page_count') || readNumber(projection, 'approvedPageCount'),
+    sourceRefCount: sourceRefs.length || readNumber(record, 'sourceRefCount') || readNumber(record, 'source_ref_count') || readNumber(projection, 'sourceRefCount'),
+    graphNodeCount: readNumber(record, 'graphNodeCount') || readNumber(record, 'graph_node_count') || readNumber(projection, 'graphNodeCount'),
+    graphEdgeCount: readNumber(record, 'graphEdgeCount') || readNumber(record, 'graph_edge_count') || readNumber(projection, 'graphEdgeCount'),
+    relationCount: readRecordArray(record.relations).length,
+    dependencyCount: readRecordArray(record.dependencies).length,
+  })
+}
+
+function externalJudgmentGraphExpansionCitationSummary(citation, index, sourceResults) {
+  const record = asRecord(citation) || {}
+  const text = readString(record, 'text') || readString(record, 'snippet') || readString(record, 'content')
+  return removeUndefinedProperties({
+    index,
+    sourceIndex: externalJudgmentSourceIndexForCitation(record, sourceResults),
+    hasText: Boolean(text),
+    textCharCount: text.length,
+    sourceRefCount: externalJudgmentCitationSourceRefCount(record),
+    score: readNumber(record, 'score'),
+  })
+}
+
+function externalJudgmentGraphExpansionSourceFailureSummary(failure, index) {
+  const diagnosticRecord = asRecord(failure.diagnostic) || {}
+  return removeUndefinedProperties({
+    index,
+    retryable: diagnosticRecord.retryable,
+    phase: diagnosticRecord.phase,
+    protocol: diagnosticRecord.protocol,
+    severity: diagnosticRecord.severity,
+  })
+}
+
+function externalJudgmentGraphStructuralSummary(graph) {
+  const record = asRecord(graph) || {}
+  const nodes = readRecordArray(record.nodes)
+  const edges = readRecordArray(record.edges)
+  const nodeTypes = externalJudgmentCategoryCountSummary(nodes.map((node) => (
+    readString(node, 'type') || readString(node, 'kind') || readString(node, 'role')
+  )))
+  const edgeRelations = externalJudgmentCategoryCountSummary(edges.map((edge) => readString(edge, 'relation') || readString(edge, 'type') || readString(edge, 'label')))
+  return removeUndefinedProperties({
+    nodeCount: nodes.length,
+    edgeCount: edges.length,
+    graphNodeTypeCategoryCount: nodeTypes.categoryCount,
+    graphRelationCategoryCount: edgeRelations.categoryCount,
+    nodesWithTypeCount: nodeTypes.valueCount,
+    edgesWithRelationCount: edgeRelations.valueCount,
+    relationSummaries: edgeRelations.summaries,
+    nodeTypeSummaries: nodeTypes.summaries,
+    averageEdgeCountPerNode: nodes.length ? edges.length / nodes.length : undefined,
+  })
+}
+
+function externalJudgmentCategoryCountSummary(values) {
+  const counts = new Map()
+  for (const value of values) {
+    const text = readStringValue(value).trim().toLowerCase()
+    if (!text) continue
+    counts.set(text, (counts.get(text) || 0) + 1)
+  }
+  const sortedCounts = Array.from(counts.values()).sort((left, right) => right - left)
+  return {
+    categoryCount: counts.size,
+    valueCount: sortedCounts.reduce((sum, count) => sum + count, 0),
+    summaries: sortedCounts.slice(0, MAX_CITATION_DIGEST_ITEMS).map((count, index) => ({
+      index,
+      count,
+    })),
+  }
+}
+
+function externalJudgmentCitationSourceRefCount(citation) {
+  const record = asRecord(citation) || {}
+  const refs = [
+    ...readStringArray(record.sourceRefs),
+    ...readStringArray(record.source_refs),
+  ]
+  return refs.length + (readString(record, 'sourceRef') ? 1 : 0)
+}
+
+function externalJudgmentSourceIndexForCitation(citation, sourceResults = []) {
+  const record = asRecord(citation) || {}
+  const sourceId = readString(record, 'sourceId')
+  const citationId = readString(record, 'id')
+  const sourceIndex = sourceResults.findIndex((item) => {
+    const candidateId = readString(asRecord(item.source) || {}, 'id')
+    return candidateId && (
+      candidateId === sourceId
+      || (citationId && citationId.startsWith(`${candidateId}:`))
+    )
+  })
+  return sourceIndex >= 0 ? sourceIndex : undefined
+}
+
+function externalJudgmentAnswerSummary(answer, citationCount, anchorMatches = answerCitationAnchorMatches(answer, citationCount)) {
+  const text = readStringValue(answer)
+  const uniqueValidAnchors = uniqueCitationAnchorIndexes(anchorMatches.valid)
+  return removeUndefinedProperties({
+    answerText: externalJudgmentTextSignal(text),
+    citedAnchorIndexes: uniqueValidAnchors.slice(0, MAX_CITATION_DIGEST_ITEMS),
+    citedAnchorCount: uniqueValidAnchors.length,
+    invalidCitationAnchorCount: anchorMatches.invalid.length,
+  })
+}
+
+function externalJudgmentCitedAnchors(answer, citations = []) {
+  const citationList = Array.isArray(citations) ? citations : []
+  const matches = answerCitationAnchorMatches(answer, citationList.length)
+  const seen = new Set()
+  const anchors = []
+  for (const match of matches.valid) {
+    if (seen.has(match.citationIndex)) continue
+    seen.add(match.citationIndex)
+    const citation = citationList[match.citationIndex - 1]
+    anchors.push(removeUndefinedProperties({
+      index: anchors.length,
+      answerAnchor: `citation-${match.citationIndex}`,
+      citationIndex: match.citationIndex,
+      occurrence: match.occurrence,
+      claim: externalJudgmentTextSignal(match.claimSnippet),
+      citation: externalJudgmentCitation(citation, match.citationIndex - 1),
+    }))
+  }
+  return anchors
+}
+
+function answerCitationAnchorMatches(answer, citationCount) {
+  const text = readStringValue(answer)
+  const valid = []
+  const invalid = []
+  const anchorPattern = /\[(\d+)\]\(#citation-(\d+)\)/g
+  let occurrence = 0
+  let match
+  while ((match = anchorPattern.exec(text)) !== null) {
+    if (match.index > 0 && text[match.index - 1] === '!') continue
+    occurrence += 1
+    const [labelIndexText, targetIndexText] = match.slice(1)
+    const citationIndex = Number(labelIndexText)
+    const validAnchor = labelIndexText === targetIndexText
+      && String(citationIndex) === labelIndexText
+      && citationIndex >= 1
+      && citationIndex <= citationCount
+    const entry = {
+      citationIndex,
+      targetIndex: Number(targetIndexText),
+      occurrence,
+      claimSnippet: answerClaimSnippet(text, match.index, anchorPattern.lastIndex),
+    }
+    if (validAnchor) valid.push(entry)
+    else invalid.push(entry)
+  }
+  return { valid, invalid }
+}
+
+function uniqueCitationAnchorIndexes(matches) {
+  const output = []
+  const seen = new Set()
+  for (const match of matches) {
+    if (seen.has(match.citationIndex)) continue
+    seen.add(match.citationIndex)
+    output.push(match.citationIndex)
+  }
+  return output
+}
+
+function answerClaimSnippet(text, anchorStart, anchorEnd) {
+  const start = Math.max(0, anchorStart - MAX_TRACE_DETAIL_CHARS)
+  const end = Math.min(text.length, anchorEnd + MAX_TRACE_DETAIL_CHARS)
+  const prefix = start > 0 ? '...' : ''
+  const suffix = end < text.length ? '...' : ''
+  return truncateExternalJudgmentText(`${prefix}${text.slice(start, end).replace(/\s+/g, ' ').trim()}${suffix}`)
+}
+
+function externalJudgmentEvidenceSummary(item, index, citationIndexById) {
+  const result = asRecord(item.result) || {}
+  const resultCitations = readRecordArray(result.citations)
+  const resultText = readString(result, 'answer') || readString(result, 'text')
+  const limitations = readStringArray(result.limitations)
+  const citationIndexes = resultCitations
+    .map((citation) => citationIndexById.get(citation.id))
+    .filter(isFiniteNumber)
+    .slice(0, MAX_CITATION_DIGEST_ITEMS)
+  return removeUndefinedProperties({
+    index,
+    sourceIndex: index,
+    protocol: item.source?.protocol,
+    status: item.source?.status,
+    pageCount: item.source?.pageCount,
+    approvedPageCount: item.source?.approvedPageCount,
+    answerText: externalJudgmentTextSignal(resultText),
+    orientationCount: readRecordArray(result.orientation).length,
+    citationCount: resultCitations.length,
+    citationIndexes,
+    limitationCount: limitations.length,
+    limitationText: externalJudgmentCombinedTextSignal(limitations),
+    graph: externalJudgmentGraph(result.graph),
+  })
+}
+
+function externalJudgmentConversationSummary(conversation) {
+  if (!conversation) return undefined
+  return removeUndefinedProperties({
+    messageCount: conversation.messageCount,
+    historyLength: conversation.historyLength,
+    contextProvided: conversation.contextProvided,
+  })
+}
+
+function externalJudgmentSourceCandidate(source, index) {
+  return removeUndefinedProperties({
+    index,
+    sourceId: source.id,
+    label: externalJudgmentSourceDescriptorSignal(source.name || source.title),
+    description: externalJudgmentSourceDescriptorSignal(source.description),
+    protocol: source.protocol,
+    status: source.status,
+    selected: source.selected !== false,
+    capabilities: readStringArray(source.capabilities).slice(0, MAX_SOURCE_TOOL_LIMIT),
+    adapter: externalJudgmentSourceDescriptorSignal(source.adapter),
+    implementation: externalJudgmentSourceDescriptorSignal(source.implementation),
+    pageCount: source.pageCount,
+    approvedPageCount: source.approvedPageCount,
+    bundleId: source.bundleId,
+    publicUri: source.publicUri,
+  })
+}
+
+function externalJudgmentSourceDescriptorSignal(value) {
+  return externalJudgmentTextSignal(value)
+}
+
+function externalJudgmentSourceResult(item, index) {
+  const source = asRecord(item.source) || {}
+  const result = asRecord(item.result) || {}
+  const resultCitations = readRecordArray(result.citations)
+  const resultText = readString(result, 'answer') || readString(result, 'text')
+  return removeUndefinedProperties({
+    index,
+    source: externalJudgmentSourceSummary(source),
+    answerText: externalJudgmentTextSignal(resultText),
+    citationCount: resultCitations.length,
+    citations: resultCitations.slice(0, MAX_CITATION_DIGEST_ITEMS).map((citation, citationIndex) => externalJudgmentCitation(citation, citationIndex)),
+    graph: externalJudgmentGraph(result.graph),
+  })
+}
+
+function externalJudgmentSourceFailure(item, index) {
+  const source = asRecord(item.source) || {}
+  const diagnosticRecord = asRecord(item.diagnostic) || {}
+  const sourceSummary = isSourcePolicyBlockedDiagnostic(diagnosticRecord)
+    ? externalJudgmentPolicyBlockedSourceFailureSummary(source)
+    : externalJudgmentSourceSummary(source)
+  return removeUndefinedProperties({
+    index,
+    source: sourceSummary,
+    retryable: diagnosticRecord.retryable,
+    phase: diagnosticRecord.phase,
+    protocol: diagnosticRecord.protocol,
+  })
+}
+
+function externalJudgmentPolicyBlockedSourceFailureSummary(source) {
+  return removeUndefinedProperties({
+    policyBlocked: true,
+    protocol: source.protocol,
+    status: source.status,
+    selected: source.selected !== false,
+  })
+}
+
+function isSourcePolicyBlockedDiagnostic(diagnosticRecord) {
+  if (!diagnosticRecord || diagnosticRecord.phase !== 'query') return false
+  const observations = Array.isArray(diagnosticRecord.observations) ? diagnosticRecord.observations : []
+  return observations.some((observation) => {
+    const record = asRecord(observation) || {}
+    return record.name === 'policy' && record.value === 'source-url'
+  })
+}
+
+function externalJudgmentSourceSummary(source) {
+  return removeUndefinedProperties({
+    id: source.id,
+    name: externalJudgmentTextSignal(source.name),
+    protocol: source.protocol,
+    status: source.status,
+    selected: source.selected !== false,
+    pageCount: source.pageCount,
+    approvedPageCount: source.approvedPageCount,
+    bundleId: source.bundleId,
+    publicUri: source.publicUri,
+  })
+}
+
+function externalJudgmentCitation(citation, index) {
+  const record = asRecord(citation) || {}
+  const text = readString(record, 'text') || readString(record, 'snippet') || readString(record, 'content')
+  return removeUndefinedProperties({
+    index,
+    sourceId: record.sourceId,
+    sourceRef: record.sourceRef,
+    pageId: record.pageId,
+    id: record.id,
+    title: externalJudgmentTextSignal(record.title),
+    heading: externalJudgmentTextSignal(record.heading),
+    path: record.path,
+    uri: record.uri,
+    url: record.url,
+    text: externalJudgmentTextSignal(text),
+  })
+}
+
+function externalJudgmentGraph(graph) {
+  return externalJudgmentGraphStructuralSummary(graph)
+}
+
+function externalJudgmentSourceBundle(bundle, index) {
+  const record = asRecord(bundle) || {}
+  return removeUndefinedProperties({
+    index,
+    schemaVersion: record.schemaVersion,
+    sourceId: record.sourceId,
+    bundleId: record.bundleId,
+    publicUri: record.publicUri,
+    pageCount: Array.isArray(record.pages) ? record.pages.length : readNumber(record, 'pageCount'),
+    sourceRefCount: Array.isArray(record.sourceRefs) ? record.sourceRefs.length : readNumber(record, 'sourceRefCount'),
+  })
+}
+
+function truncateExternalJudgmentText(value) {
+  const text = readStringValue(value)
+  if (!text) return undefined
+  return text.length <= MAX_CITATION_DIGEST_SNIPPET_CHARS
+    ? text
+    : `${text.slice(0, MAX_CITATION_DIGEST_SNIPPET_CHARS)}...`
+}
+
+function externalJudgmentTextSignal(value) {
+  const text = readStringValue(value)
+  if (!text) return undefined
+  return removeUndefinedProperties({
+    present: true,
+    charCount: text.length,
+    wordCount: externalJudgmentWordCount(text),
+    lineCount: externalJudgmentLineCount(text),
+  })
+}
+
+function externalJudgmentCombinedTextSignal(values) {
+  const texts = Array.isArray(values)
+    ? values.map(readStringValue).filter(Boolean)
+    : []
+  if (!texts.length) return undefined
+  return removeUndefinedProperties({
+    itemCount: texts.length,
+    charCount: texts.reduce((sum, text) => sum + text.length, 0),
+    wordCount: texts.reduce((sum, text) => sum + externalJudgmentWordCount(text), 0),
+    maxCharCount: Math.max(...texts.map((text) => text.length)),
+  })
+}
+
+function externalJudgmentWordCount(value) {
+  const text = readStringValue(value).trim()
+  if (!text) return 0
+  let count = 0
+  let inWord = false
+  for (const char of text) {
+    const whitespace = char === ' ' || char === '\t' || char === '\n' || char === '\r' || char === '\f' || char === '\v'
+    if (whitespace) {
+      inWord = false
+    } else if (!inWord) {
+      count += 1
+      inWord = true
+    }
+  }
+  return count
+}
+
+function externalJudgmentLineCount(value) {
+  const text = readStringValue(value)
+  if (!text) return 0
+  let count = 1
+  for (const char of text) {
+    if (char === '\n') count += 1
+  }
+  return count
+}
+
+async function callExternalJudgmentProvider(prepared, config, runContext = {}, questions = externalJudgmentQuestions()) {
+  const body = {
+    model: config.externalJudgmentModel,
+    state: prepared.state,
+    questions,
+  }
+  const response = await fetchWithTimeout(config.externalJudgmentEndpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.externalJudgmentApiKey}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(body),
+  }, config.requestTimeoutMs)
+  const responseText = await response.text()
+  const parsed = parseFetchJsonResponseBody(responseText)
+  if (!response.ok) throw new Error(`external judgment returned HTTP ${response.status}`)
+  if (!parsed.validJson) throw new Error('external judgment returned invalid JSON')
+  return {
+    request: {
+      model: body.model,
+      questionCount: Object.keys(body.questions).length,
+      requestId: runContext?.requestId,
+      traceId: runContext?.traceId,
+    },
+    response: normalizeExternalJudgmentResponse(parsed.value),
+  }
+}
+
+function externalJudgmentQuestions() {
+  return {
+    runtime_route: {
+      type: 'choice',
+      instructions: 'Should runtime synthesis proceed for this masked LLMWiki bridge request?',
+      criteria: {
+        proceed: 'The masked retrieved evidence appears relevant enough to proceed with normal runtime synthesis.',
+        review: 'The masked evidence is incomplete, contradictory, ambiguous, or potentially risky; continue only as a diagnostic signal.',
+        reject: 'The masked state indicates runtime synthesis is likely unsupported or unsafe.',
+      },
+    },
+    evidence_support: {
+      type: 'noul',
+      instructions: 'Does the masked evidence contain enough relevant support to answer the query without relying primarily on unsupported assumptions?',
+      criteria: {
+        true: 'The evidence is relevant and likely sufficient for a grounded answer.',
+        false: 'The evidence is absent, irrelevant, contradictory, or too weak for a grounded answer.',
+      },
+    },
+  }
+}
+
+function externalJudgmentSourceRoutingQuestions(sourceCount) {
+  const questions = {
+    source_routing_strategy: {
+      type: 'choice',
+      instructions: 'Which report-only source routing strategy best fits this masked LLMWiki bridge request before source fan-out?',
+      criteria: {
+        call_all: 'Call every selected ready source because multiple sources may be relevant or source descriptions are insufficient.',
+        prioritize: 'One or a small subset appears more likely useful, but this report-only slice must still call all selected ready sources.',
+        review: 'The masked query or source descriptors are ambiguous; source routing should remain diagnostic only.',
+      },
+    },
+  }
+  const limit = Math.min(sourceCount, DEFAULT_SOURCE_TOOL_LIMIT)
+  for (let index = 0; index < limit; index += 1) {
+    questions[`source_${index}_useful`] = {
+      type: 'noul',
+      instructions: `Is masked source candidate ${index} likely useful for answering the query?`,
+      criteria: {
+        true: 'The source descriptor appears relevant to the query.',
+        false: 'The source descriptor appears unrelated, too vague, or insufficient for this query.',
+      },
+    }
+  }
+  return questions
+}
+
+function externalJudgmentEvidenceRelevanceQuestions(citationCount) {
+  const limit = Math.min(citationCount, MAX_CITATION_DIGEST_ITEMS)
+  const questions = {
+    evidence_relevance_overall: {
+      type: 'score',
+      instructions: 'Score how directly the masked citation set supports answering the query.',
+      criteria: externalJudgmentScoreCriteria(
+        '0 means the citation set is irrelevant, contradictory, or too weak for the query.',
+        '1 means the citation set directly supports a grounded answer to the query.',
+      ),
+    },
+  }
+  for (let index = 0; index < limit; index += 1) {
+    questions[`citation_${index}_relevance_score`] = {
+      type: 'score',
+      instructions: `Score how directly masked citation ${index} supports answering the query.`,
+      criteria: externalJudgmentScoreCriteria(
+        '0 means the citation is unrelated, adjacent-only, contradictory, or too vague for the query.',
+        '1 means the citation directly supports at least one answerable claim for the query.',
+      ),
+    }
+    questions[`citation_${index}_direct_support`] = {
+      type: 'noul',
+      instructions: `Does masked citation ${index} directly support a factual answer to the query?`,
+      criteria: {
+        true: 'The citation directly supports a factual answer to the query.',
+        false: 'The citation does not directly support the query, or only provides adjacent context.',
+      },
+    }
+  }
+  return questions
+}
+
+function externalJudgmentCitationSupportQuestions(citedAnchorCount) {
+  const limit = Math.min(citedAnchorCount, MAX_CITATION_DIGEST_ITEMS)
+  const questions = {
+    citation_support: {
+      type: 'score',
+      instructions: 'Score whether the masked runtime answer citations directly support the claims they cite.',
+      criteria: externalJudgmentScoreCriteria(
+        '0 means the answer has missing, weak, contradictory, or unsupported citations for its cited claims.',
+        '1 means the cited claims are directly and sufficiently supported by the cited evidence snippets.',
+      ),
+    },
+  }
+  for (let index = 0; index < limit; index += 1) {
+    questions[`cited_anchor_${index}_direct_support`] = {
+      type: 'noul',
+      instructions: `Does cited answer anchor ${index} directly support the nearby answer claim using its cited evidence?`,
+      criteria: {
+        true: 'The cited evidence directly supports the nearby answer claim.',
+        false: 'The cited evidence is missing, adjacent-only, contradictory, or too weak for the nearby answer claim.',
+      },
+    }
+    questions[`cited_anchor_${index}_support_score`] = {
+      type: 'score',
+      instructions: `Score how strongly cited answer anchor ${index} supports the nearby answer claim.`,
+      criteria: externalJudgmentScoreCriteria(
+        '0 means the cited evidence does not support the nearby answer claim.',
+        '1 means the cited evidence fully supports the nearby answer claim.',
+      ),
+    }
+  }
+  return questions
+}
+
+function externalJudgmentProgressiveDisclosureQuestions(actions = []) {
+  const allowedActions = progressiveDisclosureQuestionActions(actions)
+  return {
+    next_action: {
+      type: 'choice',
+      instructions: 'Choose the next generic source-tool exploration action after this masked read-only source-tool result.',
+      criteria: progressiveDisclosureNextActionCriteria(allowedActions),
+    },
+    enough_evidence: {
+      type: 'noul',
+      instructions: 'Does the current masked source-tool result contain enough evidence to stop source-tool exploration for now?',
+      criteria: {
+        true: 'The result counts, citations, graph counts, and evidence summaries appear sufficient to stop exploring.',
+        false: 'The result appears empty, weak, ambiguous, or likely to need another generic source-tool action.',
+      },
+    },
+    evidence_sufficiency_score: {
+      type: 'score',
+      instructions: 'Score whether the current masked source-tool result appears sufficient without more source-tool exploration.',
+      criteria: externalJudgmentScoreCriteria(
+        '0 means the result is likely insufficient or needs clarification or more source-tool exploration.',
+        '1 means the result is likely sufficient to stop source-tool exploration for now.',
+      ),
+    },
+  }
+}
+
+function externalJudgmentGraphExpansionQuestions() {
+  return {
+    graph_expansion_action: {
+      type: 'choice',
+      instructions: 'Choose the best report-only next action from this masked structural LLMWiki evidence state.',
+      criteria: {
+        none: 'No graph expansion or multi-source review appears useful from the current structural evidence.',
+        inspect_graph: 'Inspect existing graph context because relationship structure may matter, without issuing new source calls in this slice.',
+        expand_neighbors: 'A bounded graph-neighbor expansion may be useful in a later slice, but this report-only slice must not perform it.',
+        review_multi_source: 'Multiple source or bundle summaries suggest a dependency or cross-source review may be useful.',
+        ask_clarification: 'The masked query or structural evidence is too ambiguous; a clarification would be more useful than expansion.',
+      },
+    },
+    graph_context_useful: {
+      type: 'noul',
+      instructions: 'Does the current masked structural state indicate graph context is likely useful for answering the query?',
+      criteria: {
+        true: 'Graph counts, relation/type diversity, or citation/source distribution suggest graph context may improve grounding.',
+        false: 'Graph context appears empty, irrelevant, or unnecessary based on the structural summary.',
+      },
+    },
+    multi_source_dependency_likely: {
+      type: 'noul',
+      instructions: 'Does the masked structural state suggest the answer may depend on combining or comparing multiple sources or source bundles?',
+      criteria: {
+        true: 'Multiple sources, bundles, failures, or distributed evidence suggest multi-source dependency review may matter.',
+        false: 'The structural evidence appears single-source, independent, or insufficient for a multi-source dependency conclusion.',
+      },
+    },
+    graph_expansion_score: {
+      type: 'score',
+      instructions: 'Score how useful graph expansion or multi-source dependency review appears from the masked structural state.',
+      criteria: externalJudgmentScoreCriteria(
+        '0 means no useful graph expansion or multi-source dependency signal is present.',
+        '1 means strong structural signal suggests graph expansion or multi-source dependency review would likely help.',
+      ),
+    },
+  }
+}
+
+function externalJudgmentScoreCriteria(minimum, maximum) {
+  return [minimum, maximum]
+}
+
+function progressiveDisclosureQuestionActions(actions) {
+  const allowed = ['stop', 'search', 'read', 'graph', 'ask_clarification']
+  const requested = readStringArray(actions).filter((action) => allowed.includes(action))
+  return requested.length ? requested : allowed
+}
+
+function progressiveDisclosureNextActionCriteria(actions) {
+  const descriptions = {
+    stop: 'Stop source-tool exploration because current evidence appears sufficient.',
+    search: 'Run a generic search because current evidence is missing, broad, or needs narrower candidates.',
+    read: 'Read a specific page because current evidence points to a likely useful page.',
+    graph: 'Inspect graph context because relationship, dependency, or neighborhood structure may matter.',
+    ask_clarification: 'Ask a clarifying question because the query or evidence state is too ambiguous.',
+  }
+  return Object.fromEntries(actions.map((action) => [action, descriptions[action]]))
+}
+
+function normalizeExternalJudgmentResponse(value) {
+  const record = asRecord(value) || {}
+  const answers = asRecord(record.answers) || {}
+  return removeUndefinedProperties({
+    model: readString(record, 'model'),
+    answers: normalizeExternalJudgmentAnswers(answers),
+    usage: normalizeExternalJudgmentUsage(record.usage),
+  })
+}
+
+function normalizeExternalJudgmentAnswers(answers) {
+  const output = {}
+  for (const [key, value] of Object.entries(answers || {})) {
+    const normalizedKey = String(key || '').replace(/[^A-Za-z0-9_.-]+/g, '_').slice(0, 80)
+    if (!normalizedKey) continue
+    const normalizedAnswer = normalizeExternalJudgmentAnswer(value)
+    if (Object.keys(normalizedAnswer).length) output[normalizedKey] = normalizedAnswer
+  }
+  return output
+}
+
+function normalizeExternalJudgmentAnswer(value) {
+  const record = asRecord(value) || {}
+  const booleanValue = typeof value === 'boolean' ? (value ? 1 : 0) : undefined
+  const numberValue = typeof value === 'number' && Number.isFinite(value) ? value : undefined
+  return removeUndefinedProperties({
+    type: readString(record, 'type'),
+    choice: readString(record, 'choice') || readString(record, 'value'),
+    confidence: readNumber(record, 'confidence'),
+    noul: readNumber(record, 'noul') ?? readNumber(record, 'boolean') ?? booleanValue,
+    score: readNumber(record, 'score') ?? numberValue,
+  })
+}
+
+function normalizeExternalJudgmentUsage(value) {
+  const record = asRecord(value) || {}
+  return removeUndefinedProperties({
+    inputTokens: readNumber(record, 'input_tokens') ?? readNumber(record, 'inputTokens'),
+    outputTokens: readNumber(record, 'output_tokens') ?? readNumber(record, 'outputTokens'),
+  })
+}
+
+function externalJudgmentDecision(result, config) {
+  const runtimeRoute = result.response.answers?.runtime_route || {}
+  const evidenceSupport = result.response.answers?.evidence_support || {}
+  const route = runtimeRoute.choice || 'unknown'
+  const routeConfidence = runtimeRoute.confidence
+  const support = evidenceSupport.noul ?? evidenceSupport.score
+  const reasons = []
+  if (route === 'reject') reasons.push('runtime_route_reject')
+  if (route === 'review') reasons.push('runtime_route_review')
+  if (route !== 'proceed' && route !== 'review' && route !== 'reject') reasons.push('runtime_route_unknown')
+  if (Number.isFinite(routeConfidence) && routeConfidence < config.externalJudgmentMinRouteConfidence) reasons.push('runtime_route_low_confidence')
+  if (!Number.isFinite(support)) reasons.push('evidence_support_missing')
+  else if (support < config.externalJudgmentMinEvidenceSupport) reasons.push('evidence_support_below_threshold')
+
+  return removeUndefinedProperties({
+    mode: config.externalJudgmentMode,
+    runtimeRoute: route,
+    runtimeRouteConfidence: routeConfidence,
+    evidenceSupport: support,
+    minEvidenceSupport: config.externalJudgmentMinEvidenceSupport,
+    minRouteConfidence: config.externalJudgmentMinRouteConfidence,
+    runtimeAllowed: config.externalJudgmentMode !== 'enforce' || reasons.length === 0,
+    blockReason: reasons[0],
+    blockReasons: reasons,
+  })
+}
+
+function externalJudgmentFallbackDecision(config, reason) {
+  return removeUndefinedProperties({
+    mode: config.externalJudgmentMode,
+    runtimeRoute: 'unknown',
+    runtimeAllowed: config.externalJudgmentMode !== 'enforce',
+    blockReason: config.externalJudgmentMode === 'enforce' ? reason : undefined,
+    blockReasons: config.externalJudgmentMode === 'enforce' ? [reason] : [],
+    minEvidenceSupport: config.externalJudgmentMinEvidenceSupport,
+    minRouteConfidence: config.externalJudgmentMinRouteConfidence,
+  })
+}
+
+function externalJudgmentStep({ mode = 'report-only', status, detail, latencyMs }) {
+  return step({
+    id: mode === 'enforce' ? 'external-judgment-enforce' : 'external-judgment-report-only',
+    label: 'Run external judgment',
+    status,
+    detail,
+    latencyMs,
+  })
+}
+
+function externalJudgmentStepDetail(result, prepared, decision, config) {
+  const route = result.response.answers?.runtime_route?.choice || 'unknown'
+  const support = result.response.answers?.evidence_support?.noul ?? result.response.answers?.evidence_support?.score
+  const supportText = Number.isFinite(support) ? `, evidence support ${support.toFixed(2)}` : ''
+  const redactionCount = externalJudgmentRedactionCount(prepared)
+  const enforcementText = config.externalJudgmentMode === 'enforce'
+    ? ` Runtime ${decision.runtimeAllowed ? 'allowed' : 'blocked'}.`
+    : ''
+  return `External System-One ${config.externalJudgmentMode} judgment returned route "${route}"${supportText}; ${redactionCount} redaction(s) recorded.${enforcementText}`
+}
+
+function externalJudgmentSuccessDiagnostic(result, config, prepared, latencyMs, decision) {
+  const runtimeRoute = result.response.answers?.runtime_route || {}
+  const evidenceSupport = result.response.answers?.evidence_support || {}
+  const usage = result.response.usage || {}
+  return diagnostic({
+    severity: decision.runtimeAllowed ? 'info' : 'warning',
+    scope: 'bridge',
+    phase: 'external-judgment',
+    protocol: 'typesafe-system-one',
+    subject: 'typesafe-jev',
+    retryable: false,
+    redacted: true,
+    observations: [
+      ['mode', config.externalJudgmentMode],
+      ['requestModel', config.externalJudgmentModel],
+      ['providerModel', result.response.model],
+      ['questionCount', result.request.questionCount],
+      ['runtimeRoute', runtimeRoute.choice],
+      ['runtimeRouteConfidence', runtimeRoute.confidence],
+      ['evidenceSupport', evidenceSupport.noul ?? evidenceSupport.score],
+      ['minEvidenceSupport', config.externalJudgmentMinEvidenceSupport],
+      ['minRouteConfidence', config.externalJudgmentMinRouteConfidence],
+      ['runtimeAllowed', decision.runtimeAllowed],
+      ['blockReason', decision.blockReason],
+      ['inputTokens', usage.inputTokens],
+      ['outputTokens', usage.outputTokens],
+      ['latencyMs', latencyMs],
+      ...externalJudgmentRedactionObservations(prepared),
+      ['redaction', 'prepared state, provider request body, provider response body, endpoint, and API key omitted'],
+    ],
+    remediation: decision.runtimeAllowed
+      ? 'External judgment allowed runtime synthesis under the configured mode and thresholds.'
+      : 'External judgment blocked runtime synthesis under enforce mode. Review thresholds and evidence before relying on runtime output.',
+    message: decision.runtimeAllowed
+      ? 'External System-One judgment completed.'
+      : 'External System-One evidence gate blocked runtime synthesis.',
+  })
+}
+
+function externalJudgmentSkippedDiagnostic(config, prepared, decision) {
+  return diagnostic({
+    severity: 'warning',
+    scope: 'bridge',
+    phase: 'external-judgment',
+    protocol: 'typesafe-system-one',
+    subject: 'typesafe-jev',
+    retryable: false,
+    redacted: true,
+    observations: [
+      ['mode', config.externalJudgmentMode],
+      ['requestModel', config.externalJudgmentModel],
+      ['configuredApiKey', false],
+      ['runtimeAllowed', decision.runtimeAllowed],
+      ['blockReason', decision.blockReason],
+      ...externalJudgmentRedactionObservations(prepared),
+      ['redaction', 'prepared state, endpoint, and API key omitted'],
+    ],
+    remediation: `Set ${SYSTEM_ONE_API_KEY_ENV}, ${EXTERNAL_JUDGMENT_API_KEY_ENV}, TYPESAFE_API_KEY, or JEV_API_KEY to enable external judgment.`,
+    message: `External System-One ${config.externalJudgmentMode} judgment was skipped because no provider API key is configured.`,
+  })
+}
+
+function externalJudgmentFailureDiagnostic(error, config, prepared, latencyMs, decision) {
+  return diagnostic({
+    severity: 'warning',
+    scope: 'bridge',
+    phase: 'external-judgment',
+    protocol: 'typesafe-system-one',
+    subject: 'typesafe-jev',
+    retryable: retryableFailure(error),
+    redacted: true,
+    observations: [
+      ['mode', config.externalJudgmentMode],
+      ['requestModel', config.externalJudgmentModel],
+      ['runtimeAllowed', decision.runtimeAllowed],
+      ['blockReason', decision.blockReason],
+      ['httpStatus', httpStatusFromError(error)],
+      ['timeout', isTimeoutError(error) ? 'true' : undefined],
+      ['invalidJson', isInvalidJsonError(error) ? 'true' : undefined],
+      ['latencyMs', latencyMs],
+      ...externalJudgmentRedactionObservations(prepared),
+      ['redaction', 'prepared state, provider request body, provider response body, endpoint, and API key omitted'],
+    ],
+    remediation: config.externalJudgmentMode === 'enforce'
+      ? 'Enforce-mode external judgment failed closed. Check provider reachability, API key scope, model name, and endpoint configuration.'
+      : 'Report-only external judgment failed open. Check provider reachability, API key scope, model name, and endpoint configuration.',
+    message: config.externalJudgmentMode === 'enforce'
+      ? 'External System-One enforce-mode judgment failed; runtime synthesis was skipped.'
+      : 'External System-One report-only judgment failed; runtime synthesis continued.',
+  })
+}
+
+function externalSourceRoutingJudgmentStep({ status, detail, latencyMs }) {
+  return step({
+    id: 'external-judgment-source-routing-report-only',
+    label: 'Run source routing judgment',
+    status,
+    detail,
+    latencyMs,
+  })
+}
+
+function externalSourceRoutingJudgmentStepDetail(result, prepared, candidateCount) {
+  const strategy = result.response.answers?.source_routing_strategy?.choice || 'unknown'
+  const redactionCount = externalJudgmentRedactionCount(prepared)
+  return `External System-One source-routing report-only judgment returned strategy "${strategy}" for ${candidateCount} candidate source(s); ${redactionCount} redaction(s) recorded. Source fan-out preserved.`
+}
+
+function externalSourceRoutingJudgmentSuccessDiagnostic(result, config, prepared, latencyMs, candidateCount) {
+  const strategy = result.response.answers?.source_routing_strategy || {}
+  const usage = result.response.usage || {}
+  return externalReportOnlyDiagnostic({
+    phase: 'external-judgment-source-routing',
+    message: 'External System-One source-routing judgment completed without changing selected source fan-out.',
+    remediation: 'Source-routing judgment is report-only in this slice. Compare diagnostics against source-quality benchmarks before enabling routing behavior.',
+    config,
+    prepared,
+    result,
+    latencyMs,
+    usage,
+    observations: [
+      ['candidateCount', candidateCount],
+      ['routingStrategy', strategy.choice],
+      ['routingStrategyConfidence', strategy.confidence],
+      ['sourceFanOutPreserved', true],
+      ...externalIndexedAnswerObservations(result.response.answers, /^source_(\d+)_useful$/, 'sourceUseful'),
+    ],
+  })
+}
+
+function externalSourceRoutingJudgmentSkippedDiagnostic(config, prepared, candidateCount) {
+  return externalReportOnlySkippedDiagnostic({
+    phase: 'external-judgment-source-routing',
+    message: 'External System-One source-routing judgment was skipped because no provider API key is configured.',
+    remediation: `Set ${SYSTEM_ONE_API_KEY_ENV}, ${EXTERNAL_JUDGMENT_API_KEY_ENV}, TYPESAFE_API_KEY, or JEV_API_KEY to enable external source-routing judgment.`,
+    config,
+    prepared,
+    observations: [
+      ['candidateCount', candidateCount],
+      ['sourceFanOutPreserved', true],
+    ],
+  })
+}
+
+function externalSourceRoutingJudgmentFailureDiagnostic(error, config, prepared, latencyMs, candidateCount) {
+  return externalReportOnlyFailureDiagnostic({
+    phase: 'external-judgment-source-routing',
+    message: 'External System-One source-routing judgment failed; source fan-out continued.',
+    remediation: 'Report-only source-routing judgment failed open. Source fan-out continued unchanged.',
+    error,
+    config,
+    prepared,
+    latencyMs,
+    observations: [
+      ['candidateCount', candidateCount],
+      ['sourceFanOutPreserved', true],
+    ],
+  })
+}
+
+function externalEvidenceRelevanceJudgmentStep({ status, detail, latencyMs }) {
+  return step({
+    id: 'external-judgment-evidence-relevance-report-only',
+    label: 'Run evidence relevance judgment',
+    status,
+    detail,
+    latencyMs,
+  })
+}
+
+function externalEvidenceRelevanceJudgmentStepDetail(result, prepared, citationCount, evaluatedCitationCount) {
+  const overall = result.response.answers?.evidence_relevance_overall?.score
+  const overallText = Number.isFinite(overall) ? `, overall relevance ${overall.toFixed(2)}` : ''
+  const redactionCount = externalJudgmentRedactionCount(prepared)
+  return `External System-One evidence-relevance report-only judgment scored ${evaluatedCitationCount} of ${citationCount} citation(s)${overallText}; ${redactionCount} redaction(s) recorded. Citation order preserved.`
+}
+
+function externalEvidenceRelevanceJudgmentSuccessDiagnostic(result, config, prepared, latencyMs, citationCount, evaluatedCitationCount) {
+  const overall = result.response.answers?.evidence_relevance_overall || {}
+  const usage = result.response.usage || {}
+  return externalReportOnlyDiagnostic({
+    phase: 'external-judgment-evidence-relevance',
+    message: 'External System-One evidence-relevance judgment completed without changing citation order or runtime prompts.',
+    remediation: 'Evidence-relevance judgment is report-only in this slice. Compare diagnostics against retrieval-quality benchmarks before enabling citation reordering or filtering.',
+    config,
+    prepared,
+    result,
+    latencyMs,
+    usage,
+    observations: [
+      ['citationCount', citationCount],
+      ['evaluatedCitationCount', evaluatedCitationCount],
+      ['overallEvidenceRelevance', overall.score ?? overall.noul],
+      ['citationOrderPreserved', true],
+      ['runtimePromptPreserved', true],
+      ...externalIndexedAnswerObservations(result.response.answers, /^citation_(\d+)_relevance_score$/, 'citationRelevanceScore'),
+      ...externalIndexedAnswerObservations(result.response.answers, /^citation_(\d+)_direct_support$/, 'citationDirectSupport'),
+    ],
+  })
+}
+
+function externalEvidenceRelevanceJudgmentSkippedDiagnostic(config, prepared, citationCount, evaluatedCitationCount) {
+  return externalReportOnlySkippedDiagnostic({
+    phase: 'external-judgment-evidence-relevance',
+    message: 'External System-One evidence-relevance judgment was skipped because no provider API key is configured.',
+    remediation: `Set ${SYSTEM_ONE_API_KEY_ENV}, ${EXTERNAL_JUDGMENT_API_KEY_ENV}, TYPESAFE_API_KEY, or JEV_API_KEY to enable external evidence-relevance judgment.`,
+    config,
+    prepared,
+    observations: [
+      ['citationCount', citationCount],
+      ['evaluatedCitationCount', evaluatedCitationCount],
+      ['citationOrderPreserved', true],
+      ['runtimePromptPreserved', true],
+    ],
+  })
+}
+
+function externalEvidenceRelevanceJudgmentFailureDiagnostic(error, config, prepared, latencyMs, citationCount, evaluatedCitationCount) {
+  return externalReportOnlyFailureDiagnostic({
+    phase: 'external-judgment-evidence-relevance',
+    message: 'External System-One evidence-relevance judgment failed; runtime synthesis continued.',
+    remediation: 'Report-only evidence-relevance judgment failed open. Runtime synthesis continued unchanged.',
+    error,
+    config,
+    prepared,
+    latencyMs,
+    observations: [
+      ['citationCount', citationCount],
+      ['evaluatedCitationCount', evaluatedCitationCount],
+      ['citationOrderPreserved', true],
+      ['runtimePromptPreserved', true],
+    ],
+  })
+}
+
+function externalGraphExpansionJudgmentStep({ status, detail, latencyMs }) {
+  return step({
+    id: 'external-judgment-graph-expansion-report-only',
+    label: 'Run graph-expansion judgment',
+    status,
+    detail,
+    latencyMs,
+  })
+}
+
+function externalGraphExpansionJudgmentStepDetail(result, prepared) {
+  const action = result.response.answers?.graph_expansion_action?.choice || 'unknown'
+  const score = result.response.answers?.graph_expansion_score?.score
+  const scoreText = Number.isFinite(score) ? `, expansion score ${score.toFixed(2)}` : ''
+  const redactionCount = externalJudgmentRedactionCount(prepared)
+  return `External System-One graph-expansion report-only judgment recommended "${action}"${scoreText}; ${redactionCount} redaction(s) recorded. Source calls, graph payload, source bundles, and runtime prompt preserved.`
+}
+
+function externalGraphExpansionJudgmentSuccessDiagnostic(result, config, prepared, latencyMs, state) {
+  const action = result.response.answers?.graph_expansion_action || {}
+  const graphUseful = result.response.answers?.graph_context_useful || {}
+  const multiSource = result.response.answers?.multi_source_dependency_likely || {}
+  const expansionScore = result.response.answers?.graph_expansion_score || {}
+  const usage = result.response.usage || {}
+  return externalReportOnlyDiagnostic({
+    phase: 'external-judgment-graph-expansion',
+    message: 'External System-One graph-expansion judgment completed without changing source selection, source calls, citations, graph payloads, sourceBundles, runtime prompts, answer text, or artifacts.',
+    remediation: 'Graph-expansion and multi-source dependency judgment is report-only in this slice. Compare diagnostics against graph/source quality before enabling any expansion or routing behavior.',
+    config,
+    prepared,
+    result,
+    latencyMs,
+    usage,
+    observations: [
+      ['graphExpansionAction', action.choice],
+      ['graphExpansionActionConfidence', action.confidence],
+      ['graphContextUseful', graphUseful.noul ?? graphUseful.score],
+      ['multiSourceDependencyLikely', multiSource.noul ?? multiSource.score],
+      ['graphExpansionScore', expansionScore.score ?? expansionScore.noul],
+      ...externalGraphExpansionStateObservations(state),
+    ],
+  })
+}
+
+function externalGraphExpansionJudgmentSkippedDiagnostic(config, prepared, state) {
+  return externalReportOnlySkippedDiagnostic({
+    phase: 'external-judgment-graph-expansion',
+    message: 'External System-One graph-expansion judgment was skipped because no provider API key is configured.',
+    remediation: `Set ${SYSTEM_ONE_API_KEY_ENV}, ${EXTERNAL_JUDGMENT_API_KEY_ENV}, TYPESAFE_API_KEY, or JEV_API_KEY to enable external graph-expansion judgment.`,
+    config,
+    prepared,
+    observations: externalGraphExpansionStateObservations(state),
+  })
+}
+
+function externalGraphExpansionJudgmentFailureDiagnostic(error, config, prepared, latencyMs, state) {
+  return externalReportOnlyFailureDiagnostic({
+    phase: 'external-judgment-graph-expansion',
+    message: 'External System-One graph-expansion judgment failed; source selection, source calls, citations, graph payloads, sourceBundles, runtime prompts, answer text, and artifacts continued unchanged.',
+    remediation: 'Report-only graph-expansion judgment failed open. Runtime synthesis continued unchanged.',
+    error,
+    config,
+    prepared,
+    latencyMs,
+    observations: externalGraphExpansionStateObservations(state),
+  })
+}
+
+function externalGraphExpansionStateObservations(state) {
+  return [
+    ['sourceCount', state.sourceCount],
+    ['successfulSourceCount', state.successfulSourceCount],
+    ['sourceFailureCount', state.sourceFailureCount],
+    ['citationCount', state.citationCount],
+    ['graphNodeCount', state.graphNodeCount],
+    ['graphEdgeCount', state.graphEdgeCount],
+    ['sourceBundleCount', state.sourceBundleCount],
+    ['multiSourceEvidencePresent', state.multiSourceEvidencePresent],
+    ['sourceSelectionPreserved', true],
+    ['sourceCallsPreserved', true],
+    ['citationOrderPreserved', true],
+    ['graphPayloadPreserved', true],
+    ['sourceBundlesPreserved', true],
+    ['runtimePromptPreserved', true],
+    ['answerTextPreserved', true],
+    ['artifactPreserved', true],
+  ]
+}
+
+function externalCitationSupportJudgmentStep({ status, detail, latencyMs }) {
+  return step({
+    id: 'external-judgment-citation-support-report-only',
+    label: 'Run citation support judgment',
+    status,
+    detail,
+    latencyMs,
+  })
+}
+
+function externalCitationSupportJudgmentStepDetail(result, prepared, citedAnchorCount, evaluatedAnchorCount) {
+  const overall = result.response.answers?.citation_support?.score
+  const overallText = Number.isFinite(overall) ? `, overall support ${overall.toFixed(2)}` : ''
+  const redactionCount = externalJudgmentRedactionCount(prepared)
+  return `External System-One citation-support report-only judgment scored ${evaluatedAnchorCount} of ${citedAnchorCount} cited anchor(s)${overallText}; ${redactionCount} redaction(s) recorded. Final artifact preserved.`
+}
+
+function externalCitationSupportJudgmentSuccessDiagnostic(result, config, prepared, latencyMs, citationCount, citedAnchorCount, evaluatedAnchorCount) {
+  const overall = result.response.answers?.citation_support || {}
+  const usage = result.response.usage || {}
+  return externalReportOnlyDiagnostic({
+    phase: 'external-judgment-citation-support',
+    message: 'External System-One citation-support judgment completed without changing answer text, citation order, or final artifacts.',
+    remediation: 'Citation-support judgment is report-only in this slice. Compare diagnostics against answer-quality benchmarks before enabling answer repair or blocking behavior.',
+    config,
+    prepared,
+    result,
+    latencyMs,
+    usage,
+    observations: [
+      ['citationCount', citationCount],
+      ['citedAnchorCount', citedAnchorCount],
+      ['evaluatedAnchorCount', evaluatedAnchorCount],
+      ['overallCitationSupport', overall.score ?? overall.noul],
+      ['answerTextPreserved', true],
+      ['citationOrderPreserved', true],
+      ['artifactPreserved', true],
+      ...externalIndexedAnswerObservations(result.response.answers, /^cited_anchor_(\d+)_direct_support$/, 'citedAnchorDirectSupport'),
+      ...externalIndexedAnswerObservations(result.response.answers, /^cited_anchor_(\d+)_support_score$/, 'citedAnchorSupportScore'),
+    ],
+  })
+}
+
+function externalCitationSupportJudgmentSkippedDiagnostic(config, prepared, citationCount, citedAnchorCount, evaluatedAnchorCount) {
+  return externalReportOnlySkippedDiagnostic({
+    phase: 'external-judgment-citation-support',
+    message: 'External System-One citation-support judgment was skipped because no provider API key is configured.',
+    remediation: `Set ${SYSTEM_ONE_API_KEY_ENV}, ${EXTERNAL_JUDGMENT_API_KEY_ENV}, TYPESAFE_API_KEY, or JEV_API_KEY to enable external citation-support judgment.`,
+    config,
+    prepared,
+    observations: [
+      ['citationCount', citationCount],
+      ['citedAnchorCount', citedAnchorCount],
+      ['evaluatedAnchorCount', evaluatedAnchorCount],
+      ['answerTextPreserved', true],
+      ['citationOrderPreserved', true],
+      ['artifactPreserved', true],
+    ],
+  })
+}
+
+function externalCitationSupportJudgmentFailureDiagnostic(error, config, prepared, latencyMs, citationCount, citedAnchorCount, evaluatedAnchorCount) {
+  return externalReportOnlyFailureDiagnostic({
+    phase: 'external-judgment-citation-support',
+    message: 'External System-One citation-support judgment failed; answer text, citation order, and final artifacts continued unchanged.',
+    remediation: 'Report-only citation-support judgment failed open. Final artifact return continued unchanged.',
+    error,
+    config,
+    prepared,
+    latencyMs,
+    observations: [
+      ['citationCount', citationCount],
+      ['citedAnchorCount', citedAnchorCount],
+      ['evaluatedAnchorCount', evaluatedAnchorCount],
+      ['answerTextPreserved', true],
+      ['citationOrderPreserved', true],
+      ['artifactPreserved', true],
+    ],
+  })
+}
+
+function externalProgressiveDisclosureJudgmentStep({ status, detail, latencyMs }) {
+  return step({
+    id: 'external-judgment-progressive-disclosure-report-only',
+    label: 'Run progressive-disclosure judgment',
+    status,
+    detail,
+    latencyMs,
+  })
+}
+
+function externalProgressiveDisclosureJudgmentStepDetail(result, prepared, state) {
+  const nextAction = result.response.answers?.next_action?.choice || 'unknown'
+  const enoughEvidence = result.response.answers?.enough_evidence?.noul
+  const enoughEvidenceText = Number.isFinite(enoughEvidence) ? `, enough evidence ${enoughEvidence.toFixed(2)}` : ''
+  const redactionCount = externalJudgmentRedactionCount(prepared)
+  return `External System-One progressive-disclosure report-only judgment recommended "${nextAction}" after ${state.currentTool}${enoughEvidenceText}; ${redactionCount} redaction(s) recorded. Source-tool result preserved.`
+}
+
+function externalProgressiveDisclosureJudgmentSuccessDiagnostic(result, config, prepared, latencyMs, state) {
+  const nextAction = result.response.answers?.next_action || {}
+  const enoughEvidence = result.response.answers?.enough_evidence || {}
+  const sufficiencyScore = result.response.answers?.evidence_sufficiency_score || {}
+  const usage = result.response.usage || {}
+  return externalReportOnlyDiagnostic({
+    phase: 'external-judgment-progressive-disclosure',
+    message: 'External System-One progressive-disclosure judgment completed without changing the source-tool result.',
+    remediation: 'Progressive-disclosure judgment is report-only in this slice. Compare next-action diagnostics against measured source-tool behavior before changing exploration policy.',
+    config,
+    prepared,
+    result,
+    latencyMs,
+    usage,
+    observations: [
+      ['nextAction', nextAction.choice],
+      ['nextActionConfidence', nextAction.confidence],
+      ['enoughEvidence', enoughEvidence.noul ?? enoughEvidence.score],
+      ['evidenceSufficiencyScore', sufficiencyScore.score ?? sufficiencyScore.noul],
+      ...externalProgressiveDisclosureStateObservations(state),
+    ],
+  })
+}
+
+function externalProgressiveDisclosureJudgmentSkippedDiagnostic(config, prepared, state) {
+  return externalReportOnlySkippedDiagnostic({
+    phase: 'external-judgment-progressive-disclosure',
+    message: 'External System-One progressive-disclosure judgment was skipped because no provider API key is configured.',
+    remediation: `Set ${SYSTEM_ONE_API_KEY_ENV}, ${EXTERNAL_JUDGMENT_API_KEY_ENV}, TYPESAFE_API_KEY, or JEV_API_KEY to enable external progressive-disclosure judgment.`,
+    config,
+    prepared,
+    observations: externalProgressiveDisclosureStateObservations(state),
+  })
+}
+
+function externalProgressiveDisclosureJudgmentFailureDiagnostic(error, config, prepared, latencyMs, state) {
+  return externalReportOnlyFailureDiagnostic({
+    phase: 'external-judgment-progressive-disclosure',
+    message: 'External System-One progressive-disclosure judgment failed; source-tool result continued unchanged.',
+    remediation: 'Report-only progressive-disclosure judgment failed open. Source-tool result continued unchanged.',
+    error,
+    config,
+    prepared,
+    latencyMs,
+    observations: externalProgressiveDisclosureStateObservations(state),
+  })
+}
+
+function externalProgressiveDisclosureStateObservations(state) {
+  const summary = asRecord(state.resultSummary) || {}
+  const actions = readStringArray(state.availableNextActions)
+  return [
+    ['currentTool', state.currentTool],
+    ['limit', state.limit],
+    ['availableNextActionCount', actions.length],
+    ['resultCount', summary.resultCount],
+    ['orientationCount', summary.orientationCount],
+    ['citationCount', summary.citationCount],
+    ['graphNodeCount', summary.graphNodeCount],
+    ['graphEdgeCount', summary.graphEdgeCount],
+    ['sourceFailurePresent', summary.sourceFailurePresent],
+    ['toolResultPreserved', true],
+    ['sourceCallsPreserved', true],
+    ['runtimePromptPreserved', true],
+  ]
+}
+
+function externalReportOnlyDiagnostic({ phase, message, remediation, config, prepared, result, latencyMs, usage = {}, observations = [] }) {
+  return diagnostic({
+    severity: 'info',
+    scope: 'bridge',
+    phase,
+    protocol: 'typesafe-system-one',
+    subject: 'typesafe-jev',
+    retryable: false,
+    redacted: true,
+    observations: [
+      ['mode', 'report-only'],
+      ['requestModel', config.externalJudgmentModel],
+      ['providerModel', result.response.model],
+      ['questionCount', result.request.questionCount],
+      ...observations,
+      ['inputTokens', usage.inputTokens],
+      ['outputTokens', usage.outputTokens],
+      ['latencyMs', latencyMs],
+      ...externalJudgmentRedactionObservations(prepared),
+      ['redaction', 'prepared state, provider request body, provider response body, endpoint, API key, source URLs, raw source ids, source refs, local paths, graph identifiers, graph labels, page text, and raw answer text omitted from diagnostics'],
+    ],
+    remediation,
+    message,
+  })
+}
+
+function externalReportOnlySkippedDiagnostic({ phase, message, remediation, config, prepared, observations = [] }) {
+  return diagnostic({
+    severity: 'warning',
+    scope: 'bridge',
+    phase,
+    protocol: 'typesafe-system-one',
+    subject: 'typesafe-jev',
+    retryable: false,
+    redacted: true,
+    observations: [
+      ['mode', 'report-only'],
+      ['requestModel', config.externalJudgmentModel],
+      ['configuredApiKey', false],
+      ...observations,
+      ...externalJudgmentRedactionObservations(prepared),
+      ['redaction', 'prepared state, endpoint, API key, source URLs, raw source ids, source refs, local paths, graph identifiers, graph labels, page text, and raw answer text omitted from diagnostics'],
+    ],
+    remediation,
+    message,
+  })
+}
+
+function externalReportOnlyFailureDiagnostic({ phase, message, remediation, error, config, prepared, latencyMs, observations = [] }) {
+  return diagnostic({
+    severity: 'warning',
+    scope: 'bridge',
+    phase,
+    protocol: 'typesafe-system-one',
+    subject: 'typesafe-jev',
+    retryable: retryableFailure(error),
+    redacted: true,
+    observations: [
+      ['mode', 'report-only'],
+      ['requestModel', config.externalJudgmentModel],
+      ...observations,
+      ['httpStatus', httpStatusFromError(error)],
+      ['timeout', isTimeoutError(error) ? 'true' : undefined],
+      ['invalidJson', isInvalidJsonError(error) ? 'true' : undefined],
+      ['latencyMs', latencyMs],
+      ...externalJudgmentRedactionObservations(prepared),
+      ['redaction', 'prepared state, provider request body, provider response body, endpoint, API key, source URLs, raw source ids, source refs, local paths, graph identifiers, graph labels, page text, and raw answer text omitted from diagnostics'],
+    ],
+    remediation,
+    message,
+  })
+}
+
+function externalIndexedAnswerObservations(answers, pattern, prefix) {
+  const output = []
+  for (const [key, value] of Object.entries(answers || {})) {
+    const match = key.match(pattern)
+    if (!match) continue
+    const answer = asRecord(value) || {}
+    const index = Number(match[1])
+    const suffix = Number.isFinite(index) ? index : match[1]
+    output.push([`${prefix}${suffix}`, answer.score ?? answer.noul ?? answer.choice])
+  }
+  return output
+}
+
+function externalJudgmentRedactionCount(prepared) {
+  return sumNumbers(Object.values(prepared.redactions || {}).filter((value) => typeof value === 'number'))
+}
+
+function externalJudgmentRedactionObservations(prepared) {
+  const redactions = asRecord(prepared.redactions) || {}
+  return [
+    ['redactedSecrets', redactions.secrets],
+    ['redactedUrls', redactions.urls],
+    ['redactedPaths', redactions.paths],
+    ['redactedEmails', redactions.emails],
+    ['redactedHosts', redactions.hosts],
+    ['redactedIdentifiers', redactions.identifiers],
+    ['truncatedStrings', redactions.truncatedStrings],
+  ]
 }
 
 function answerWithFallbackCitationAnchors(answer, citations) {
@@ -11577,6 +13961,105 @@ function bridgeConfig(env, options = {}) {
     ?? runtimeAdapterOption(env.HERMES_A2A_BRIDGE_RUNTIME_ADAPTER)
     ?? runtimeAdapterOption(persistentConfig.runtimeAdapter)
     ?? DEFAULT_RUNTIME_ADAPTER
+  const externalJudgmentMode = externalJudgmentModeOption(options.externalJudgmentMode)
+    ?? externalJudgmentModeOption(options.systemOneMode)
+    ?? externalJudgmentModeOption(env[SYSTEM_ONE_MODE_ENV])
+    ?? externalJudgmentModeOption(env[EXTERNAL_JUDGMENT_MODE_ENV])
+    ?? externalJudgmentModeOption(persistentConfig.systemOneMode)
+    ?? externalJudgmentModeOption(persistentConfig.externalJudgmentMode)
+    ?? DEFAULT_EXTERNAL_JUDGMENT_MODE
+  const externalJudgmentSourceRoutingMode = externalJudgmentReportOnlyModeOption(
+    options.systemOneSourceRoutingMode,
+    'systemOneSourceRoutingMode',
+  )
+    ?? externalJudgmentReportOnlyModeOption(options.externalJudgmentSourceRoutingMode, 'externalJudgmentSourceRoutingMode')
+    ?? externalJudgmentReportOnlyModeOption(env[SYSTEM_ONE_SOURCE_ROUTING_MODE_ENV], SYSTEM_ONE_SOURCE_ROUTING_MODE_ENV)
+    ?? externalJudgmentReportOnlyModeOption(env[EXTERNAL_JUDGMENT_SOURCE_ROUTING_MODE_ENV], EXTERNAL_JUDGMENT_SOURCE_ROUTING_MODE_ENV)
+    ?? externalJudgmentReportOnlyModeOption(persistentConfig.systemOneSourceRoutingMode, 'systemOneSourceRoutingMode')
+    ?? externalJudgmentReportOnlyModeOption(persistentConfig.externalJudgmentSourceRoutingMode, 'externalJudgmentSourceRoutingMode')
+    ?? DEFAULT_EXTERNAL_JUDGMENT_SOURCE_ROUTING_MODE
+  const externalJudgmentEvidenceRelevanceMode = externalJudgmentReportOnlyModeOption(
+    options.systemOneEvidenceRelevanceMode,
+    'systemOneEvidenceRelevanceMode',
+  )
+    ?? externalJudgmentReportOnlyModeOption(options.externalJudgmentEvidenceRelevanceMode, 'externalJudgmentEvidenceRelevanceMode')
+    ?? externalJudgmentReportOnlyModeOption(env[SYSTEM_ONE_EVIDENCE_RELEVANCE_MODE_ENV], SYSTEM_ONE_EVIDENCE_RELEVANCE_MODE_ENV)
+    ?? externalJudgmentReportOnlyModeOption(env[EXTERNAL_JUDGMENT_EVIDENCE_RELEVANCE_MODE_ENV], EXTERNAL_JUDGMENT_EVIDENCE_RELEVANCE_MODE_ENV)
+    ?? externalJudgmentReportOnlyModeOption(persistentConfig.systemOneEvidenceRelevanceMode, 'systemOneEvidenceRelevanceMode')
+    ?? externalJudgmentReportOnlyModeOption(persistentConfig.externalJudgmentEvidenceRelevanceMode, 'externalJudgmentEvidenceRelevanceMode')
+    ?? DEFAULT_EXTERNAL_JUDGMENT_EVIDENCE_RELEVANCE_MODE
+  const externalJudgmentCitationSupportMode = externalJudgmentReportOnlyModeOption(
+    options.systemOneCitationSupportMode,
+    'systemOneCitationSupportMode',
+  )
+    ?? externalJudgmentReportOnlyModeOption(options.externalJudgmentCitationSupportMode, 'externalJudgmentCitationSupportMode')
+    ?? externalJudgmentReportOnlyModeOption(env[SYSTEM_ONE_CITATION_SUPPORT_MODE_ENV], SYSTEM_ONE_CITATION_SUPPORT_MODE_ENV)
+    ?? externalJudgmentReportOnlyModeOption(env[EXTERNAL_JUDGMENT_CITATION_SUPPORT_MODE_ENV], EXTERNAL_JUDGMENT_CITATION_SUPPORT_MODE_ENV)
+    ?? externalJudgmentReportOnlyModeOption(persistentConfig.systemOneCitationSupportMode, 'systemOneCitationSupportMode')
+    ?? externalJudgmentReportOnlyModeOption(persistentConfig.externalJudgmentCitationSupportMode, 'externalJudgmentCitationSupportMode')
+    ?? DEFAULT_EXTERNAL_JUDGMENT_CITATION_SUPPORT_MODE
+  const externalJudgmentProgressiveDisclosureMode = externalJudgmentReportOnlyModeOption(
+    options.systemOneProgressiveDisclosureMode,
+    'systemOneProgressiveDisclosureMode',
+  )
+    ?? externalJudgmentReportOnlyModeOption(options.externalJudgmentProgressiveDisclosureMode, 'externalJudgmentProgressiveDisclosureMode')
+    ?? externalJudgmentReportOnlyModeOption(env[SYSTEM_ONE_PROGRESSIVE_DISCLOSURE_MODE_ENV], SYSTEM_ONE_PROGRESSIVE_DISCLOSURE_MODE_ENV)
+    ?? externalJudgmentReportOnlyModeOption(env[EXTERNAL_JUDGMENT_PROGRESSIVE_DISCLOSURE_MODE_ENV], EXTERNAL_JUDGMENT_PROGRESSIVE_DISCLOSURE_MODE_ENV)
+    ?? externalJudgmentReportOnlyModeOption(persistentConfig.systemOneProgressiveDisclosureMode, 'systemOneProgressiveDisclosureMode')
+    ?? externalJudgmentReportOnlyModeOption(persistentConfig.externalJudgmentProgressiveDisclosureMode, 'externalJudgmentProgressiveDisclosureMode')
+    ?? DEFAULT_EXTERNAL_JUDGMENT_PROGRESSIVE_DISCLOSURE_MODE
+  const externalJudgmentGraphExpansionMode = externalJudgmentReportOnlyModeOption(
+    options.systemOneGraphExpansionMode,
+    'systemOneGraphExpansionMode',
+  )
+    ?? externalJudgmentReportOnlyModeOption(options.externalJudgmentGraphExpansionMode, 'externalJudgmentGraphExpansionMode')
+    ?? externalJudgmentReportOnlyModeOption(env[SYSTEM_ONE_GRAPH_EXPANSION_MODE_ENV], SYSTEM_ONE_GRAPH_EXPANSION_MODE_ENV)
+    ?? externalJudgmentReportOnlyModeOption(env[EXTERNAL_JUDGMENT_GRAPH_EXPANSION_MODE_ENV], EXTERNAL_JUDGMENT_GRAPH_EXPANSION_MODE_ENV)
+    ?? externalJudgmentReportOnlyModeOption(persistentConfig.systemOneGraphExpansionMode, 'systemOneGraphExpansionMode')
+    ?? externalJudgmentReportOnlyModeOption(persistentConfig.externalJudgmentGraphExpansionMode, 'externalJudgmentGraphExpansionMode')
+    ?? DEFAULT_EXTERNAL_JUDGMENT_GRAPH_EXPANSION_MODE
+  const externalJudgmentEndpoint = stringOption(options.systemOneEndpoint)
+    || stringOption(options.externalJudgmentEndpoint)
+    || stringOption(env[SYSTEM_ONE_ENDPOINT_ENV])
+    || stringOption(env[EXTERNAL_JUDGMENT_ENDPOINT_ENV])
+    || stringOption(persistentConfig.systemOneEndpoint)
+    || stringOption(persistentConfig.externalJudgmentEndpoint)
+    || systemOneEndpointFromBaseUrl(
+      stringOption(options.systemOneBaseUrl)
+      || stringOption(env[SYSTEM_ONE_BASE_URL_ENV])
+      || stringOption(persistentConfig.systemOneBaseUrl),
+    )
+    || DEFAULT_EXTERNAL_JUDGMENT_ENDPOINT
+  const externalJudgmentApiKey = stringOption(options.systemOneApiKey)
+    ?? stringOption(options.externalJudgmentApiKey)
+    ?? stringOption(env[SYSTEM_ONE_API_KEY_ENV])
+    ?? stringOption(env[EXTERNAL_JUDGMENT_API_KEY_ENV])
+    ?? stringOption(env.TYPESAFE_API_KEY)
+    ?? stringOption(env.JEV_API_KEY)
+    ?? stringOption(persistentConfig.systemOneApiKey)
+    ?? stringOption(persistentConfig.externalJudgmentApiKey)
+    ?? ''
+  const externalJudgmentModel = stringOption(options.systemOneModel)
+    || stringOption(options.externalJudgmentModel)
+    || stringOption(env[SYSTEM_ONE_MODEL_ENV])
+    || stringOption(env[EXTERNAL_JUDGMENT_MODEL_ENV])
+    || stringOption(persistentConfig.systemOneModel)
+    || stringOption(persistentConfig.externalJudgmentModel)
+    || DEFAULT_EXTERNAL_JUDGMENT_MODEL
+  const externalJudgmentMinEvidenceSupport = probabilityConfigValue(options.systemOneMinEvidenceSupport, 'systemOneMinEvidenceSupport')
+    ?? probabilityConfigValue(options.externalJudgmentMinEvidenceSupport, 'externalJudgmentMinEvidenceSupport')
+    ?? probabilityConfigValue(env[SYSTEM_ONE_MIN_EVIDENCE_SUPPORT_ENV], SYSTEM_ONE_MIN_EVIDENCE_SUPPORT_ENV)
+    ?? probabilityConfigValue(env[EXTERNAL_JUDGMENT_MIN_EVIDENCE_SUPPORT_ENV], EXTERNAL_JUDGMENT_MIN_EVIDENCE_SUPPORT_ENV)
+    ?? probabilityConfigValue(persistentConfig.systemOneMinEvidenceSupport, 'systemOneMinEvidenceSupport')
+    ?? probabilityConfigValue(persistentConfig.externalJudgmentMinEvidenceSupport, 'externalJudgmentMinEvidenceSupport')
+    ?? DEFAULT_EXTERNAL_JUDGMENT_MIN_EVIDENCE_SUPPORT
+  const externalJudgmentMinRouteConfidence = probabilityConfigValue(options.systemOneMinRouteConfidence, 'systemOneMinRouteConfidence')
+    ?? probabilityConfigValue(options.externalJudgmentMinRouteConfidence, 'externalJudgmentMinRouteConfidence')
+    ?? probabilityConfigValue(env[SYSTEM_ONE_MIN_ROUTE_CONFIDENCE_ENV], SYSTEM_ONE_MIN_ROUTE_CONFIDENCE_ENV)
+    ?? probabilityConfigValue(env[EXTERNAL_JUDGMENT_MIN_ROUTE_CONFIDENCE_ENV], EXTERNAL_JUDGMENT_MIN_ROUTE_CONFIDENCE_ENV)
+    ?? probabilityConfigValue(persistentConfig.systemOneMinRouteConfidence, 'systemOneMinRouteConfidence')
+    ?? probabilityConfigValue(persistentConfig.externalJudgmentMinRouteConfidence, 'externalJudgmentMinRouteConfidence')
+    ?? DEFAULT_EXTERNAL_JUDGMENT_MIN_ROUTE_CONFIDENCE
   const mcpToolExposure = mcpToolExposureOption(options.mcpToolExposure)
     ?? mcpToolExposureOption(env[MCP_TOOL_EXPOSURE_ENV])
     ?? mcpToolExposureOption(persistentConfig.mcpToolExposure)
@@ -11661,6 +14144,17 @@ function bridgeConfig(env, options = {}) {
     ioLogPath,
     runtimeProfile,
     runtimeAdapter,
+    externalJudgmentMode,
+    externalJudgmentSourceRoutingMode,
+    externalJudgmentEvidenceRelevanceMode,
+    externalJudgmentCitationSupportMode,
+    externalJudgmentProgressiveDisclosureMode,
+    externalJudgmentGraphExpansionMode,
+    externalJudgmentEndpoint,
+    externalJudgmentApiKey,
+    externalJudgmentModel,
+    externalJudgmentMinEvidenceSupport,
+    externalJudgmentMinRouteConfidence,
     mcpToolExposure,
     deepagentsAcpCommand,
     deepagentsAcpArgs,
@@ -11753,10 +14247,29 @@ function numberOption(value) {
   return Number.isFinite(value) ? value : undefined
 }
 
+function integerOption(value) {
+  const option = numberOption(value)
+  return Number.isInteger(option) && option > 0 ? option : undefined
+}
+
+function probabilityConfigValue(value, field) {
+  if (value === undefined || value === '') return undefined
+  const parsed = readNumberValue(value)
+  if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) return parsed
+  throw new Error(`${field} must be a number between 0 and 1 when configured.`)
+}
+
 function stringOption(value) {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
   return trimmed ? trimmed : undefined
+}
+
+function systemOneEndpointFromBaseUrl(value) {
+  const baseUrl = stringOption(value)
+  if (!baseUrl) return undefined
+  const clean = trimTrailingSlashes(baseUrl)
+  return clean.endsWith('/systemone') ? clean : `${clean}/systemone`
 }
 
 function firstStringOptionWithSource(entries, defaultValue) {
@@ -11854,6 +14367,23 @@ function runtimeAdapterOption(value) {
   const adapter = runtimeAdapterAliases.get(normalized)
   if (adapter) return adapter
   throw new Error(`Unsupported LLMWiki Agent Bridge runtime adapter: ${value}.`)
+}
+
+function externalJudgmentModeOption(value) {
+  if (typeof value === 'boolean') return value ? 'report-only' : 'off'
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, '')
+  if (!normalized) return undefined
+  const mode = externalJudgmentModeAliases.get(normalized)
+  if (mode) return mode
+  throw new Error(`Unsupported LLMWiki Agent Bridge external judgment mode: ${value}.`)
+}
+
+function externalJudgmentReportOnlyModeOption(value, field) {
+  const mode = externalJudgmentModeOption(value)
+  if (mode === undefined) return undefined
+  if (mode === 'off' || mode === 'report-only') return mode
+  throw new Error(`${field} supports only off or report-only.`)
 }
 
 function mcpToolExposureOption(value) {

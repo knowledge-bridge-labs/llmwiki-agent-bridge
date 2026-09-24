@@ -24,6 +24,7 @@ import {
   BRIDGE_A2A_PROTOCOL_VERSION,
   BRIDGE_A2A_VERSION_HEADER,
   agentBridgeOpenApi,
+  prepareExternalJudgmentState,
   startAgentBridge,
   startHermesA2aBridge,
 } from '../src/index.mjs'
@@ -67,6 +68,873 @@ describe('llmwiki-agent-bridge', () => {
     assert.equal(stderr, '')
     assert.equal(stdout, `${packageJson.version}\n`)
     assert.doesNotMatch(stdout, /"event":"ready"/)
+  })
+
+  it('prepares masked external judgment state without raw private data', () => {
+    const prepared = prepareExternalJudgmentState({
+      apiKey: 'sk-proj-private-test-key',
+      sourceId: 'private-source-id',
+      pageId: 'private-page-id',
+      url: 'http://127.0.0.1:8765/private?token=abc',
+      path: 'C:\\redaction-fixture\\private\\source.md',
+      ownerEmail: 'owner@example.com',
+      text: 'Local path C:\\redaction-fixture\\private\\source.md and host 127.0.0.1:8765 should be masked.',
+    })
+    const serialized = JSON.stringify(prepared)
+
+    assert.equal(prepared.schemaVersion, 'llmwiki.agent-bridge.external-judgment-state.v1')
+    assert.equal(prepared.policy.rawStateRetained, false)
+    assert.equal(prepared.policy.stablePlaceholders, true)
+    assert.doesNotMatch(serialized, /sk-proj-private-test-key/)
+    assert.doesNotMatch(serialized, /private-source-id/)
+    assert.doesNotMatch(serialized, /private-page-id/)
+    assert.doesNotMatch(serialized, /127\.0\.0\.1/)
+    assert.doesNotMatch(serialized, /owner@example\.com/)
+    assert.match(serialized, /\[identifier-1\]/)
+    assert.match(serialized, /\[url-1\]/)
+    assert.match(serialized, /\[path-1\]/)
+    assert.match(serialized, /\[email-1\]/)
+  })
+
+  it('normalizes System-One base URLs without regex-sensitive slash trimming', async (t) => {
+    const bridge = await startAgentBridge({
+      port: 0,
+      systemOneBaseUrl: `https://system-one.example.test/v1${'/'.repeat(4096)}`,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    assert.equal(bridge.config.externalJudgmentEndpoint, 'https://system-one.example.test/v1/systemone')
+  })
+
+  it('keeps external judgment off by default even when provider config exists', async (t) => {
+    const source = await startFixtureServer(async ({ url, response }) => {
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        evidence: [{
+          page_id: 'default-off-page',
+          title: 'Default Off Evidence',
+          snippet: 'Default-off evidence supports the answer.',
+        }],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    const provider = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, { answers: {} })
+    })
+    const runtime = await startFixtureServer(async ({ url, response }) => {
+      assert.equal(url.pathname, '/v1/chat/completions')
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'Default-off runtime answer.' } }],
+      })
+    })
+    const bridge = await startAgentBridge({
+      port: 0,
+      baseUrl: `${runtime.url}/v1`,
+      systemOneApiKey: 'unused-system-one-key',
+      systemOneEndpoint: `${provider.url}/systemone`,
+      logger: silentLogger,
+    })
+    t.after(async () => {
+      await closeServer(bridge.server)
+      await closeServer(source.server)
+      await closeServer(provider.server)
+      await closeServer(runtime.server)
+    })
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Use default-off evidence.',
+          knowledgeSources: [knowledgeSource('default-off-source', 'Default Off Source', 'llmwiki-http', source.url)],
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts[0].parts[0].data
+
+    assert.equal(response.status, 200)
+    assert.equal(provider.requests.length, 0)
+    assert.equal(runtime.requests.length, 1)
+    assert.equal(artifact.answer, expectedFallbackAnswer('Default-off runtime answer.', 1))
+    assert.equal(artifact.steps.some((item) => item.id.startsWith('external-judgment')), false)
+    assert.equal(artifact.diagnostics.some((item) => item.phase?.startsWith('external-judgment')), false)
+  })
+
+  it('runs external judgment report-only with masked provider state before runtime synthesis', async (t) => {
+    const events = []
+    const source = await startFixtureServer(async ({ url, response }) => {
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        evidence: [{
+          page_id: 'sensitive-page',
+          title: 'PrivatePageTitleCanary',
+          path: 'C:\\redaction-fixture\\private\\source.md',
+          snippet: 'PrivateHeadingCanary: PrivateSnippetCanary supports the answer.',
+        }],
+        graph: {
+          nodes: [{ id: 'sensitive-node', label: 'PrivateGraphLabelCanary', type: 'claim' }],
+          edges: [{ source: 'sensitive-node', target: 'sensitive-node', relation: 'privateGraphRelationCanary' }],
+        },
+      })
+    })
+    const provider = await startFixtureServer(async ({ body, headers, response }) => {
+      events.push('judgment')
+      assert.equal(headers.authorization, 'Bearer report-only-key')
+      assert.equal(body.model, 'jev-report-only-test')
+      assert.equal(body.questions.runtime_route.type, 'choice')
+      writeJson(response, 200, {
+        model: 'jev-report-only-test',
+        answers: {
+          runtime_route: { type: 'choice', choice: 'proceed', confidence: 0.93 },
+          evidence_support: { type: 'noul', noul: 1 },
+        },
+        usage: { input_tokens: 12, output_tokens: 3 },
+      })
+    })
+    const runtime = await startFixtureServer(async ({ response }) => {
+      events.push('runtime')
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'Report-only runtime answer.' } }],
+      })
+    })
+    const bridge = await startAgentBridge({
+      port: 0,
+      baseUrl: `${runtime.url}/v1`,
+      systemOneMode: 'report-only',
+      systemOneApiKey: 'report-only-key',
+      systemOneEndpoint: `${provider.url}/systemone`,
+      systemOneModel: 'jev-report-only-test',
+      logger: silentLogger,
+    })
+    t.after(async () => {
+      await closeServer(bridge.server)
+      await closeServer(source.server)
+      await closeServer(provider.server)
+      await closeServer(runtime.server)
+    })
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Use masked report-only evidence.',
+          knowledgeSources: [knowledgeSource('sensitive-source-id', 'PrivateSourceNameCanary', 'llmwiki-http', source.url)],
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts[0].parts[0].data
+    const providerBodyText = JSON.stringify(provider.requests[0].body)
+    const diagnostic = artifact.diagnostics.find((item) => item.phase === 'external-judgment')
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(events, ['judgment', 'runtime'])
+    assert.equal(artifact.answer, expectedFallbackAnswer('Report-only runtime answer.', 1))
+    assert(diagnostic)
+    assert.equal(observationValue(diagnostic, 'mode'), 'report-only')
+    assert.equal(observationValue(diagnostic, 'runtimeAllowed'), 'true')
+    assert.equal(observationValue(diagnostic, 'providerModel'), 'jev-report-only-test')
+    assert.doesNotMatch(providerBodyText, /report-only-key/)
+    assert.doesNotMatch(providerBodyText, /sensitive-source-id/)
+    assert.doesNotMatch(providerBodyText, /sensitive-page/)
+    assert.doesNotMatch(providerBodyText, /sensitive-node/)
+    assert.doesNotMatch(providerBodyText, /PrivateSourceNameCanary/)
+    assert.doesNotMatch(providerBodyText, /PrivatePageTitleCanary/)
+    assert.doesNotMatch(providerBodyText, /PrivateHeadingCanary/)
+    assert.doesNotMatch(providerBodyText, /PrivateSnippetCanary/)
+    assert.doesNotMatch(providerBodyText, /PrivateGraphLabelCanary/)
+    assert.doesNotMatch(providerBodyText, /privateGraphRelationCanary/)
+    assert.doesNotMatch(providerBodyText, /127\.0\.0\.1/)
+    assert.doesNotMatch(providerBodyText, /C:\\\\redaction-fixture\\\\private\\\\source\.md/)
+  })
+
+  it('does not send source-policy blocked source descriptors to external judgment providers', async (t) => {
+    const allowedSource = await startFixtureServer(async ({ url, response }) => {
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        evidence: [{
+          page_id: 'allowed-page',
+          title: 'Allowed Evidence',
+          snippet: 'Allowed evidence is sufficient for the runtime answer.',
+        }],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    const provider = await startFixtureServer(async ({ body, response }) => {
+      if (body.state?.gate === 'source_routing') {
+        writeJson(response, 200, {
+          answers: {
+            source_1_useful: { type: 'noul', noul: 1 },
+            source_1_confidence: { type: 'score', score: 0.9 },
+          },
+        })
+        return
+      }
+      assert.equal(body.state?.gate, 'runtime_route')
+      writeJson(response, 200, {
+        answers: {
+          runtime_route: { type: 'choice', choice: 'proceed', confidence: 0.95 },
+          evidence_support: { type: 'noul', noul: 1 },
+        },
+      })
+    })
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'Allowed-source runtime answer.' } }],
+      })
+    })
+    const bridge = await startAgentBridge({
+      port: 0,
+      baseUrl: `${runtime.url}/v1`,
+      sourcePolicy: 'allowlist',
+      allowedSourceOrigins: [allowedSource.url],
+      systemOneMode: 'report-only',
+      systemOneSourceRoutingMode: 'report-only',
+      systemOneApiKey: 'policy-canary-key',
+      systemOneEndpoint: `${provider.url}/systemone`,
+      logger: silentLogger,
+    })
+    t.after(async () => {
+      await closeServer(bridge.server)
+      await closeServer(allowedSource.server)
+      await closeServer(provider.server)
+      await closeServer(runtime.server)
+    })
+
+    const blockedUrl = 'http://192.168.70.10:8765/private'
+    const blockedId = 'policy-blocked-canary-source'
+    const blockedName = 'PolicyBlockedCanaryAlpha'
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Use allowed evidence while preserving source policy boundaries.',
+          knowledgeSources: [
+            knowledgeSource('allowed-source', 'Allowed Source', 'llmwiki-http', allowedSource.url),
+            knowledgeSource(blockedId, blockedName, 'llmwiki-http', blockedUrl),
+          ],
+        },
+      }),
+    })
+    const artifact = (await response.json()).artifacts[0].parts[0].data
+    const providerBodyText = provider.requests.map((request) => JSON.stringify(request.body)).join('\n')
+
+    assert.equal(response.status, 200)
+    assert.equal(provider.requests.length, 2)
+    assert.equal(runtime.requests.length, 1)
+    assert.equal(allowedSource.requests.some((request) => request.url.pathname === '/query'), true)
+    assert.equal(artifact.answer, expectedFallbackAnswer('Allowed-source runtime answer.', 1))
+    assert.doesNotMatch(providerBodyText, new RegExp(escapeRegExp(blockedId)))
+    assert.doesNotMatch(providerBodyText, new RegExp(escapeRegExp(blockedName)))
+    assert.doesNotMatch(providerBodyText, /192\.168\.70\.10/)
+  })
+
+  it('uses live-compatible score criteria arrays for evidence-relevance judgments', async (t) => {
+    const source = await startFixtureServer(async ({ url, response }) => {
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        evidence: [{
+          page_id: 'score-criteria-page',
+          title: 'Score Criteria Evidence',
+          snippet: 'Score criteria evidence supports the runtime answer.',
+        }],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    const provider = await startFixtureServer(async ({ body, response }) => {
+      assert.equal(body.state.gate, 'evidence_relevance')
+      assertLiveCompatibleScoreCriteria(body.questions.evidence_relevance_overall)
+      assertLiveCompatibleScoreCriteria(body.questions.citation_0_relevance_score)
+      writeJson(response, 200, {
+        answers: {
+          evidence_relevance_overall: { type: 'score', score: 0.81 },
+          citation_0_relevance_score: { type: 'score', score: 0.83 },
+          citation_0_direct_support: { type: 'noul', noul: 1 },
+        },
+      })
+    })
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'Score criteria runtime answer. [1](#citation-1)' } }],
+      })
+    })
+    const bridge = await startAgentBridge({
+      port: 0,
+      baseUrl: `${runtime.url}/v1`,
+      systemOneApiKey: 'score-criteria-key',
+      systemOneEndpoint: `${provider.url}/systemone`,
+      systemOneEvidenceRelevanceMode: 'report-only',
+      logger: silentLogger,
+    })
+    t.after(async () => {
+      await closeServer(bridge.server)
+      await closeServer(source.server)
+      await closeServer(provider.server)
+      await closeServer(runtime.server)
+    })
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Check evidence relevance score criteria shape.',
+          knowledgeSources: [knowledgeSource('score-criteria-source', 'Score Criteria Source', 'llmwiki-http', source.url)],
+        },
+      }),
+    })
+    const artifact = (await response.json()).artifacts[0].parts[0].data
+    const diagnostic = artifact.diagnostics.find((item) => item.phase === 'external-judgment-evidence-relevance')
+
+    assert.equal(response.status, 200)
+    assert.equal(provider.requests.length, 1)
+    assert.equal(runtime.requests.length, 1)
+    assert(diagnostic)
+    assert.equal(observationValue(diagnostic, 'overallEvidenceRelevance'), '0.81')
+  })
+
+  it('enforces external judgment by skipping runtime when evidence support is too low', async (t) => {
+    const source = await startFixtureServer(async ({ url, response }) => {
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      writeJson(response, 200, {
+        evidence: [{
+          page_id: 'enforce-page',
+          title: 'Enforce Evidence',
+          snippet: 'Weak evidence should be blocked by the external gate.',
+        }],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    const provider = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        answers: {
+          runtime_route: { type: 'choice', choice: 'proceed', confidence: 0.95 },
+          evidence_support: { type: 'noul', noul: 0.1 },
+        },
+      })
+    })
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'This runtime should not be called.' } }],
+      })
+    })
+    const bridge = await startAgentBridge({
+      port: 0,
+      baseUrl: `${runtime.url}/v1`,
+      systemOneMode: 'enforce',
+      systemOneApiKey: 'enforce-key',
+      systemOneEndpoint: `${provider.url}/systemone`,
+      logger: silentLogger,
+    })
+    t.after(async () => {
+      await closeServer(bridge.server)
+      await closeServer(source.server)
+      await closeServer(provider.server)
+      await closeServer(runtime.server)
+    })
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Should enforce skip runtime?',
+          knowledgeSources: [knowledgeSource('enforce-source', 'Enforce Source', 'llmwiki-http', source.url)],
+        },
+      }),
+    })
+    const a2a = await response.json()
+    const artifact = a2a.artifacts[0].parts[0].data
+    const diagnostic = artifact.diagnostics.find((item) => item.phase === 'external-judgment')
+
+    assert.equal(response.status, 200)
+    assert.equal(provider.requests.length, 1)
+    assert.equal(runtime.requests.length, 0)
+    assert.match(artifact.answer, /External System-One evidence gate skipped runtime synthesis/)
+    assert.match(artifact.answer, /evidence_support=0\.10/)
+    assert(artifact.steps.some((item) => item.id === 'external-judgment-runtime-skipped'))
+    assert.equal(observationValue(diagnostic, 'runtimeAllowed'), 'false')
+    assert.equal(observationValue(diagnostic, 'blockReason'), 'evidence_support_below_threshold')
+  })
+
+  it('enforces external judgment by skipping runtime when route confidence is below the default threshold', async (t) => {
+    const source = await startFixtureServer(async ({ url, response }) => {
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      writeJson(response, 200, {
+        evidence: [{
+          page_id: 'confidence-page',
+          title: 'Confidence Evidence',
+          snippet: 'Evidence exists, but route confidence should still gate runtime synthesis.',
+        }],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    const provider = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        answers: {
+          runtime_route: { type: 'choice', choice: 'proceed', confidence: 0.49 },
+          evidence_support: { type: 'noul', noul: 1 },
+        },
+      })
+    })
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'This low-confidence runtime should not be called.' } }],
+      })
+    })
+    const bridge = await startAgentBridge({
+      port: 0,
+      baseUrl: `${runtime.url}/v1`,
+      systemOneMode: 'enforce',
+      systemOneApiKey: 'confidence-key',
+      systemOneEndpoint: `${provider.url}/systemone`,
+      logger: silentLogger,
+    })
+    t.after(async () => {
+      await closeServer(bridge.server)
+      await closeServer(source.server)
+      await closeServer(provider.server)
+      await closeServer(runtime.server)
+    })
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Should low-confidence proceed skip runtime by default?',
+          knowledgeSources: [knowledgeSource('confidence-source', 'Confidence Source', 'llmwiki-http', source.url)],
+        },
+      }),
+    })
+    const artifact = (await response.json()).artifacts[0].parts[0].data
+    const diagnostic = artifact.diagnostics.find((item) => item.phase === 'external-judgment')
+
+    assert.equal(response.status, 200)
+    assert.equal(provider.requests.length, 1)
+    assert.equal(runtime.requests.length, 0)
+    assert.match(artifact.answer, /External System-One evidence gate skipped runtime synthesis/)
+    assert.equal(observationValue(diagnostic, 'runtimeAllowed'), 'false')
+    assert.equal(observationValue(diagnostic, 'blockReason'), 'runtime_route_low_confidence')
+  })
+
+  it('fails external judgment open in report-only mode and closed in enforce mode', async (t) => {
+    const source = await startFixtureServer(async ({ url, response }) => {
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      writeJson(response, 200, {
+        evidence: [{
+          page_id: 'provider-failure-page',
+          title: 'Provider Failure Evidence',
+          snippet: 'Provider failure evidence is still available.',
+        }],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    const provider = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 503, { error: 'provider unavailable' })
+    })
+    const reportOnlyRuntime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'Report-only fail-open runtime answer.' } }],
+      })
+    })
+    const enforceRuntime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'Enforce fail-closed runtime answer.' } }],
+      })
+    })
+    const reportBridge = await startAgentBridge({
+      port: 0,
+      baseUrl: `${reportOnlyRuntime.url}/v1`,
+      systemOneMode: 'report-only',
+      systemOneApiKey: 'provider-failure-key',
+      systemOneEndpoint: `${provider.url}/systemone`,
+      logger: silentLogger,
+    })
+    const enforceBridge = await startAgentBridge({
+      port: 0,
+      baseUrl: `${enforceRuntime.url}/v1`,
+      systemOneMode: 'enforce',
+      systemOneApiKey: 'provider-failure-key',
+      systemOneEndpoint: `${provider.url}/systemone`,
+      logger: silentLogger,
+    })
+    t.after(async () => {
+      await closeServer(reportBridge.server)
+      await closeServer(enforceBridge.server)
+      await closeServer(source.server)
+      await closeServer(provider.server)
+      await closeServer(reportOnlyRuntime.server)
+      await closeServer(enforceRuntime.server)
+    })
+
+    const reportResponse = await fetch(`${reportBridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Should report-only fail open?',
+          knowledgeSources: [knowledgeSource('provider-failure-source', 'Provider Failure Source', 'llmwiki-http', source.url)],
+        },
+      }),
+    })
+    const reportArtifact = (await reportResponse.json()).artifacts[0].parts[0].data
+    const enforceResponse = await fetch(`${enforceBridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Should enforce fail closed?',
+          knowledgeSources: [knowledgeSource('provider-failure-source', 'Provider Failure Source', 'llmwiki-http', source.url)],
+        },
+      }),
+    })
+    const enforceArtifact = (await enforceResponse.json()).artifacts[0].parts[0].data
+
+    assert.equal(reportResponse.status, 200)
+    assert.equal(enforceResponse.status, 200)
+    assert.equal(reportOnlyRuntime.requests.length, 1)
+    assert.equal(enforceRuntime.requests.length, 0)
+    assert.equal(reportArtifact.answer, expectedFallbackAnswer('Report-only fail-open runtime answer.', 1))
+    assert.match(enforceArtifact.answer, /External System-One evidence gate skipped runtime synthesis/)
+    assert.equal(observationValue(reportArtifact.diagnostics.find((item) => item.phase === 'external-judgment'), 'runtimeAllowed'), 'true')
+    assert.equal(observationValue(enforceArtifact.diagnostics.find((item) => item.phase === 'external-judgment'), 'runtimeAllowed'), 'false')
+    assert.equal(observationValue(enforceArtifact.diagnostics.find((item) => item.phase === 'external-judgment'), 'blockReason'), 'provider_failed')
+  })
+
+  it('records graph-expansion report-only diagnostics without extra graph calls or runtime changes', async (t) => {
+    const source = await startFixtureServer(async ({ url, response }) => {
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        evidence: [{
+          page_id: 'graph-expansion-page',
+          title: 'Graph Expansion Evidence',
+          snippet: 'Graph-expansion evidence supports the runtime answer.',
+        }],
+        graph: {
+          nodes: [
+            { id: 'private-node-a', label: 'Private Node A', type: 'decision' },
+            { id: 'private-node-b', label: 'Private Node B', type: 'artifact' },
+          ],
+          edges: [{ source: 'private-node-a', target: 'private-node-b', relation: 'private_relation' }],
+        },
+      })
+    })
+    const provider = await startFixtureServer(async ({ body, response }) => {
+      assert.equal(body.state.gate, 'graph_expansion_multi_source_dependency')
+      assertLiveCompatibleScoreCriteria(body.questions.graph_expansion_score)
+      writeJson(response, 200, {
+        answers: {
+          graph_expansion_action: { type: 'choice', choice: 'inspect_graph', confidence: 0.84 },
+          graph_context_useful: { type: 'noul', noul: 1 },
+          multi_source_dependency_likely: { type: 'noul', noul: 0 },
+          graph_expansion_score: { type: 'score', score: 0.72 },
+        },
+      })
+    })
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'Graph-expansion runtime answer. [1](#citation-1)' } }],
+      })
+    })
+    const bridge = await startAgentBridge({
+      port: 0,
+      baseUrl: `${runtime.url}/v1`,
+      systemOneApiKey: 'graph-expansion-key',
+      systemOneEndpoint: `${provider.url}/systemone`,
+      systemOneGraphExpansionMode: 'report-only',
+      logger: silentLogger,
+    })
+    t.after(async () => {
+      await closeServer(bridge.server)
+      await closeServer(source.server)
+      await closeServer(provider.server)
+      await closeServer(runtime.server)
+    })
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Should graph expansion inspect existing structure?',
+          knowledgeSources: [knowledgeSource('graph-expansion-source', 'Graph Expansion Source', 'llmwiki-http', source.url)],
+        },
+      }),
+    })
+    const artifact = (await response.json()).artifacts[0].parts[0].data
+    const diagnostic = artifact.diagnostics.find((item) => item.phase === 'external-judgment-graph-expansion')
+    const providerBodyText = JSON.stringify(provider.requests[0].body)
+
+    assert.equal(response.status, 200)
+    assert.equal(runtime.requests.length, 1)
+    assert.equal(source.requests.some((item) => item.url.pathname.includes('graph')), false)
+    assert.equal(artifact.answer, 'Graph-expansion runtime answer. [1](#citation-1)')
+    assert(diagnostic)
+    assert.equal(observationValue(diagnostic, 'graphExpansionAction'), 'inspect_graph')
+    assert.equal(observationValue(diagnostic, 'sourceCallsPreserved'), 'true')
+    assert.equal(observationValue(diagnostic, 'graphPayloadPreserved'), 'true')
+    assert.doesNotMatch(providerBodyText, /Private Node/)
+    assert.doesNotMatch(providerBodyText, /private-node/)
+    assert.doesNotMatch(providerBodyText, /private_relation/)
+  })
+
+  it('runs citation-support report-only without changing answer artifacts or exposing raw content', async (t) => {
+    const events = []
+    const source = await startFixtureServer(async ({ url, response }) => {
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        evidence: [{
+          page_id: 'citation-support-private-page',
+          title: 'CitationSupportPrivateTitleCanary',
+          snippet: 'CitationSupportPrivateHeadingCanary: CitationSupportPrivateSnippetCanary is enough for the cited answer.',
+        }],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    const provider = await startFixtureServer(async ({ body, response }) => {
+      events.push('citation-support')
+      assert.equal(body.state.gate, 'citation_support')
+      assert.equal(body.questions.citation_support.type, 'score')
+      assertLiveCompatibleScoreCriteria(body.questions.citation_support)
+      assert.equal(body.questions.cited_anchor_0_direct_support.type, 'noul')
+      assertLiveCompatibleScoreCriteria(body.questions.cited_anchor_0_support_score)
+      writeJson(response, 200, {
+        answers: {
+          citation_support: { type: 'score', score: 0.86 },
+          cited_anchor_0_direct_support: { type: 'noul', noul: 1 },
+          cited_anchor_0_support_score: { type: 'score', score: 0.88 },
+        },
+      })
+    })
+    const runtime = await startFixtureServer(async ({ response }) => {
+      events.push('runtime')
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'CitationSupportPrivateAnswerCanary is supported. [1](#citation-1)' } }],
+      })
+    })
+    const bridge = await startAgentBridge({
+      port: 0,
+      baseUrl: `${runtime.url}/v1`,
+      systemOneApiKey: 'citation-support-key',
+      systemOneEndpoint: `${provider.url}/systemone`,
+      systemOneCitationSupportMode: 'report-only',
+      logger: silentLogger,
+    })
+    t.after(async () => {
+      await closeServer(bridge.server)
+      await closeServer(source.server)
+      await closeServer(provider.server)
+      await closeServer(runtime.server)
+    })
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Check cited answer support.',
+          knowledgeSources: [knowledgeSource('citation-support-source', 'CitationSupportPrivateSourceNameCanary', 'llmwiki-http', source.url)],
+        },
+      }),
+    })
+    const artifact = (await response.json()).artifacts[0].parts[0].data
+    const diagnostic = artifact.diagnostics.find((item) => item.phase === 'external-judgment-citation-support')
+    const providerBodyText = JSON.stringify(provider.requests[0].body)
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(events, ['runtime', 'citation-support'])
+    assert.equal(runtime.requests.length, 1)
+    assert.equal(provider.requests.length, 1)
+    assert.equal(artifact.answer, 'CitationSupportPrivateAnswerCanary is supported. [1](#citation-1)')
+    assert.deepEqual(artifact.citations.map((citation) => citation.id), ['citation-support-source:citation-support-private-page'])
+    assert.equal(artifact.citations[0].title, 'CitationSupportPrivateTitleCanary')
+    assert.match(artifact.citations[0].snippet, /CitationSupportPrivateSnippetCanary/)
+    assert(diagnostic)
+    assert.equal(observationValue(diagnostic, 'citationCount'), '1')
+    assert.equal(observationValue(diagnostic, 'citedAnchorCount'), '1')
+    assert.equal(observationValue(diagnostic, 'evaluatedAnchorCount'), '1')
+    assert.equal(observationValue(diagnostic, 'answerTextPreserved'), 'true')
+    assert.equal(observationValue(diagnostic, 'citationOrderPreserved'), 'true')
+    assert.equal(observationValue(diagnostic, 'artifactPreserved'), 'true')
+    assert.doesNotMatch(providerBodyText, /citation-support-key/)
+    assert.doesNotMatch(providerBodyText, /citation-support-source/)
+    assert.doesNotMatch(providerBodyText, /citation-support-private-page/)
+    assert.doesNotMatch(providerBodyText, /CitationSupportPrivateSourceNameCanary/)
+    assert.doesNotMatch(providerBodyText, /CitationSupportPrivateTitleCanary/)
+    assert.doesNotMatch(providerBodyText, /CitationSupportPrivateHeadingCanary/)
+    assert.doesNotMatch(providerBodyText, /CitationSupportPrivateSnippetCanary/)
+    assert.doesNotMatch(providerBodyText, /CitationSupportPrivateAnswerCanary/)
+  })
+
+  it('skips report-only judgments when there is no evaluable graph or citation-support state', async (t) => {
+    const source = await startFixtureServer(async ({ url, response }) => {
+      if (url.pathname === '/search') {
+        writeJson(response, 200, { results: [] })
+        return
+      }
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        evidence: [],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    const provider = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, { answers: {} })
+    })
+    const runtime = await startFixtureServer(async ({ response }) => {
+      writeJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: 'No citation anchors are available.' } }],
+      })
+    })
+    const bridge = await startAgentBridge({
+      port: 0,
+      baseUrl: `${runtime.url}/v1`,
+      systemOneApiKey: 'empty-state-key',
+      systemOneEndpoint: `${provider.url}/systemone`,
+      systemOneGraphExpansionMode: 'report-only',
+      systemOneCitationSupportMode: 'report-only',
+      logger: silentLogger,
+    })
+    t.after(async () => {
+      await closeServer(bridge.server)
+      await closeServer(source.server)
+      await closeServer(provider.server)
+      await closeServer(runtime.server)
+    })
+
+    const response = await fetch(`${bridge.url}/message:send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query: 'Return a response when no source evidence is available.',
+          knowledgeSources: [knowledgeSource('empty-judgment-source', 'Empty Judgment Source', 'llmwiki-http', source.url)],
+        },
+      }),
+    })
+    const artifact = (await response.json()).artifacts[0].parts[0].data
+
+    assert.equal(response.status, 200)
+    assert.equal(runtime.requests.length, 1)
+    assert.equal(provider.requests.length, 0)
+    assert.equal(artifact.answer, 'No citation anchors are available.')
+    assert.equal(artifact.diagnostics.some((item) => item.phase === 'external-judgment-graph-expansion'), false)
+    assert.equal(artifact.diagnostics.some((item) => item.phase === 'external-judgment-citation-support'), false)
+  })
+
+  it('records progressive-disclosure diagnostics for MCP source tools without changing tool results', async (t) => {
+    const source = await startFixtureServer(async ({ url, response }) => {
+      assert.equal(url.pathname, '/query')
+      writeJson(response, 200, {
+        evidence: [{
+          page_id: 'progressive-page',
+          title: 'Progressive Evidence',
+          snippet: 'Progressive-disclosure source-tool evidence.',
+        }],
+        orientation: [{ title: 'Orientation', summary: 'Generic orientation summary.' }],
+        graph: { nodes: [], edges: [] },
+      })
+    })
+    const provider = await startFixtureServer(async ({ body, headers, response }) => {
+      assert.equal(headers.authorization, 'Bearer progressive-key')
+      assert.equal(body.state.gate, 'progressive_disclosure_continuation')
+      assertLiveCompatibleScoreCriteria(body.questions.evidence_sufficiency_score)
+      writeJson(response, 200, {
+        answers: {
+          next_action: { type: 'choice', choice: 'stop', confidence: 0.91 },
+          enough_evidence: { type: 'noul', noul: 1 },
+          evidence_sufficiency_score: { type: 'score', score: 0.88 },
+        },
+      })
+    })
+    const bridge = await startAgentBridge({
+      port: 0,
+      registeredSources: [knowledgeSource('progressive-source', 'Progressive Source', 'llmwiki-http', source.url)],
+      systemOneApiKey: 'progressive-key',
+      systemOneEndpoint: `${provider.url}/systemone`,
+      systemOneProgressiveDisclosureMode: 'report-only',
+      logger: silentLogger,
+    })
+    t.after(async () => {
+      await closeServer(bridge.server)
+      await closeServer(source.server)
+      await closeServer(provider.server)
+    })
+
+    const response = await fetch(`${bridge.url}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'llmwiki_context',
+          arguments: {
+            sourceId: 'progressive-source',
+            query: 'Read ProgressiveRawQueryCanary evidence.',
+            limit: 2,
+          },
+        },
+      }),
+    })
+    const rpc = await response.json()
+    const structured = rpc.result.structuredContent
+    const context = structured.llmwiki_context
+    const progressive = structured.llmwiki_external_judgment_progressive_disclosure
+
+    assert.equal(response.status, 200)
+    assert.equal(rpc.result.isError, false)
+    assert.equal(context.source.id, 'progressive-source')
+    assert.equal(context.query, 'Read ProgressiveRawQueryCanary evidence.')
+    assert.deepEqual(context.citations.map((item) => item.id), ['progressive-source:progressive-page'])
+    assert(progressive)
+    assert.equal(progressive.schemaVersion, 'llmwiki.agent-bridge.external-judgment-progressive-disclosure.v1')
+    assert.equal(progressive.step.id, 'external-judgment-progressive-disclosure-report-only')
+    assert.equal(progressive.diagnostics[0].phase, 'external-judgment-progressive-disclosure')
+    assert.equal(observationValue(progressive.diagnostics[0], 'nextAction'), 'stop')
+    assert.equal(observationValue(progressive.diagnostics[0], 'toolResultPreserved'), 'true')
+    assert.doesNotMatch(JSON.stringify(provider.requests[0].body), /progressive-source/)
+    assert.doesNotMatch(JSON.stringify(provider.requests[0].body), /ProgressiveRawQueryCanary/)
   })
 
   it('serves a Hermes-compatible A2A agent card and health response by default', async (t) => {
@@ -11819,6 +12687,13 @@ function knowledgeSource(id, name, protocol, url) {
 
 function observationValue(diagnostic, name) {
   return diagnostic.observations?.find((observation) => observation.name === name)?.value
+}
+
+function assertLiveCompatibleScoreCriteria(question) {
+  assert.equal(question?.type, 'score')
+  assert(Array.isArray(question.criteria), 'score criteria must be an array for the live System-One API')
+  assert.equal(question.criteria.length >= 2, true)
+  assert.equal(question.criteria.every((item) => typeof item === 'string' && item.length > 0), true)
 }
 
 function retrievalIntent(searchMode, {

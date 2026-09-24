@@ -614,6 +614,12 @@ selected source is available, source-specific tools require `sourceId`. Source
 tools do not call the configured Hermes, DeepAgents, or OpenAI-compatible
 runtime and do not mutate bridge settings or wiki content.
 
+When `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_PROGRESSIVE_DISCLOSURE_MODE=report-only`
+is configured, successful read-only source-tool calls also include additive
+`structuredContent.llmwiki_external_judgment_progressive_disclosure`. That
+diagnostic is redacted and does not change the source-tool result, trigger
+follow-up source calls, or expose the raw source-tool query to the provider.
+
 Gateway meta-tools are intended for MCP hosts that do not want every direct
 source-tool schema in the model context at conversation start:
 
@@ -722,6 +728,18 @@ small and factual; they do not define a large failure-code taxonomy. Fields are:
 `invalidJson`, `jsonRpcError`, `policy`, `sourcePolicy`, `runtimeProfile`, and
 `timeoutMs`. Raw source URLs, credentials, request headers, provider API keys,
 and upstream response bodies are omitted from diagnostics.
+
+Optional System-One external judgment diagnostics use phases such as
+`external-judgment`, `external-judgment-source-routing`,
+`external-judgment-evidence-relevance`, `external-judgment-citation-support`,
+`external-judgment-progressive-disclosure`, and
+`external-judgment-graph-expansion`. They are disabled by default. Report-only
+phases preserve source calls, runtime prompts, answer text, citations, graph
+payloads, and artifacts. `external-judgment` can skip runtime synthesis only
+when the runtime-route mode is explicitly set to `enforce`. Provider state
+uses structural signals for source/page/graph/answer wording and skips
+report-only graph-expansion or citation-support provider calls when the request
+has no graph/multi-source or cited-anchor state to evaluate.
 
 The runtime evidence bundle sent to Hermes/DeepAgents also preserves per-source
 corpus metadata from LLMWiki context responses, including `pageCount`,

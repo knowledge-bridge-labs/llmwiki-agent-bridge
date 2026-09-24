@@ -221,6 +221,17 @@ runtime is Hermes or DeepAgents.
 | `LLMWIKI_AGENT_BRIDGE_ALLOWED_ORIGINS` | unset | Comma-separated browser CORS origins allowed to call the bridge in addition to loopback origins. |
 | `LLMWIKI_AGENT_BRIDGE_SOURCE_POLICY` | `private-http` | Outbound Knowledge Source URL policy. See [Client Paths](./client-paths.md#source-url-policy). |
 | `LLMWIKI_AGENT_BRIDGE_ALLOWED_SOURCE_ORIGINS` | unset | Comma-separated exact source origins allowed by the `allowlist` policy or as exceptions under stricter policies. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_MODE` | `off` | Optional TypeSafe Jev/System-One runtime-route judgment. `report-only` records redacted diagnostics; `enforce` skips runtime synthesis when the gate rejects the gathered evidence. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_MODE`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_API_KEY` | unset | Optional System-One provider API key. Aliases: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_API_KEY`, `TYPESAFE_API_KEY`, `JEV_API_KEY`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_ENDPOINT` | `https://api.typesafe.ai/v1/systemone` | System-One endpoint. `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_BASE_URL` is also accepted and appends `/systemone` when needed. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_ENDPOINT`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_MODEL` | `jev-latest` | System-One model id sent to the provider. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_MODEL`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_SOURCE_ROUTING_MODE` | `off` | Optional report-only source-routing diagnostic before source fan-out. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_SOURCE_ROUTING_MODE`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_EVIDENCE_RELEVANCE_MODE` | `off` | Optional report-only citation/evidence relevance diagnostic after source fan-out. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_EVIDENCE_RELEVANCE_MODE`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_CITATION_SUPPORT_MODE` | `off` | Optional report-only citation-support diagnostic after runtime synthesis. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_CITATION_SUPPORT_MODE`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_PROGRESSIVE_DISCLOSURE_MODE` | `off` | Optional report-only MCP source-tool continuation diagnostic. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_PROGRESSIVE_DISCLOSURE_MODE`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_GRAPH_EXPANSION_MODE` | `off` | Optional report-only graph-expansion and multi-source dependency diagnostic. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_GRAPH_EXPANSION_MODE`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_MIN_EVIDENCE_SUPPORT` | `0.5` | Runtime-route enforce threshold. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_MIN_EVIDENCE_SUPPORT`. |
+| `LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_MIN_ROUTE_CONFIDENCE` | `0.5` | Runtime-route enforce threshold. Alias: `LLMWIKI_AGENT_BRIDGE_EXTERNAL_JUDGMENT_MIN_ROUTE_CONFIDENCE`. |
 | `LLMWIKI_AGENT_BRIDGE_ALLOW_PUBLIC_BIND` | unset | Set to `1` to allow binding to a non-loopback host. |
 | `LLMWIKI_AGENT_BRIDGE_CONFIG_PATH` | CLI user config file | Persistent settings file used by `/settings/config.json` and `/settings/sources.json`. Programmatic callers can pass `configPath`. |
 
@@ -244,6 +255,28 @@ logs that could expose private source content.
 Legacy Hermes migration aliases such as `HERMES_BASE_URL`, `HERMES_MODEL`,
 `HERMES_API_KEY`, and `HERMES_A2A_BRIDGE_*` are still accepted. Prefer the
 `LLMWIKI_AGENT_BRIDGE_*` names for new deployments.
+
+## Optional System-One Judgment
+
+System-One integration is opt-in and provider-agnostic at the bridge contract
+level. It is intended for typed first-stage judgment, not final answer
+synthesis or policy enforcement outside the configured runtime-route gate.
+
+`LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_MODE=report-only` records a redacted diagnostic
+before runtime synthesis and always lets the normal runtime path continue.
+`LLMWIKI_AGENT_BRIDGE_SYSTEM_ONE_MODE=enforce` can skip runtime synthesis when
+the provider rejects the gathered evidence, returns support/confidence below
+the configured thresholds, or cannot be reached.
+
+The additional source-routing, evidence-relevance, citation-support,
+progressive-disclosure, and graph-expansion modes are report-only. They do not
+prune sources, add source calls, reorder citations, mutate runtime prompts, or
+change answers. Provider state is minimized and masked before every call.
+Source-policy blocked descriptors are omitted from provider state. Source
+names/descriptions, page titles/snippets, graph labels and relations, answer
+text, and cited claim snippets are reduced to structural signals such as
+counts before provider calls. MCP progressive-disclosure state uses structural
+counts rather than the raw source-tool query.
 
 ## Persistent Settings
 
