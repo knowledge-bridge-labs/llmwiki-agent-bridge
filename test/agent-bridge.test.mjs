@@ -96,6 +96,17 @@ describe('llmwiki-agent-bridge', () => {
     assert.match(serialized, /\[email-1\]/)
   })
 
+  it('normalizes System-One base URLs without regex-sensitive slash trimming', async (t) => {
+    const bridge = await startAgentBridge({
+      port: 0,
+      systemOneBaseUrl: `https://system-one.example.test/v1${'/'.repeat(4096)}`,
+      logger: silentLogger,
+    })
+    t.after(() => closeServer(bridge.server))
+
+    assert.equal(bridge.config.externalJudgmentEndpoint, 'https://system-one.example.test/v1/systemone')
+  })
+
   it('keeps external judgment off by default even when provider config exists', async (t) => {
     const source = await startFixtureServer(async ({ url, response }) => {
       if (url.pathname === '/search') {

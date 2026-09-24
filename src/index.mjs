@@ -14226,7 +14226,7 @@ function stringOption(value) {
 function systemOneEndpointFromBaseUrl(value) {
   const baseUrl = stringOption(value)
   if (!baseUrl) return undefined
-  const clean = baseUrl.replace(/\/+$/, '')
+  const clean = trimTrailingSlashes(baseUrl)
   return clean.endsWith('/systemone') ? clean : `${clean}/systemone`
 }
 
